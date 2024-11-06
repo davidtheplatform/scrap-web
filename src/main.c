@@ -1,3 +1,7 @@
+// TODO:
+// - Input access
+// - Block insertion
+
 #include "raylib.h"
 #include "vec.h"
 
@@ -38,6 +42,18 @@ typedef struct {
     BlockInput* inputs;
 } Blockdef;
 
+typedef struct Block {
+    int id;
+    Vector2 pos;
+    struct Block* next;
+    struct Block* prev;
+} Block;
+
+typedef struct {
+    bool sidebar;
+    Block* block;
+} HoverInfo;
+
 char *top_buttons_text[] = {
     "Code",
     "Game",
@@ -50,6 +66,37 @@ Texture2D run_tex;
 Font font;
 Font font_cond;
 Blockdef* registered_blocks;
+Block mouse_block = {0};
+Block* sidebar;
+Block* sprite_code;
+HoverInfo hover_info = {0};
+
+void update_root_nodes(void) {
+    for (int i = 0; i < vector_size(sprite_code); i++) {
+        if (!sprite_code[i].next) continue;
+        sprite_code[i].next->prev = &sprite_code[i];
+    }
+}
+
+Block new_block(int id) {
+    return (Block) {
+        .id = id,
+        .pos = {0},
+        .next = NULL,
+        .prev = NULL,
+    };
+}
+
+void free_block(Block* block) {
+    Block* cur = block->next;
+
+    while (cur) {
+        Block* next = cur->next;
+        printf("free\n");
+        free(cur);
+        cur = next;
+    }
+}
 
 // registered_blocks should be initialized before calling this
 int block_register(char* id, Color color) {
@@ -90,11 +137,13 @@ void block_unregister(int block_id) {
     vector_remove(registered_blocks, block_id);
 }
 
-bool draw_block(Vector2 position, int id) {
+bool draw_block(Vector2 position, Block* block) {
+    if (block->id == -1) return false;
+
     bool collision = false;
     Vector2 mouse_pos = GetMousePosition();
-    Blockdef block = registered_blocks[id];
-    Color color = block.color;
+    Blockdef blockdef = registered_blocks[block->id];
+    Color color = blockdef.color;
 
     Rectangle final_size = (Rectangle) {
         position.x, position.y,
@@ -105,9 +154,9 @@ bool draw_block(Vector2 position, int id) {
     DrawRectangleRec(final_size, color );
     position.x += 5;
 
-    for (int i = 0; i < vector_size(block.inputs); i++) {
+    for (int i = 0; i < vector_size(blockdef.inputs); i++) {
         int width = 0;
-        BlockInput cur = block.inputs[i];
+        BlockInput cur = blockdef.inputs[i];
 
         switch (cur.type) {
         case INPUT_TEXT_DISPLAY:
@@ -146,6 +195,10 @@ bool draw_block(Vector2 position, int id) {
         position.x += width;
     }
 
+#ifdef DEBUG
+    DrawTextEx(font_cond, TextFormat("Prev: %p", block->prev), (Vector2) { position.x + 10, position.y }, conf.font_size * 0.5, 0.0, WHITE);
+    DrawTextEx(font_cond, TextFormat("%p", block), (Vector2) { position.x + 10, position.y + conf.font_size - conf.font_size * 0.5 }, conf.font_size * 0.5, 0.0, WHITE);
+#endif
     DrawRectangleLinesEx(final_size, 2.0, ColorBrightness(color, collision ? 0.5 : -0.2));
 
     return collision;
@@ -161,7 +214,7 @@ Vector2 draw_button(Vector2 position, char* text, float text_scale, int padding,
         .height = conf.font_size,
     };
 
-    if (selected || CheckCollisionPointRec(GetMousePosition(), rect)) {
+    if (selected || (CheckCollisionPointRec(GetMousePosition(), rect) && mouse_block.id == -1)) {
         Color select_color = selected ? (Color){ 0xDD, 0xDD, 0xDD, 0xDD } :
                                         (Color){ 0x40, 0x40, 0x40, 0xFF };
         DrawRectangleRec(rect, select_color);
@@ -192,6 +245,57 @@ void set_default_config(void) {
     conf.font_symbols = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?";
 }
 
+void handle_mouse_click() {
+    printf("Block: %p, Sidebar: %d\n", hover_info.block, hover_info.sidebar);
+
+    if (hover_info.sidebar) {
+        if (mouse_block.id == -1 && hover_info.block) {
+            mouse_block = *hover_info.block;
+        } else {
+            free_block(&mouse_block);
+            mouse_block = new_block(-1);
+        }
+        return;
+    }
+
+    if (mouse_block.id != -1) {
+        mouse_block.pos = GetMousePosition();
+        if (hover_info.block && hover_info.block->next == NULL) {
+            printf("malloc\n");
+            Block* next = malloc(sizeof(mouse_block));
+            *next = mouse_block;
+            next->prev = hover_info.block;
+            hover_info.block->next = next;
+            if (next->next) {
+                next->next->prev = next;
+            }
+        } else {
+            vector_add(&sprite_code, mouse_block);
+            update_root_nodes();
+        }
+        mouse_block = new_block(-1);
+    } else if (hover_info.block) {
+        if (hover_info.block->prev) {
+            hover_info.block->prev->next = NULL;
+            hover_info.block->prev = NULL;
+            if (!IsKeyDown(KEY_BACKSPACE)) {
+                mouse_block = *hover_info.block;
+            } else {
+                free_block(hover_info.block);
+            }
+            printf("free\n");
+            free(hover_info.block);
+        } else {
+            if (!IsKeyDown(KEY_BACKSPACE)) {
+                mouse_block = *hover_info.block;
+            } else {
+                free_block(hover_info.block);
+            }
+            vector_remove(sprite_code, hover_info.block - sprite_code); // Evil pointer arithmetic >:)
+        }
+    }
+}
+
 void setup(void) {
     run_tex = LoadTexture(DATA_PATH "run.png");
     SetTextureFilter(run_tex, TEXTURE_FILTER_BILINEAR);
@@ -203,23 +307,28 @@ void setup(void) {
     SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_cond.texture, TEXTURE_FILTER_BILINEAR);
 
+    mouse_block = new_block(-1);
     registered_blocks = vector_create();
-
-    int set_xy = block_register("set_xy", (Color) { 0x00, 0x77, 0xff, 0xFF });
-    block_add_text(set_xy, "Set X:");
-    block_add_string_input(set_xy);
-    block_add_text(set_xy, "Y:");
-    block_add_string_input(set_xy);
-
-    int move_steps = block_register("move_forward", (Color) { 0x00, 0x77, 0xff, 0xFF });
-    block_add_text(move_steps, "Move");
-    block_add_string_input(move_steps);
-    block_add_text(move_steps, "pixels");
 
     int on_start = block_register("on_start", (Color) { 0xff, 0x77, 0x00, 0xFF });
     block_add_text(on_start, "When");
     block_add_image(on_start, run_tex);
     block_add_text(on_start, "clicked");
+
+    int move_steps = block_register("move_steps", (Color) { 0x00, 0x77, 0xff, 0xFF });
+    block_add_text(move_steps, "Move");
+    block_add_string_input(move_steps);
+    block_add_text(move_steps, "steps");
+
+    int sc_print = block_register("print", (Color) { 0x00, 0xaa, 0x44, 0xFF });
+    block_add_text(sc_print, "Print");
+    block_add_string_input(sc_print);
+
+    sidebar = vector_create();
+    sprite_code = vector_create();
+    for (int i = 0; i < vector_size(registered_blocks); i++) {
+        vector_add(&sidebar, new_block(i));
+    }
 }
 
 void free_registered_blocks(void) {
@@ -240,6 +349,13 @@ int main(void) {
     setup();
 
     while (!WindowShouldClose()) {
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            handle_mouse_click();
+        }
+
+        hover_info.sidebar = GetMouseX() < conf.side_bar_size && GetMouseY() > conf.font_size * 2;
+        hover_info.block = NULL;
+
         BeginDrawing();
         ClearBackground(GetColor(0x202020ff));
 
@@ -254,10 +370,37 @@ int main(void) {
             DrawRectangle(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2, (Color){ 0, 0, 0, 0x40 });
 
             int pos_y = conf.font_size * 2 + 10;
-            for (int i = 0; i < vector_size(registered_blocks); i++) {
-                draw_block((Vector2){ 10, pos_y }, i);
+            for (int i = 0; i < vector_size(sidebar); i++) {
+                if (draw_block((Vector2){ 10, pos_y }, &sidebar[i]) && !hover_info.block) {
+                    hover_info.block = &sidebar[i];
+                };
                 pos_y += conf.font_size + 10;
             }
+
+        EndScissorMode();
+
+        BeginScissorMode(conf.side_bar_size, conf.font_size * 2, sw - conf.side_bar_size, sh - conf.font_size * 2);
+            for (int i = 0; i < vector_size(sprite_code); i++) {
+                Block* cur = &sprite_code[i];
+                Vector2 pos = sprite_code[i].pos;
+                do {
+                    if (draw_block(pos, cur) && !hover_info.block) {
+                        hover_info.block = cur;
+                    };
+                    cur = cur->next;
+                    pos.y += conf.font_size;
+                } while (cur);
+            }
+        EndScissorMode();
+
+        BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
+            Block* cur = &mouse_block;
+            Vector2 pos = GetMousePosition();
+            do {
+                draw_block(pos, cur);
+                cur = cur->next;
+                pos.y += conf.font_size;
+            } while (cur);
         EndScissorMode();
 
         DrawTextEx(font, "Scrap", (Vector2){ 5, conf.font_size * 0.1 }, conf.font_size * 0.8, 0.0, WHITE);
