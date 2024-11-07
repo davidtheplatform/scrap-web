@@ -1,5 +1,6 @@
 // TODO:
 // - Input access
+// - Better collision resolution
 // - Block insertion
 
 #include "raylib.h"
@@ -65,6 +66,7 @@ struct Config conf;
 Texture2D run_tex;
 Font font;
 Font font_cond;
+
 Blockdef* registered_blocks;
 Block mouse_block = {0};
 Block* sidebar;
@@ -72,7 +74,7 @@ Block* sprite_code;
 HoverInfo hover_info = {0};
 
 void update_root_nodes(void) {
-    for (int i = 0; i < vector_size(sprite_code); i++) {
+    for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
         if (!sprite_code[i].next) continue;
         sprite_code[i].next->prev = &sprite_code[i];
     }
@@ -154,7 +156,7 @@ bool draw_block(Vector2 position, Block* block) {
     DrawRectangleRec(final_size, color );
     position.x += 5;
 
-    for (int i = 0; i < vector_size(blockdef.inputs); i++) {
+    for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
         int width = 0;
         BlockInput cur = blockdef.inputs[i];
 
@@ -228,9 +230,9 @@ Vector2 draw_button(Vector2 position, char* text, float text_scale, int padding,
     return (Vector2){ rect.x + rect.width + margin, rect.y };
 }
 
-void draw_top_buttons(int sw, int sh) {
+void draw_top_buttons(int sw) {
     Vector2 pos = (Vector2){ 0.0, conf.font_size };
-    for (int i = 0; i < ARRLEN(top_buttons_text); i++) {
+    for (vec_size_t i = 0; i < ARRLEN(top_buttons_text); i++) {
         pos = draw_button(pos, top_buttons_text[i], 0.6, 10, 0, i == 0);
     }
 
@@ -246,8 +248,6 @@ void set_default_config(void) {
 }
 
 void handle_mouse_click() {
-    printf("Block: %p, Sidebar: %d\n", hover_info.block, hover_info.sidebar);
-
     if (hover_info.sidebar) {
         if (mouse_block.id == -1 && hover_info.block) {
             mouse_block = *hover_info.block;
@@ -292,6 +292,7 @@ void handle_mouse_click() {
                 free_block(hover_info.block);
             }
             vector_remove(sprite_code, hover_info.block - sprite_code); // Evil pointer arithmetic >:)
+            update_root_nodes();
         }
     }
 }
@@ -326,13 +327,13 @@ void setup(void) {
 
     sidebar = vector_create();
     sprite_code = vector_create();
-    for (int i = 0; i < vector_size(registered_blocks); i++) {
+    for (vec_size_t i = 0; i < vector_size(registered_blocks); i++) {
         vector_add(&sidebar, new_block(i));
     }
 }
 
 void free_registered_blocks(void) {
-    for (int i = 0; i < vector_size(registered_blocks); i++) {
+    for (vec_size_t i = 0; i < vector_size(registered_blocks); i++) {
         block_unregister(i);
     }
     vector_free(registered_blocks);
@@ -364,13 +365,13 @@ int main(void) {
         DrawRectangle(0, 0, sw, conf.font_size, (Color){ 0x30, 0x30, 0x30, 0xFF });
         DrawRectangle(0, conf.font_size, sw, conf.font_size, (Color){ 0x2B, 0x2B, 0x2B, 0xFF });
 
-        draw_top_buttons(sw, sh);
+        draw_top_buttons(sw);
 
         BeginScissorMode(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2);
             DrawRectangle(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2, (Color){ 0, 0, 0, 0x40 });
 
             int pos_y = conf.font_size * 2 + 10;
-            for (int i = 0; i < vector_size(sidebar); i++) {
+            for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
                 if (draw_block((Vector2){ 10, pos_y }, &sidebar[i]) && !hover_info.block) {
                     hover_info.block = &sidebar[i];
                 };
@@ -380,7 +381,7 @@ int main(void) {
         EndScissorMode();
 
         BeginScissorMode(conf.side_bar_size, conf.font_size * 2, sw - conf.side_bar_size, sh - conf.font_size * 2);
-            for (int i = 0; i < vector_size(sprite_code); i++) {
+            for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
                 Block* cur = &sprite_code[i];
                 Vector2 pos = sprite_code[i].pos;
                 do {
@@ -401,6 +402,19 @@ int main(void) {
                 cur = cur->next;
                 pos.y += conf.font_size;
             } while (cur);
+#ifdef DEBUG
+            DrawTextEx(
+                font_cond, 
+                TextFormat("Block: %p\nSidebar: %d", hover_info.block, hover_info.sidebar), 
+                (Vector2){ 
+                    conf.side_bar_size + 5, 
+                    conf.font_size * 2 + 5
+                }, 
+                conf.font_size * 0.5,
+                0.0, 
+                GRAY
+            );
+#endif
         EndScissorMode();
 
         DrawTextEx(font, "Scrap", (Vector2){ 5, conf.font_size * 0.1 }, conf.font_size * 0.8, 0.0, WHITE);
