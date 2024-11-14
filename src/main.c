@@ -11,6 +11,7 @@
 
 #define ARRLEN(x) (sizeof(x)/sizeof(x[0]))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
 
 #define BLOCK_TEXT_SIZE (conf.font_size * 0.6)
 #define DATA_PATH "data/"
@@ -21,6 +22,20 @@ struct Config {
     char *font_symbols;
 };
 
+typedef struct Measurement {
+    Vector2 size;
+} Measurement;
+
+typedef struct {
+    Measurement ms;
+    char* text;
+} InputStaticText;
+
+typedef struct {
+    Measurement ms;
+    Texture2D image;
+} InputStaticImage;
+
 typedef enum {
     INPUT_TEXT_DISPLAY,
     INPUT_STRING,
@@ -28,8 +43,9 @@ typedef enum {
 } BlockInputType;
 
 typedef union {
+    InputStaticText stext;
     char* text;
-    Texture2D image;
+    InputStaticImage simage;
 } BlockInputData;
 
 typedef struct {
@@ -46,6 +62,7 @@ typedef struct {
 typedef struct Block {
     int id;
     Vector2 pos;
+    Measurement ms;
     struct Block* next;
     struct Block* prev;
 } Block;
@@ -80,13 +97,47 @@ void update_root_nodes(void) {
     }
 }
 
+void update_measurements(Block* block) {
+    if (block->id == -1) return;
+    Blockdef blockdef = registered_blocks[block->id];
+
+    block->ms.size.x = 5;
+    block->ms.size.y = conf.font_size;
+
+    for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
+        Measurement ms;
+        switch (blockdef.inputs[i].type) {
+        case INPUT_TEXT_DISPLAY:
+            ms = blockdef.inputs[i].data.stext.ms;
+            break;
+        case INPUT_STRING:
+            ms.size.x = conf.font_size - 8;
+            ms.size.y = conf.font_size - 8;
+            break;
+        case INPUT_IMAGE_DISPLAY:
+            ms = blockdef.inputs[i].data.simage.ms;
+            break;
+        default:
+            ms.size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
+            break;
+        }
+        ms.size.x += 5;
+
+        block->ms.size.x += ms.size.x;
+        block->ms.size.y = MAX(block->ms.size.y, ms.size.y + 8);
+    }
+}
+
 Block new_block(int id) {
-    return (Block) {
-        .id = id,
-        .pos = {0},
-        .next = NULL,
-        .prev = NULL,
-    };
+    Block block;
+    block.id = id;
+    block.pos = (Vector2) {0};
+    block.ms = (Measurement) {0};
+    block.next = NULL;
+    block.prev = NULL;
+
+    update_measurements(&block);
+    return block;
 }
 
 void free_block(Block* block) {
@@ -111,10 +162,16 @@ int block_register(char* id, Color color) {
 }
 
 void block_add_text(int block_id, char* text) {
+    Measurement ms = {0};
+    ms.size = MeasureTextEx(font_cond, text, BLOCK_TEXT_SIZE, 0.0);
+
     BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
     input->type = INPUT_TEXT_DISPLAY;
     input->data = (BlockInputData) {
-        .text = text,
+        .stext = {
+            .text = text,
+            .ms = ms,
+        },
     };
 }
 
@@ -127,10 +184,17 @@ void block_add_string_input(int block_id) {
 }
 
 void block_add_image(int block_id, Texture2D texture) {
+    Measurement ms = {0};
+    ms.size.x = (float)(conf.font_size - 8) / (float)texture.height * (float)texture.width;
+    ms.size.y = conf.font_size - 8;
+
     BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
     input->type = INPUT_IMAGE_DISPLAY;
     input->data = (BlockInputData) {
-        .image = texture,
+        .simage = {
+            .image = texture,
+            .ms = ms,
+        }
     };
 }
 
@@ -147,14 +211,18 @@ bool draw_block(Vector2 position, Block* block) {
     Blockdef blockdef = registered_blocks[block->id];
     Color color = blockdef.color;
 
-    Rectangle final_size = (Rectangle) {
-        position.x, position.y,
-        5, conf.font_size,
-    };
+    Vector2 cursor = position;
 
-    collision = collision || CheckCollisionPointRec(mouse_pos, final_size);
-    DrawRectangleRec(final_size, color );
-    position.x += 5;
+    Rectangle block_size;
+    block_size.x = position.x;
+    block_size.y = position.y;
+    block_size.width = block->ms.size.x;
+    block_size.height = block->ms.size.y;
+
+    collision = collision || CheckCollisionPointRec(mouse_pos, block_size);
+    DrawRectangleRec(block_size, ColorBrightness(color, collision ? 0.5 : 0.0));
+    DrawRectangleLinesEx(block_size, 2.0, ColorBrightness(color, collision ? 0.5 : -0.2));
+    cursor.x += 5;
 
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
         int width = 0;
@@ -162,46 +230,59 @@ bool draw_block(Vector2 position, Block* block) {
 
         switch (cur.type) {
         case INPUT_TEXT_DISPLAY:
-            width = MeasureTextEx(font_cond, cur.data.text, BLOCK_TEXT_SIZE, 0.0).x + 5;
+            width = cur.data.stext.ms.size.x + 5;
+            DrawTextEx(
+                font_cond, 
+                cur.data.stext.text, 
+                (Vector2) { 
+                    cursor.x, 
+                    cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
+                },
+                BLOCK_TEXT_SIZE,
+                0.0,
+                WHITE
+            );
             break;
         case INPUT_STRING:
             width = conf.font_size - 8 + 5;
+            DrawRectangle(cursor.x, cursor.y + 4, width - 5, conf.font_size - 8, WHITE);
             break;
         case INPUT_IMAGE_DISPLAY:
-            width = (float)(conf.font_size - 8) / (float)cur.data.image.height * (float)cur.data.image.width + 5;
+            width = cur.data.simage.ms.size.x + 5;
+            DrawTextureEx(
+                cur.data.simage.image, 
+                (Vector2) { 
+                    cursor.x, 
+                    cursor.y + 4,
+                }, 
+                0.0, 
+                (float)(conf.font_size - 8) / (float)cur.data.simage.image.height, 
+                WHITE
+            );
             break;
         default:
             width = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0).x + 5;
+            DrawTextEx(
+                font_cond, 
+                "NODEF", 
+                (Vector2) { 
+                    cursor.x, 
+                    cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
+                },
+                BLOCK_TEXT_SIZE, 
+                0.0, 
+                RED
+            );
             break;
         }
 
-        collision = collision || CheckCollisionPointRec(mouse_pos, (Rectangle) { position.x, position.y, width, conf.font_size });
-        DrawRectangle(position.x, position.y, width, conf.font_size, color);
-
-        switch (cur.type) {
-        case INPUT_TEXT_DISPLAY:
-            DrawTextEx(font_cond, cur.data.text, (Vector2) { position.x, position.y + conf.font_size * 0.5 - BLOCK_TEXT_SIZE * 0.5, }, BLOCK_TEXT_SIZE, 0.0, WHITE);
-            break;
-        case INPUT_STRING:
-            DrawRectangle(position.x, position.y + 4, width - 5, conf.font_size - 8, WHITE);
-            break;
-        case INPUT_IMAGE_DISPLAY:
-            DrawTextureEx(cur.data.image, (Vector2) { position.x, position.y + 4 }, 0.0, (float)(conf.font_size - 8) / (float)cur.data.image.height, WHITE);
-            break;
-        default:
-            DrawTextEx(font_cond, "NODEF", (Vector2) { position.x, position.y + conf.font_size * 0.5 - BLOCK_TEXT_SIZE * 0.5, }, BLOCK_TEXT_SIZE, 0.0, RED);
-            break;
-        }
-
-        final_size.width += width;
-        position.x += width;
+        cursor.x += width;
     }
 
 #ifdef DEBUG
-    DrawTextEx(font_cond, TextFormat("Prev: %p", block->prev), (Vector2) { position.x + 10, position.y }, conf.font_size * 0.5, 0.0, WHITE);
-    DrawTextEx(font_cond, TextFormat("%p", block), (Vector2) { position.x + 10, position.y + conf.font_size - conf.font_size * 0.5 }, conf.font_size * 0.5, 0.0, WHITE);
+    DrawTextEx(font_cond, TextFormat("Prev: %p", block->prev), (Vector2) { cursor.x + 10, cursor.y }, conf.font_size * 0.5, 0.0, WHITE);
+    DrawTextEx(font_cond, TextFormat("%p", block), (Vector2) { cursor.x + 10, cursor.y + conf.font_size - conf.font_size * 0.5 }, conf.font_size * 0.5, 0.0, WHITE);
 #endif
-    DrawRectangleLinesEx(final_size, 2.0, ColorBrightness(color, collision ? 0.5 : -0.2));
 
     return collision;
 }
@@ -329,6 +410,7 @@ void setup(void) {
     sprite_code = vector_create();
     for (vec_size_t i = 0; i < vector_size(registered_blocks); i++) {
         vector_add(&sidebar, new_block(i));
+        printf("Size X: %.3f, Y: %.3f\n", sidebar[i].ms.size.x, sidebar[i].ms.size.y);
     }
 }
 
