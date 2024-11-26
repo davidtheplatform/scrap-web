@@ -1,3 +1,4 @@
 tags
-bin/
+*.o
+scrap
 profile.json
