@@ -44,7 +44,6 @@ typedef enum {
 
 typedef union {
     InputStaticText stext;
-    char* text;
     InputStaticImage simage;
 } BlockInputData;
 
@@ -59,9 +58,15 @@ typedef struct {
     BlockInput* inputs;
 } Blockdef;
 
+typedef struct {
+    Measurement ms;
+    char* text;
+} BlockArgument;
+
 typedef struct Block {
     int id;
     Vector2 pos;
+    BlockArgument* arguments;
     Measurement ms;
     struct Block* next;
     struct Block* prev;
@@ -70,6 +75,9 @@ typedef struct Block {
 typedef struct {
     bool sidebar;
     Block* block;
+    BlockArgument* argument;
+    Block* select_block;
+    BlockArgument* select_argument;
 } HoverInfo;
 
 char *top_buttons_text[] = {
@@ -104,6 +112,7 @@ void update_measurements(Block* block) {
     block->ms.size.x = 5;
     block->ms.size.y = conf.font_size;
 
+    int arg_id = 0;
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
         Measurement ms;
         switch (blockdef.inputs[i].type) {
@@ -111,8 +120,15 @@ void update_measurements(Block* block) {
             ms = blockdef.inputs[i].data.stext.ms;
             break;
         case INPUT_STRING:
-            ms.size.x = conf.font_size - 8;
-            ms.size.y = conf.font_size - 8;
+            Measurement string_ms;
+            string_ms.size = MeasureTextEx(font_cond, block->arguments[arg_id].text, BLOCK_TEXT_SIZE, 0.0);
+            string_ms.size.x += 10;
+            string_ms.size.x = MAX(conf.font_size - 8, string_ms.size.x);
+
+            block->arguments[arg_id].ms = string_ms;
+            ms = string_ms;
+            ms.size.y = MAX(conf.font_size -8, ms.size.y);
+            arg_id++;
             break;
         case INPUT_IMAGE_DISPLAY:
             ms = blockdef.inputs[i].data.simage.ms;
@@ -133,19 +149,64 @@ Block new_block(int id) {
     block.id = id;
     block.pos = (Vector2) {0};
     block.ms = (Measurement) {0};
+    block.arguments = id == -1 ? NULL : vector_create();
     block.next = NULL;
     block.prev = NULL;
+
+    printf("New block\n\tId: %d\n", id);
+    if (id != -1) {
+        Blockdef blockdef = registered_blocks[block.id];
+        for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
+            if (blockdef.inputs[i].type != INPUT_STRING) continue;
+            BlockArgument* arg = vector_add_dst(&block.arguments);
+            arg->ms = blockdef.inputs[i].data.stext.ms;
+            arg->text = vector_create();
+
+            for (char* pos = blockdef.inputs[i].data.stext.text; *pos; pos++) {
+                vector_add(&arg->text, *pos);
+            }
+            vector_add(&arg->text, 0);
+            printf("\tInput: %s, Size: %d\n", arg->text, vector_size(arg->text));
+        }
+    }
 
     update_measurements(&block);
     return block;
 }
 
+Block copy_block(Block* block) {
+    printf("Copy block id: %d\n", block->id);
+    if (!block->arguments) return *block;
+
+    Block new = *block;
+    new.arguments = vector_create();
+    for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
+        BlockArgument* arg = vector_add_dst(&new.arguments);
+        arg->ms = block->arguments[i].ms;
+        arg->text = vector_copy(block->arguments[i].text);
+    }
+
+    return new;
+}
+
 void free_block(Block* block) {
+    printf("Free block id: %d\n", block->id);
+
+    if (block->arguments) {
+        for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
+            vector_free(block->arguments[i].text);
+        }
+        vector_free(block->arguments);
+    }
+}
+
+void free_block_next(Block* block) {
+    printf("Free next blocks\n");
     Block* cur = block->next;
 
     while (cur) {
         Block* next = cur->next;
-        printf("free\n");
+        free_block(cur);
         free(cur);
         cur = next;
     }
@@ -175,11 +236,19 @@ void block_add_text(int block_id, char* text) {
     };
 }
 
-void block_add_string_input(int block_id) {
+void block_add_string_input(int block_id, char* defualt_data) {
+    Measurement ms = {0};
+    ms.size = MeasureTextEx(font_cond, defualt_data, BLOCK_TEXT_SIZE, 0.0);
+    ms.size.x += 10;
+    ms.size.x = MAX(conf.font_size - 8, ms.size.x);
+
     BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
     input->type = INPUT_STRING;
     input->data = (BlockInputData) {
-        .text = "",
+        .stext = {
+            .text = defualt_data,
+            .ms = ms,
+        },
     };
 }
 
@@ -203,10 +272,64 @@ void block_unregister(int block_id) {
     vector_remove(registered_blocks, block_id);
 }
 
-bool draw_block(Vector2 position, Block* block) {
-    if (block->id == -1) return false;
+void block_update_collisions(Vector2 position, Block* block) {
+    if (hover_info.block) return;
 
-    bool collision = false;
+    Rectangle block_size;
+    block_size.x = position.x;
+    block_size.y = position.y;
+    block_size.width = block->ms.size.x;
+    block_size.height = block->ms.size.y;
+    
+    if (!CheckCollisionPointRec(GetMousePosition(), block_size)) return;
+    hover_info.block = block;
+    
+    if (hover_info.argument) return;
+
+    Vector2 cursor = position;
+    cursor.x += 5;
+
+    Blockdef blockdef = registered_blocks[block->id];
+    int arg_id = 0;
+
+    for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
+        int width = 0;
+        BlockInput cur = blockdef.inputs[i];
+
+        switch (cur.type) {
+        case INPUT_TEXT_DISPLAY:
+            width = cur.data.stext.ms.size.x + 5;
+            break;
+        case INPUT_STRING:
+            width = block->arguments[arg_id].ms.size.x + 5;
+            Rectangle arg_size;
+            arg_size.x = cursor.x;
+            arg_size.y = cursor.y + 4;
+            arg_size.width = block->arguments[arg_id].ms.size.x;
+            arg_size.height = conf.font_size - 8; //block->arguments[arg_id].ms.size.y;
+
+            //DrawRectangle(cursor.x, cursor.y + 4, width - 5, conf.font_size - 8, WHITE);
+            if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
+                hover_info.argument = &block->arguments[arg_id];
+                break;
+            }
+            arg_id++;
+            break;
+        case INPUT_IMAGE_DISPLAY:
+            width = cur.data.simage.ms.size.x + 5;
+            break;
+        default:
+            width = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0).x + 5;
+            break;
+        }
+        cursor.x += width;
+    }
+}
+
+void draw_block(Vector2 position, Block* block) {
+    if (block->id == -1) return;
+
+    bool collision = hover_info.block == block;
     Vector2 mouse_pos = GetMousePosition();
     Blockdef blockdef = registered_blocks[block->id];
     Color color = blockdef.color;
@@ -219,11 +342,11 @@ bool draw_block(Vector2 position, Block* block) {
     block_size.width = block->ms.size.x;
     block_size.height = block->ms.size.y;
 
-    collision = collision || CheckCollisionPointRec(mouse_pos, block_size);
-    DrawRectangleRec(block_size, ColorBrightness(color, collision ? 0.5 : 0.0));
+    DrawRectangleRec(block_size, ColorBrightness(color, 0.0));
     DrawRectangleLinesEx(block_size, 2.0, ColorBrightness(color, collision ? 0.5 : -0.2));
     cursor.x += 5;
 
+    int arg_id = 0;
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
         int width = 0;
         BlockInput cur = blockdef.inputs[i];
@@ -244,8 +367,28 @@ bool draw_block(Vector2 position, Block* block) {
             );
             break;
         case INPUT_STRING:
-            width = conf.font_size - 8 + 5;
-            DrawRectangle(cursor.x, cursor.y + 4, width - 5, conf.font_size - 8, WHITE);
+            bool arg_collision = &block->arguments[arg_id] == hover_info.argument || &block->arguments[arg_id] == hover_info.select_argument;
+            width = block->arguments[arg_id].ms.size.x + 5;
+            Rectangle arg_size;
+            arg_size.x = cursor.x;
+            arg_size.y = cursor.y + 4;
+            arg_size.width = width - 5;
+            arg_size.height = conf.font_size - 8;
+
+            DrawRectangleRec(arg_size, WHITE);
+            if (arg_collision) DrawRectangleLinesEx(arg_size, 2.0, ColorBrightness(color, -0.5));
+            DrawTextEx(
+                font_cond, 
+                block->arguments[arg_id].text,
+                (Vector2) { 
+                    cursor.x + 5, 
+                    cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
+                },
+                BLOCK_TEXT_SIZE,
+                0.0,
+                BLACK
+            );
+            arg_id++;
             break;
         case INPUT_IMAGE_DISPLAY:
             width = cur.data.simage.ms.size.x + 5;
@@ -283,8 +426,18 @@ bool draw_block(Vector2 position, Block* block) {
     DrawTextEx(font_cond, TextFormat("Prev: %p", block->prev), (Vector2) { cursor.x + 10, cursor.y }, conf.font_size * 0.5, 0.0, WHITE);
     DrawTextEx(font_cond, TextFormat("%p", block), (Vector2) { cursor.x + 10, cursor.y + conf.font_size - conf.font_size * 0.5 }, conf.font_size * 0.5, 0.0, WHITE);
 #endif
+}
 
-    return collision;
+void draw_block_chain(Block* block) {
+    Vector2 pos = block->pos;
+    do {
+        draw_block(pos, block);
+        /*if (draw_block(pos, block) && !hover_info.block) {
+            hover_info.block = cur;
+        };*/
+        block = block->next;
+        pos.y += conf.font_size;
+    } while (block);
 }
 
 Vector2 draw_button(Vector2 position, char* text, float text_scale, int padding, int margin, bool selected) {
@@ -328,53 +481,135 @@ void set_default_config(void) {
     conf.font_symbols = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?";
 }
 
-void handle_mouse_click() {
+void handle_mouse_click(void) {
     if (hover_info.sidebar) {
+        if (hover_info.select_argument) {
+            hover_info.select_argument = NULL;
+            return;
+        }
         if (mouse_block.id == -1 && hover_info.block) {
-            mouse_block = *hover_info.block;
+            // Pickup block
+            mouse_block = copy_block(hover_info.block);
         } else {
+            if (mouse_block.id == -1) return; // Redundant, but saves some allocations
+            // Drop block
+            free_block_next(&mouse_block);
             free_block(&mouse_block);
             mouse_block = new_block(-1);
         }
         return;
     }
 
+    if (hover_info.block != hover_info.select_block) {
+        hover_info.select_block = hover_info.block;
+    }
+
+    if (hover_info.argument != hover_info.select_argument) {
+        hover_info.select_argument = hover_info.argument;
+        return;
+    }
+
+    if (hover_info.select_argument) {
+        return;
+    }
+
     if (mouse_block.id != -1) {
         mouse_block.pos = GetMousePosition();
         if (hover_info.block && hover_info.block->next == NULL) {
+            // Attach block
             printf("malloc\n");
             Block* next = malloc(sizeof(mouse_block));
             *next = mouse_block;
             next->prev = hover_info.block;
             hover_info.block->next = next;
             if (next->next) {
+                // Properly link next block as its previous link changes
                 next->next->prev = next;
             }
         } else {
+            // Put block
             vector_add(&sprite_code, mouse_block);
             update_root_nodes();
         }
         mouse_block = new_block(-1);
     } else if (hover_info.block) {
         if (hover_info.block->prev) {
+            // Detach block
             hover_info.block->prev->next = NULL;
             hover_info.block->prev = NULL;
             if (!IsKeyDown(KEY_BACKSPACE)) {
                 mouse_block = *hover_info.block;
             } else {
+                free_block_next(hover_info.block);
                 free_block(hover_info.block);
             }
             printf("free\n");
             free(hover_info.block);
         } else {
+            // Get root block
             if (!IsKeyDown(KEY_BACKSPACE)) {
                 mouse_block = *hover_info.block;
             } else {
+                free_block_next(hover_info.block);
                 free_block(hover_info.block);
             }
             vector_remove(sprite_code, hover_info.block - sprite_code); // Evil pointer arithmetic >:)
             update_root_nodes();
         }
+    }
+}
+
+void handle_key_press(void) {
+    if (!hover_info.select_argument) return;
+
+    if (IsKeyPressed(KEY_BACKSPACE)) {
+        char* arg_text = hover_info.select_argument->text;
+        if (vector_size(arg_text) <= 1) return;
+
+        int remove_pos = vector_size(arg_text) - 2;
+        int remove_size = 1;
+
+        while (((unsigned char)arg_text[remove_pos] >> 6) == 2) { // This checks if we are in the middle of UTF-8 char
+            remove_pos--;
+            remove_size++;
+        }
+
+        vector_erase(arg_text, remove_pos, remove_size);
+        update_measurements(hover_info.select_block);
+        return;
+    }
+
+    int char_val;
+    while (char_val = GetCharPressed()) {
+        char** arg_text = &hover_info.select_argument->text;
+        
+        int utf_size = 0;
+        char* utf_char = CodepointToUTF8(char_val, &utf_size);
+        for (int i = 0; i < utf_size; i++) {
+            vector_insert(arg_text, vector_size(*arg_text) - 1, utf_char[i]);
+        }
+        update_measurements(hover_info.select_block);
+    }
+}
+
+void check_collisions(void) {
+    int pos_y = conf.font_size * 2 + 10;
+    for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
+        if (hover_info.block) break;
+        block_update_collisions((Vector2){ 10, pos_y }, &sidebar[i]);
+        pos_y += conf.font_size + 10;
+    }
+
+    for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
+        if (hover_info.block) break;
+        Block* block = &sprite_code[i];
+        Vector2 pos = block->pos;
+        do {
+            if (hover_info.block) break;
+            block_update_collisions(pos, block);
+            block = block->next;
+            pos.y += conf.font_size;
+        } while (block);
     }
 }
 
@@ -397,20 +632,19 @@ void setup(void) {
     block_add_image(on_start, run_tex);
     block_add_text(on_start, "clicked");
 
-    int move_steps = block_register("move_steps", (Color) { 0x00, 0x77, 0xff, 0xFF });
-    block_add_text(move_steps, "Move");
-    block_add_string_input(move_steps);
-    block_add_text(move_steps, "steps");
-
     int sc_print = block_register("print", (Color) { 0x00, 0xaa, 0x44, 0xFF });
     block_add_text(sc_print, "Print");
-    block_add_string_input(sc_print);
+    block_add_string_input(sc_print, "Привет, мусороид!");
+
+    int move_steps = block_register("move_steps", (Color) { 0x00, 0x77, 0xff, 0xFF });
+    block_add_text(move_steps, "Move");
+    block_add_string_input(move_steps, "");
+    block_add_text(move_steps, "pixels");
 
     sidebar = vector_create();
     sprite_code = vector_create();
     for (vec_size_t i = 0; i < vector_size(registered_blocks); i++) {
         vector_add(&sidebar, new_block(i));
-        printf("Size X: %.3f, Y: %.3f\n", sidebar[i].ms.size.x, sidebar[i].ms.size.y);
     }
 }
 
@@ -432,12 +666,18 @@ int main(void) {
     setup();
 
     while (!WindowShouldClose()) {
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            handle_mouse_click();
-        }
-
         hover_info.sidebar = GetMouseX() < conf.side_bar_size && GetMouseY() > conf.font_size * 2;
         hover_info.block = NULL;
+        hover_info.argument = NULL;
+
+        check_collisions();
+
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            handle_mouse_click();
+        } else {
+            handle_key_press();
+        }
+        mouse_block.pos = GetMousePosition();
 
         BeginDrawing();
         ClearBackground(GetColor(0x202020ff));
@@ -454,9 +694,7 @@ int main(void) {
 
             int pos_y = conf.font_size * 2 + 10;
             for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
-                if (draw_block((Vector2){ 10, pos_y }, &sidebar[i]) && !hover_info.block) {
-                    hover_info.block = &sidebar[i];
-                };
+                draw_block((Vector2){ 10, pos_y }, &sidebar[i]);
                 pos_y += conf.font_size + 10;
             }
 
@@ -464,30 +702,23 @@ int main(void) {
 
         BeginScissorMode(conf.side_bar_size, conf.font_size * 2, sw - conf.side_bar_size, sh - conf.font_size * 2);
             for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
-                Block* cur = &sprite_code[i];
-                Vector2 pos = sprite_code[i].pos;
-                do {
-                    if (draw_block(pos, cur) && !hover_info.block) {
-                        hover_info.block = cur;
-                    };
-                    cur = cur->next;
-                    pos.y += conf.font_size;
-                } while (cur);
+                draw_block_chain(&sprite_code[i]);
             }
         EndScissorMode();
 
         BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
-            Block* cur = &mouse_block;
-            Vector2 pos = GetMousePosition();
-            do {
-                draw_block(pos, cur);
-                cur = cur->next;
-                pos.y += conf.font_size;
-            } while (cur);
+            draw_block_chain(&mouse_block);
 #ifdef DEBUG
             DrawTextEx(
                 font_cond, 
-                TextFormat("Block: %p\nSidebar: %d", hover_info.block, hover_info.sidebar), 
+                TextFormat(
+                    "Block: %p\nArgument: %p\nSelect block: %p\nSelect arg: %p\nSidebar: %d", 
+                    hover_info.block, 
+                    hover_info.argument, 
+                    hover_info.select_block,
+                    hover_info.select_argument, 
+                    hover_info.sidebar
+                ), 
                 (Vector2){ 
                     conf.side_bar_size + 5, 
                     conf.font_size * 2 + 5
