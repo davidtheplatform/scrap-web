@@ -1,6 +1,6 @@
 CC := gcc
 CFLAGS := -Wall -Wextra -O0 -ggdb -DDEBUG
-LDFLAGS := -lraylib
+LDFLAGS := -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
 OBJFILES := vec.o scrap.o
 
 all: scrap
@@ -12,7 +12,7 @@ run: scrap
 	./scrap
 
 scrap: $(OBJFILES)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 vec.o: vec.c
 	$(CC) $(CFLAGS) -c -o $@ $^

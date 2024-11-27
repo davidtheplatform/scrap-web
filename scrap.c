@@ -1,13 +1,13 @@
 // TODO:
-// - Input access
 // - Better collision resolution
-// - Block insertion
+// - C-Blocks
 
 #include "raylib.h"
 #include "vec.h"
 
 #include <stdio.h>
 #include <stddef.h>
+#include <assert.h>
 
 #define ARRLEN(x) (sizeof(x)/sizeof(x[0]))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -15,6 +15,9 @@
 
 #define BLOCK_TEXT_SIZE (conf.font_size * 0.6)
 #define DATA_PATH "data/"
+#define BLOCK_PADDING (5.0 * (float)conf.font_size / 32.0)
+#define BLOCK_LINE_SIZE (2.0 * (float)conf.font_size / 32.0)
+#define BLOCK_STRING_PADDING (10.0 * (float)conf.font_size / 32.0)
 
 struct Config {
     int font_size;
@@ -58,33 +61,44 @@ typedef struct {
     BlockInput* inputs;
 } Blockdef;
 
-typedef struct {
-    Measurement ms;
-    char* text;
-} BlockArgument;
-
 typedef struct Block {
     int id;
     Vector2 pos;
-    BlockArgument* arguments;
+    void* arguments; // arguments are of void type because of C. That makes the whole codebase a bit garbled, though :P
     Measurement ms;
+    struct Block* parent;
     struct Block* next;
     struct Block* prev;
 } Block;
+
+typedef enum {
+    ARGUMENT_TEXT,
+    ARGUMENT_BLOCK,
+} BlockArgumentType;
+
+typedef union {
+    char* text;
+    Block block;
+} BlockArgumentData;
+
+typedef struct {
+    Measurement ms;
+    BlockArgumentType type;
+    BlockArgumentData data;
+} BlockArgument;
 
 typedef struct {
     bool sidebar;
     Block* block;
     BlockArgument* argument;
+    BlockArgument* prev_argument;
     Block* select_block;
     BlockArgument* select_argument;
 } HoverInfo;
 
 char *top_buttons_text[] = {
     "Code",
-    "Game",
-    "Sprites",
-    "Sounds",
+    "Output",
 };
 
 struct Config conf;
@@ -98,10 +112,20 @@ Block* sidebar;
 Block* sprite_code;
 HoverInfo hover_info = {0};
 
+void block_update_parent_links(Block* block) {
+    BlockArgument* block_args = block->arguments;
+    for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
+        if (block_args[i].type != ARGUMENT_BLOCK) continue;
+        block_args[i].data.block.parent = block;
+    }
+}
+
 void update_root_nodes(void) {
     for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
-        if (!sprite_code[i].next) continue;
-        sprite_code[i].next->prev = &sprite_code[i];
+        if (sprite_code[i].next) {
+            sprite_code[i].next->prev = &sprite_code[i];
+        }
+        block_update_parent_links(&sprite_code[i]);
     }
 }
 
@@ -109,7 +133,7 @@ void update_measurements(Block* block) {
     if (block->id == -1) return;
     Blockdef blockdef = registered_blocks[block->id];
 
-    block->ms.size.x = 5;
+    block->ms.size.x = BLOCK_PADDING;
     block->ms.size.y = conf.font_size;
 
     int arg_id = 0;
@@ -120,14 +144,27 @@ void update_measurements(Block* block) {
             ms = blockdef.inputs[i].data.stext.ms;
             break;
         case INPUT_STRING:
-            Measurement string_ms;
-            string_ms.size = MeasureTextEx(font_cond, block->arguments[arg_id].text, BLOCK_TEXT_SIZE, 0.0);
-            string_ms.size.x += 10;
-            string_ms.size.x = MAX(conf.font_size - 8, string_ms.size.x);
+            BlockArgument* block_args = block->arguments;
 
-            block->arguments[arg_id].ms = string_ms;
-            ms = string_ms;
-            ms.size.y = MAX(conf.font_size -8, ms.size.y);
+            switch (block_args[arg_id].type) {
+            case ARGUMENT_TEXT:
+                Measurement string_ms;
+                string_ms.size = MeasureTextEx(font_cond, block_args[arg_id].data.text, BLOCK_TEXT_SIZE, 0.0);
+                string_ms.size.x += BLOCK_STRING_PADDING;
+                string_ms.size.x = MAX(conf.font_size - BLOCK_LINE_SIZE * 4, string_ms.size.x);
+
+                block_args[arg_id].ms = string_ms;
+                ms = string_ms;
+                ms.size.y = MAX(conf.font_size - BLOCK_LINE_SIZE * 4, ms.size.y);
+                break;
+            case ARGUMENT_BLOCK:
+                block_args[arg_id].ms = block_args[arg_id].data.block.ms;
+                ms = block_args[arg_id].ms;
+                break;
+            default:
+                assert(false && "Unimplemented argument measure");
+                break;
+            }
             arg_id++;
             break;
         case INPUT_IMAGE_DISPLAY:
@@ -137,11 +174,13 @@ void update_measurements(Block* block) {
             ms.size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
             break;
         }
-        ms.size.x += 5;
+        ms.size.x += BLOCK_PADDING;
 
         block->ms.size.x += ms.size.x;
-        block->ms.size.y = MAX(block->ms.size.y, ms.size.y + 8);
+        block->ms.size.y = MAX(block->ms.size.y, ms.size.y + BLOCK_LINE_SIZE * 4);
     }
+
+    if (block->parent) update_measurements(block->parent);
 }
 
 Block new_block(int id) {
@@ -152,21 +191,23 @@ Block new_block(int id) {
     block.arguments = id == -1 ? NULL : vector_create();
     block.next = NULL;
     block.prev = NULL;
+    block.parent = NULL;
 
     printf("New block\n\tId: %d\n", id);
     if (id != -1) {
         Blockdef blockdef = registered_blocks[block.id];
         for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
             if (blockdef.inputs[i].type != INPUT_STRING) continue;
-            BlockArgument* arg = vector_add_dst(&block.arguments);
+            BlockArgument* arg = vector_add_dst((BlockArgument**)&block.arguments);
             arg->ms = blockdef.inputs[i].data.stext.ms;
-            arg->text = vector_create();
+            arg->type = ARGUMENT_TEXT;
+            arg->data.text = vector_create();
 
             for (char* pos = blockdef.inputs[i].data.stext.text; *pos; pos++) {
-                vector_add(&arg->text, *pos);
+                vector_add(&arg->data.text, *pos);
             }
-            vector_add(&arg->text, 0);
-            printf("\tInput: %s, Size: %d\n", arg->text, vector_size(arg->text));
+            vector_add(&arg->data.text, 0);
+            printf("\tInput: %s, Size: %ld\n", arg->data.text, vector_size(arg->data.text));
         }
     }
 
@@ -181,9 +222,21 @@ Block copy_block(Block* block) {
     Block new = *block;
     new.arguments = vector_create();
     for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
-        BlockArgument* arg = vector_add_dst(&new.arguments);
-        arg->ms = block->arguments[i].ms;
-        arg->text = vector_copy(block->arguments[i].text);
+        BlockArgument* block_args = block->arguments;
+        BlockArgument* arg = vector_add_dst((BlockArgument**)&new.arguments);
+        arg->ms = block_args[i].ms;
+        arg->type = block_args[i].type;
+        switch (block_args[i].type) {
+        case ARGUMENT_TEXT:
+            arg->data.text = vector_copy(block_args[i].data.text);
+            break;
+        case ARGUMENT_BLOCK:
+            arg->data.block = copy_block(&block_args[i].data.block);
+            break;
+        default:
+            assert(false && "Unimplemented argument copy");
+            break;
+        }
     }
 
     return new;
@@ -194,9 +247,20 @@ void free_block(Block* block) {
 
     if (block->arguments) {
         for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
-            vector_free(block->arguments[i].text);
+            BlockArgument* block_args = block->arguments;
+            switch (block_args[i].type) {
+            case ARGUMENT_TEXT:
+                vector_free(block_args[i].data.text);
+                break;
+            case ARGUMENT_BLOCK:
+                free_block(&block_args[i].data.block);
+                break;
+            default:
+                assert(false && "Unimplemented argument free");
+                break;
+            }
         }
-        vector_free(block->arguments);
+        vector_free((BlockArgument*)block->arguments);
     }
 }
 
@@ -210,6 +274,38 @@ void free_block_next(Block* block) {
         free(cur);
         cur = next;
     }
+}
+
+void argument_set_block(BlockArgument* block_arg, Block block) {
+    assert(block_arg->type == ARGUMENT_TEXT);
+
+    vector_free(block_arg->data.text);
+    block_arg->type = ARGUMENT_BLOCK;
+    block_arg->data.block = block;
+
+    block_update_parent_links(&block_arg->data.block);
+    update_measurements(&block_arg->data.block);
+}
+
+void argument_set_text(BlockArgument* block_arg, char* text) {
+    assert(block_arg->type == ARGUMENT_BLOCK);
+    assert(block_arg->data.block.parent != NULL);
+
+    Block* parent = block_arg->data.block.parent;
+
+    block_arg->type = ARGUMENT_TEXT;
+    block_arg->data.text = vector_create();
+
+    for (char* pos = text; *pos; pos++) {
+        vector_add(&block_arg->data.text, *pos);
+    }
+    vector_add(&block_arg->data.text, 0);
+
+    Measurement ms = {0};
+    ms.size = MeasureTextEx(font_cond, text, BLOCK_TEXT_SIZE, 0.0);
+    block_arg->ms = ms;
+
+    update_measurements(parent);
 }
 
 // registered_blocks should be initialized before calling this
@@ -239,8 +335,8 @@ void block_add_text(int block_id, char* text) {
 void block_add_string_input(int block_id, char* defualt_data) {
     Measurement ms = {0};
     ms.size = MeasureTextEx(font_cond, defualt_data, BLOCK_TEXT_SIZE, 0.0);
-    ms.size.x += 10;
-    ms.size.x = MAX(conf.font_size - 8, ms.size.x);
+    ms.size.x += BLOCK_STRING_PADDING;
+    ms.size.x = MAX(conf.font_size - BLOCK_LINE_SIZE * 4, ms.size.x);
 
     BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
     input->type = INPUT_STRING;
@@ -254,8 +350,8 @@ void block_add_string_input(int block_id, char* defualt_data) {
 
 void block_add_image(int block_id, Texture2D texture) {
     Measurement ms = {0};
-    ms.size.x = (float)(conf.font_size - 8) / (float)texture.height * (float)texture.width;
-    ms.size.y = conf.font_size - 8;
+    ms.size.x = (float)(conf.font_size - BLOCK_LINE_SIZE * 4) / (float)texture.height * (float)texture.width;
+    ms.size.y = conf.font_size - BLOCK_LINE_SIZE * 4;
 
     BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
     input->type = INPUT_IMAGE_DISPLAY;
@@ -273,7 +369,7 @@ void block_unregister(int block_id) {
 }
 
 void block_update_collisions(Vector2 position, Block* block) {
-    if (hover_info.block) return;
+    if (hover_info.block && !block->parent) return;
 
     Rectangle block_size;
     block_size.x = position.x;
@@ -283,46 +379,69 @@ void block_update_collisions(Vector2 position, Block* block) {
     
     if (!CheckCollisionPointRec(GetMousePosition(), block_size)) return;
     hover_info.block = block;
-    
-    if (hover_info.argument) return;
 
     Vector2 cursor = position;
-    cursor.x += 5;
+    cursor.x += BLOCK_PADDING;
 
     Blockdef blockdef = registered_blocks[block->id];
     int arg_id = 0;
 
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
+        if (hover_info.argument) return;
         int width = 0;
         BlockInput cur = blockdef.inputs[i];
 
         switch (cur.type) {
         case INPUT_TEXT_DISPLAY:
-            width = cur.data.stext.ms.size.x + 5;
+            width = cur.data.stext.ms.size.x;
             break;
         case INPUT_STRING:
-            width = block->arguments[arg_id].ms.size.x + 5;
+            BlockArgument* block_args = block->arguments;
+            width = block_args[arg_id].ms.size.x;
             Rectangle arg_size;
-            arg_size.x = cursor.x;
-            arg_size.y = cursor.y + 4;
-            arg_size.width = block->arguments[arg_id].ms.size.x;
-            arg_size.height = conf.font_size - 8; //block->arguments[arg_id].ms.size.y;
 
-            //DrawRectangle(cursor.x, cursor.y + 4, width - 5, conf.font_size - 8, WHITE);
-            if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
-                hover_info.argument = &block->arguments[arg_id];
+            switch (block_args[arg_id].type) {
+            case ARGUMENT_TEXT:
+                arg_size.x = cursor.x;
+                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_LINE_SIZE * 4) * 0.5;
+                arg_size.width = block_args[arg_id].ms.size.x;
+                arg_size.height = conf.font_size - BLOCK_LINE_SIZE * 4;
+
+                if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
+                    hover_info.argument = &block_args[arg_id];
+                    break;
+                }
+                break;
+            case ARGUMENT_BLOCK:
+                Vector2 block_pos;
+                block_pos.x = cursor.x;
+                block_pos.y = cursor.y + block_size.height / 2 - block_args[arg_id].ms.size.y / 2; 
+
+                arg_size.x = block_pos.x;
+                arg_size.y = block_pos.y;
+                arg_size.width = block_args[arg_id].ms.size.x;
+                arg_size.height = block_args[arg_id].ms.size.y;
+
+                if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
+                    hover_info.prev_argument = &block_args[arg_id];
+                }
+                
+                block_update_collisions(block_pos, &block_args[arg_id].data.block);
+                break;
+            default:
+                assert(false && "Unimplemented argument collision");
                 break;
             }
             arg_id++;
             break;
         case INPUT_IMAGE_DISPLAY:
-            width = cur.data.simage.ms.size.x + 5;
+            width = cur.data.simage.ms.size.x;
             break;
         default:
-            width = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0).x + 5;
+            width = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0).x;
             break;
         }
-        cursor.x += width;
+        cursor.x += width + BLOCK_PADDING;
     }
 }
 
@@ -330,7 +449,6 @@ void draw_block(Vector2 position, Block* block) {
     if (block->id == -1) return;
 
     bool collision = hover_info.block == block;
-    Vector2 mouse_pos = GetMousePosition();
     Blockdef blockdef = registered_blocks[block->id];
     Color color = blockdef.color;
 
@@ -342,9 +460,9 @@ void draw_block(Vector2 position, Block* block) {
     block_size.width = block->ms.size.x;
     block_size.height = block->ms.size.y;
 
-    DrawRectangleRec(block_size, ColorBrightness(color, 0.0));
-    DrawRectangleLinesEx(block_size, 2.0, ColorBrightness(color, collision ? 0.5 : -0.2));
-    cursor.x += 5;
+    DrawRectangleRec(block_size, ColorBrightness(color, collision ? 0.3 : 0.0));
+    DrawRectangleLinesEx(block_size, BLOCK_LINE_SIZE, ColorBrightness(color, collision ? 0.5 : -0.2));
+    cursor.x += BLOCK_PADDING;
 
     int arg_id = 0;
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
@@ -353,7 +471,7 @@ void draw_block(Vector2 position, Block* block) {
 
         switch (cur.type) {
         case INPUT_TEXT_DISPLAY:
-            width = cur.data.stext.ms.size.x + 5;
+            width = cur.data.stext.ms.size.x;
             DrawTextEx(
                 font_cond, 
                 cur.data.stext.text, 
@@ -367,44 +485,61 @@ void draw_block(Vector2 position, Block* block) {
             );
             break;
         case INPUT_STRING:
-            bool arg_collision = &block->arguments[arg_id] == hover_info.argument || &block->arguments[arg_id] == hover_info.select_argument;
-            width = block->arguments[arg_id].ms.size.x + 5;
-            Rectangle arg_size;
-            arg_size.x = cursor.x;
-            arg_size.y = cursor.y + 4;
-            arg_size.width = width - 5;
-            arg_size.height = conf.font_size - 8;
+            BlockArgument* block_args = block->arguments;
+            width = block_args[arg_id].ms.size.x;
 
-            DrawRectangleRec(arg_size, WHITE);
-            if (arg_collision) DrawRectangleLinesEx(arg_size, 2.0, ColorBrightness(color, -0.5));
-            DrawTextEx(
-                font_cond, 
-                block->arguments[arg_id].text,
-                (Vector2) { 
-                    cursor.x + 5, 
-                    cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
-                },
-                BLOCK_TEXT_SIZE,
-                0.0,
-                BLACK
-            );
+            switch (block_args[arg_id].type) {
+            case ARGUMENT_TEXT:
+                Rectangle arg_size;
+                arg_size.x = cursor.x;
+                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_LINE_SIZE * 4) * 0.5;
+                arg_size.width = width;
+                arg_size.height = conf.font_size - BLOCK_LINE_SIZE * 4;
+
+                DrawRectangleRec(arg_size, WHITE);
+                if (&block_args[arg_id] == hover_info.argument || &block_args[arg_id] == hover_info.select_argument) {
+                    DrawRectangleLinesEx(arg_size, BLOCK_LINE_SIZE, ColorBrightness(color, &block_args[arg_id] == hover_info.select_argument ? -0.5 : 0.2));
+                }
+                DrawTextEx(
+                    font_cond, 
+                    block_args[arg_id].data.text,
+                    (Vector2) { 
+                        cursor.x + BLOCK_STRING_PADDING * 0.5, 
+                        cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
+                    },
+                    BLOCK_TEXT_SIZE,
+                    0.0,
+                    BLACK
+                );
+                break;
+            case ARGUMENT_BLOCK:
+                Vector2 block_pos;
+                block_pos.x = cursor.x;
+                block_pos.y = cursor.y + block_size.height * 0.5 - block_args[arg_id].ms.size.y * 0.5;
+
+                draw_block(block_pos, &block_args[arg_id].data.block);
+                break;
+            default:
+                assert(false && "Unimplemented argument draw");
+                break;
+            }
             arg_id++;
             break;
         case INPUT_IMAGE_DISPLAY:
-            width = cur.data.simage.ms.size.x + 5;
+            width = cur.data.simage.ms.size.x;
             DrawTextureEx(
                 cur.data.simage.image, 
                 (Vector2) { 
                     cursor.x, 
-                    cursor.y + 4,
+                    cursor.y + BLOCK_LINE_SIZE * 2,
                 }, 
                 0.0, 
-                (float)(conf.font_size - 8) / (float)cur.data.simage.image.height, 
+                (float)(conf.font_size - BLOCK_LINE_SIZE * 4) / (float)cur.data.simage.image.height, 
                 WHITE
             );
             break;
         default:
-            width = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0).x + 5;
+            width = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0).x;
             DrawTextEx(
                 font_cond, 
                 "NODEF", 
@@ -419,12 +554,16 @@ void draw_block(Vector2 position, Block* block) {
             break;
         }
 
-        cursor.x += width;
+        cursor.x += width + BLOCK_PADDING;
     }
 
 #ifdef DEBUG
-    DrawTextEx(font_cond, TextFormat("Prev: %p", block->prev), (Vector2) { cursor.x + 10, cursor.y }, conf.font_size * 0.5, 0.0, WHITE);
-    DrawTextEx(font_cond, TextFormat("%p", block), (Vector2) { cursor.x + 10, cursor.y + conf.font_size - conf.font_size * 0.5 }, conf.font_size * 0.5, 0.0, WHITE);
+    if (!block->parent) {
+        DrawTextEx(font_cond, TextFormat("Prev: %p", block->prev), (Vector2) { cursor.x + 10, cursor.y }, conf.font_size * 0.5, 0.0, WHITE);
+        DrawTextEx(font_cond, TextFormat("%p", block), (Vector2) { cursor.x + 10, cursor.y + block_size.height - conf.font_size * 0.5 }, conf.font_size * 0.5, 0.0, WHITE);
+    } else {
+        //DrawTextEx(font_cond, TextFormat("Parent: %p", block->parent), (Vector2) { cursor.x + 10, cursor.y }, conf.font_size * 0.5, 0.0, GRAY);
+    }
 #endif
 }
 
@@ -432,11 +571,8 @@ void draw_block_chain(Block* block) {
     Vector2 pos = block->pos;
     do {
         draw_block(pos, block);
-        /*if (draw_block(pos, block) && !hover_info.block) {
-            hover_info.block = cur;
-        };*/
+        pos.y += block->ms.size.y;
         block = block->next;
-        pos.y += conf.font_size;
     } while (block);
 }
 
@@ -476,7 +612,7 @@ void draw_top_buttons(int sw) {
 }
 
 void set_default_config(void) {
-    conf.font_size = 32;
+    conf.font_size = 28;
     conf.side_bar_size = 300;
     conf.font_symbols = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?";
 }
@@ -500,22 +636,29 @@ void handle_mouse_click(void) {
         return;
     }
 
-    if (hover_info.block != hover_info.select_block) {
-        hover_info.select_block = hover_info.block;
-    }
+    if (mouse_block.id == -1) {
+        if (hover_info.block != hover_info.select_block) {
+            hover_info.select_block = hover_info.block;
+        }
 
-    if (hover_info.argument != hover_info.select_argument) {
-        hover_info.select_argument = hover_info.argument;
-        return;
-    }
+        if (hover_info.argument != hover_info.select_argument) {
+            hover_info.select_argument = hover_info.argument;
+            return;
+        }
 
-    if (hover_info.select_argument) {
-        return;
+        if (hover_info.select_argument) {
+            return;
+        }
     }
 
     if (mouse_block.id != -1) {
         mouse_block.pos = GetMousePosition();
-        if (hover_info.block && hover_info.block->next == NULL) {
+        if (hover_info.argument) {
+            // Attach to argument
+            if (mouse_block.next) return;
+            mouse_block.parent = hover_info.block;
+            argument_set_block(hover_info.argument, mouse_block);
+        } else if (hover_info.block && hover_info.block->next == NULL && hover_info.block->parent == NULL) {
             // Attach block
             printf("malloc\n");
             Block* next = malloc(sizeof(mouse_block));
@@ -526,6 +669,7 @@ void handle_mouse_click(void) {
                 // Properly link next block as its previous link changes
                 next->next->prev = next;
             }
+            block_update_parent_links(next);
         } else {
             // Put block
             vector_add(&sprite_code, mouse_block);
@@ -545,6 +689,13 @@ void handle_mouse_click(void) {
             }
             printf("free\n");
             free(hover_info.block);
+        } else if (hover_info.block->parent) {
+            // Detach argument
+            assert(hover_info.prev_argument != NULL);
+
+            mouse_block = *hover_info.block;
+            mouse_block.parent = NULL;
+            argument_set_text(hover_info.prev_argument, "");
         } else {
             // Get root block
             if (!IsKeyDown(KEY_BACKSPACE)) {
@@ -561,9 +712,10 @@ void handle_mouse_click(void) {
 
 void handle_key_press(void) {
     if (!hover_info.select_argument) return;
+    assert(hover_info.select_argument->type == ARGUMENT_TEXT);
 
-    if (IsKeyPressed(KEY_BACKSPACE)) {
-        char* arg_text = hover_info.select_argument->text;
+    if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+        char* arg_text = hover_info.select_argument->data.text;
         if (vector_size(arg_text) <= 1) return;
 
         int remove_pos = vector_size(arg_text) - 2;
@@ -580,11 +732,11 @@ void handle_key_press(void) {
     }
 
     int char_val;
-    while (char_val = GetCharPressed()) {
-        char** arg_text = &hover_info.select_argument->text;
+    while ((char_val = GetCharPressed())) {
+        char** arg_text = &hover_info.select_argument->data.text;
         
         int utf_size = 0;
-        char* utf_char = CodepointToUTF8(char_val, &utf_size);
+        const char* utf_char = CodepointToUTF8(char_val, &utf_size);
         for (int i = 0; i < utf_size; i++) {
             vector_insert(arg_text, vector_size(*arg_text) - 1, utf_char[i]);
         }
@@ -593,23 +745,25 @@ void handle_key_press(void) {
 }
 
 void check_collisions(void) {
-    int pos_y = conf.font_size * 2 + 10;
-    for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
-        if (hover_info.block) break;
-        block_update_collisions((Vector2){ 10, pos_y }, &sidebar[i]);
-        pos_y += conf.font_size + 10;
-    }
-
-    for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
-        if (hover_info.block) break;
-        Block* block = &sprite_code[i];
-        Vector2 pos = block->pos;
-        do {
+    if (hover_info.sidebar) {
+        int pos_y = conf.font_size * 2 + 10;
+        for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
             if (hover_info.block) break;
-            block_update_collisions(pos, block);
-            block = block->next;
-            pos.y += conf.font_size;
-        } while (block);
+            block_update_collisions((Vector2){ 10, pos_y }, &sidebar[i]);
+            pos_y += conf.font_size + 10;
+        }
+    } else {
+        for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
+            if (hover_info.block) break;
+            Block* block = &sprite_code[i];
+            Vector2 pos = block->pos;
+            do {
+                if (hover_info.block) break;
+                block_update_collisions(pos, block);
+                pos.y += block->ms.size.y;
+                block = block->next;
+            } while (block);
+        }
     }
 }
 
@@ -641,6 +795,11 @@ void setup(void) {
     block_add_string_input(move_steps, "");
     block_add_text(move_steps, "pixels");
 
+    int sc_plus = block_register("plus", (Color) { 0x00, 0xcc, 0x77, 0xFF });
+    block_add_string_input(sc_plus, "9");
+    block_add_text(sc_plus, "+");
+    block_add_string_input(sc_plus, "10");
+
     sidebar = vector_create();
     sprite_code = vector_create();
     for (vec_size_t i = 0; i < vector_size(registered_blocks); i++) {
@@ -661,7 +820,7 @@ int main(void) {
     InitWindow(800, 600, "Scrap");
     SetTargetFPS(60);
     EnableEventWaiting();
-    SetWindowState(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
+    SetWindowState(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT);
 
     setup();
 
@@ -669,6 +828,7 @@ int main(void) {
         hover_info.sidebar = GetMouseX() < conf.side_bar_size && GetMouseY() > conf.font_size * 2;
         hover_info.block = NULL;
         hover_info.argument = NULL;
+        hover_info.prev_argument = NULL;
 
         check_collisions();
 
@@ -689,6 +849,28 @@ int main(void) {
 
         draw_top_buttons(sw);
 
+#ifdef DEBUG
+        DrawTextEx(
+            font_cond, 
+            TextFormat(
+                "Block: %p\nArgument: %p\nPrev argument: %p\nSelect block: %p\nSelect arg: %p\nSidebar: %d", 
+                hover_info.block, 
+                hover_info.argument, 
+                hover_info.prev_argument,
+                hover_info.select_block,
+                hover_info.select_argument, 
+                hover_info.sidebar
+            ), 
+            (Vector2){ 
+                conf.side_bar_size + 5, 
+                conf.font_size * 2 + 5
+            }, 
+            conf.font_size * 0.5,
+            0.0, 
+            GRAY
+        );
+#endif
+
         BeginScissorMode(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2);
             DrawRectangle(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2, (Color){ 0, 0, 0, 0x40 });
 
@@ -708,26 +890,6 @@ int main(void) {
 
         BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
             draw_block_chain(&mouse_block);
-#ifdef DEBUG
-            DrawTextEx(
-                font_cond, 
-                TextFormat(
-                    "Block: %p\nArgument: %p\nSelect block: %p\nSelect arg: %p\nSidebar: %d", 
-                    hover_info.block, 
-                    hover_info.argument, 
-                    hover_info.select_block,
-                    hover_info.select_argument, 
-                    hover_info.sidebar
-                ), 
-                (Vector2){ 
-                    conf.side_bar_size + 5, 
-                    conf.font_size * 2 + 5
-                }, 
-                conf.font_size * 0.5,
-                0.0, 
-                GRAY
-            );
-#endif
         EndScissorMode();
 
         DrawTextEx(font, "Scrap", (Vector2){ 5, conf.font_size * 0.1 }, conf.font_size * 0.8, 0.0, WHITE);
