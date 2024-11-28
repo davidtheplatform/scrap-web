@@ -57,9 +57,16 @@ typedef struct {
     BlockInputData data;
 } BlockInput;
 
+typedef enum {
+    BLOCKTYPE_NORMAL,
+    BLOCKTYPE_CONTROL,
+    BLOCKTYPE_END,
+} BlockType;
+
 typedef struct {
     char* id;
     Color color;
+    BlockType type;
     BlockInput* inputs;
 } Blockdef;
 
@@ -89,6 +96,12 @@ typedef struct {
 
 typedef struct {
     Vector2 pos;
+    Block* block;
+} DrawStack;
+
+typedef struct {
+    Vector2 pos;
+    DrawStack* draw_stack;
     Block* blocks;
 } BlockChain;
 
@@ -269,23 +282,12 @@ void free_block(Block* block) {
     }
 }
 
-/*void free_block_next(Block* block) {
-    printf("Free next blocks\n");
-    Block* cur = block->next;
-
-    while (cur) {
-        Block* next = cur->next;
-        free_block(cur);
-        free(cur);
-        cur = next;
-    }
-}*/
-
 BlockChain new_blockchain() {
     printf("New blockchain\n");
     BlockChain chain;
     chain.pos = (Vector2) {0};
     chain.blocks = vector_create();
+    chain.draw_stack = vector_create();
 
     return chain;
 }
@@ -308,10 +310,12 @@ void blockchain_clear_blocks(BlockChain* chain) {
     vector_clear(chain->blocks);
 }
 
-void blockchain_join(BlockChain* dst, BlockChain* src) {
+void blockchain_insert(BlockChain* dst, BlockChain* src, vec_size_t pos) {
+    assert(pos < vector_size(dst->blocks));
+
     vector_reserve(&dst->blocks, vector_size(dst->blocks) + vector_size(src->blocks));
-    for (vec_size_t i = 0; i < vector_size(src->blocks); i++) {
-        vector_add(&dst->blocks, src->blocks[i]);
+    for (ssize_t i = (ssize_t)vector_size(src->blocks) - 1; i >= 0; i--) {
+        vector_insert(&dst->blocks, pos + 1, src->blocks[i]);
     }
     blockchain_update_parent_links(dst);
     vector_clear(src->blocks);
@@ -367,10 +371,11 @@ void argument_set_text(BlockArgument* block_arg, char* text) {
 }
 
 // registered_blocks should be initialized before calling this
-int block_register(char* id, Color color) {
+int block_register(char* id, BlockType type, Color color) {
     Blockdef* block = vector_add_dst(&registered_blocks);
     block->id = id;
     block->color = color;
+    block->type = type;
     block->inputs = vector_create();
 
     return vector_size(registered_blocks) - 1;
@@ -519,9 +524,7 @@ void draw_block(Vector2 position, Block* block) {
     block_size.height = block->ms.size.y;
 
     DrawRectangleRec(block_size, ColorBrightness(color, collision ? 0.3 : 0.0));
-    //DrawRectangleRounded(block_size, 0.4, 8, ColorBrightness(color, collision ? 0.3 : 0.0));
     DrawRectangleLinesEx(block_size, BLOCK_LINE_SIZE, ColorBrightness(color, collision ? 0.5 : -0.2));
-    //DrawRectangleRoundedLines(block_size, 0.4, 8, BLOCK_LINE_SIZE, ColorBrightness(color, collision ? 0.5 : -0.2));
     cursor.x += BLOCK_PADDING;
 
     int arg_id = 0;
@@ -625,10 +628,58 @@ void draw_block(Vector2 position, Block* block) {
 #endif
 }
 
+void blockchain_check_collisions(BlockChain* chain) {
+    int stack_amount = 0;
+    hover_info.blockchain = chain;
+    Vector2 pos = hover_info.blockchain->pos;
+    for (vec_size_t i = 0; i < vector_size(hover_info.blockchain->blocks); i++) {
+        if (hover_info.block) break;
+        hover_info.blockchain_index = i;
+
+        Blockdef blockdef = registered_blocks[chain->blocks[i].id];
+        if (blockdef.type == BLOCKTYPE_END && stack_amount > 0) {
+            pos.x -= 10;
+            stack_amount--;
+        }
+
+        block_update_collisions(pos, &hover_info.blockchain->blocks[i]);
+
+        if (blockdef.type == BLOCKTYPE_CONTROL) {
+            pos.x += 10;
+            stack_amount++;
+        }
+        pos.y += hover_info.blockchain->blocks[i].ms.size.y;
+    }
+}
+
 void draw_block_chain(BlockChain* chain) {
+    vector_clear(chain->draw_stack);
+
     Vector2 pos = chain->pos;
     for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
+        Blockdef blockdef = registered_blocks[chain->blocks[i].id];
+        if (blockdef.type == BLOCKTYPE_END && vector_size(chain->draw_stack) > 0) {
+            pos.x -= 10;
+            DrawStack prev_block = chain->draw_stack[vector_size(chain->draw_stack) - 1];
+            Blockdef prev_blockdef = registered_blocks[prev_block.block->id];
+
+            Rectangle rect;
+            rect.x = prev_block.pos.x;
+            rect.y = prev_block.pos.y + prev_block.block->ms.size.y;
+            rect.width = 10;
+            rect.height = pos.y + chain->blocks[i].ms.size.y - (prev_block.pos.y + prev_block.block->ms.size.y);
+            DrawRectangleRec(rect, prev_blockdef.color);
+            DrawRectangleLinesEx(rect, BLOCK_LINE_SIZE, ColorBrightness(prev_blockdef.color, -0.2));
+            vector_pop(chain->draw_stack);
+        }
         draw_block(pos, &chain->blocks[i]);
+        if (blockdef.type == BLOCKTYPE_CONTROL) {
+            DrawStack stack_item;
+            stack_item.pos = pos;
+            stack_item.block = &chain->blocks[i];
+            vector_add(&chain->draw_stack, stack_item);
+            pos.x += 10;
+        }
         pos.y += chain->blocks[i].ms.size.y;
     }
 }
@@ -708,17 +759,16 @@ void handle_mouse_click(void) {
             printf("Attach to argument\n");
             if (vector_size(mouse_blockchain.blocks) > 1) return;
             mouse_blockchain.blocks[0].parent = hover_info.block;
-            argument_set_block(hover_info.argument, copy_block(&mouse_blockchain.blocks[0]));
-            blockchain_clear_blocks(&mouse_blockchain);
+            argument_set_block(hover_info.argument, mouse_blockchain.blocks[0]);
+            vector_clear(mouse_blockchain.blocks);
         } else if (
             hover_info.block && 
             hover_info.blockchain && 
-            hover_info.blockchain_index == vector_size(hover_info.blockchain->blocks) - 1 && 
             hover_info.block->parent == NULL
         ) {
             // Attach block
             printf("Attach block\n");
-            blockchain_join(hover_info.blockchain, &mouse_blockchain);
+            blockchain_insert(hover_info.blockchain, &mouse_blockchain, hover_info.blockchain_index);
         } else {
             // Put block
             printf("Put block\n");
@@ -791,15 +841,34 @@ void check_collisions(void) {
     } else {
         for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
             if (hover_info.block) break;
-            hover_info.blockchain = &sprite_code[i];
-            Vector2 pos = hover_info.blockchain->pos;
-            for (vec_size_t j = 0; j < vector_size(hover_info.blockchain->blocks); j++) {
-                if (hover_info.block) break;
-                hover_info.blockchain_index = j;
-                block_update_collisions(pos, &hover_info.blockchain->blocks[j]);
-                pos.y += hover_info.blockchain->blocks[j].ms.size.y;
-            }
+            blockchain_check_collisions(&sprite_code[i]);
         }
+    }
+}
+
+void sanitize_block(Block* block) {
+    BlockArgument* block_args = block->arguments;
+    for (vec_size_t i = 0; i < vector_size(block_args); i++) {
+        if (block_args[i].type != ARGUMENT_BLOCK) continue;
+        if (block_args[i].data.block.parent != block) {
+            printf("ERROR: Block %p detached from parent %p! (Got %p)\n", &block_args[i].data.block, block, block_args[i].data.block.parent);
+            assert(false);
+            return;
+        }
+        sanitize_block(&block_args[i].data.block);
+    }
+}
+
+void sanitize_links(void) {
+    for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
+        Block* blocks = sprite_code[i].blocks;
+        for (vec_size_t j = 0; j < vector_size(blocks); j++) {
+            sanitize_block(&blocks[j]);
+        }
+    }
+
+    for (vec_size_t i = 0; i < vector_size(mouse_blockchain.blocks); i++) {
+        sanitize_block(&mouse_blockchain.blocks[i]);
     }
 }
 
@@ -822,24 +891,43 @@ void setup(void) {
 
     registered_blocks = vector_create();
 
-    int on_start = block_register("on_start", (Color) { 0xff, 0x77, 0x00, 0xFF });
+    int on_start = block_register("on_start", BLOCKTYPE_NORMAL, (Color) { 0xff, 0x77, 0x00, 0xFF });
     block_add_text(on_start, "When");
     block_add_image(on_start, run_tex);
     block_add_text(on_start, "clicked");
 
-    int sc_print = block_register("print", (Color) { 0x00, 0xaa, 0x44, 0xFF });
+    int sc_print = block_register("print", BLOCKTYPE_NORMAL, (Color) { 0x00, 0xaa, 0x44, 0xFF });
     block_add_text(sc_print, "Print");
     block_add_string_input(sc_print, "Привет, мусороид!");
 
-    int move_steps = block_register("move_steps", (Color) { 0x00, 0x77, 0xff, 0xFF });
+    int move_steps = block_register("move_steps", BLOCKTYPE_NORMAL, (Color) { 0x00, 0x77, 0xff, 0xFF });
     block_add_text(move_steps, "Move");
     block_add_string_input(move_steps, "");
     block_add_text(move_steps, "pixels");
 
-    int sc_plus = block_register("plus", (Color) { 0x00, 0xcc, 0x77, 0xFF });
+    int sc_x = block_register("x_pos", BLOCKTYPE_NORMAL, (Color) { 0x00, 0x77, 0xff, 0xFF });
+    block_add_text(sc_x, "X");
+
+    int sc_loop = block_register("loop", BLOCKTYPE_CONTROL, (Color) { 0xff, 0x99, 0x00, 0xff });
+    block_add_text(sc_loop, "Loop");
+
+    int sc_if = block_register("if", BLOCKTYPE_CONTROL, (Color) { 0xff, 0x99, 0x00, 0xff });
+    block_add_text(sc_if, "If");
+    block_add_string_input(sc_if, "");
+    block_add_text(sc_if, ", then");
+
+    int sc_end = block_register("end", BLOCKTYPE_END, (Color) { 0x77, 0x77, 0x77, 0xff });
+    block_add_text(sc_end, "End");
+
+    int sc_plus = block_register("plus", BLOCKTYPE_NORMAL, (Color) { 0x00, 0xcc, 0x77, 0xFF });
     block_add_string_input(sc_plus, "9");
     block_add_text(sc_plus, "+");
     block_add_string_input(sc_plus, "10");
+
+    int sc_less = block_register("less", BLOCKTYPE_NORMAL, (Color) { 0x00, 0xcc, 0x77, 0xFF });
+    block_add_string_input(sc_less, "");
+    block_add_text(sc_less, "<");
+    block_add_string_input(sc_less, "");
 
     mouse_blockchain = new_blockchain();
     sprite_code = vector_create();
@@ -862,7 +950,7 @@ int main(void) {
 
     InitWindow(800, 600, "Scrap");
     SetTargetFPS(60);
-    EnableEventWaiting();
+    //EnableEventWaiting();
     SetWindowState(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT);
 
     setup();
@@ -879,6 +967,11 @@ int main(void) {
 
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             handle_mouse_click();
+#ifdef DEBUG
+            // This will traverse through all blocks in codebase, which is expensive in large codebase.
+            // Ideally all functions should not be broken in the first place. This helps with debugging invalid states
+            sanitize_links();
+#endif
         } else {
             handle_key_press();
         }
