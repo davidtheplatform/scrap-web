@@ -2,3 +2,4 @@ tags
 *.o
 scrap
 profile.json
+coredump
