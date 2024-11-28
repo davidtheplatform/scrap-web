@@ -111,6 +111,8 @@ void _vector_remove(vector vec_addr, vec_type_t type_size, vec_size_t pos);
 
 void vector_pop(vector vec);
 
+void vector_clear(vector vec);
+
 void _vector_reserve(vector* vec_addr, vec_type_t type_size, vec_size_t capacity);
 
 vector _vector_copy(vector vec, vec_type_t type_size);

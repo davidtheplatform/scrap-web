@@ -1,6 +1,8 @@
 // TODO:
 // - Better collision resolution
 // - C-Blocks
+// - Swap blocks inside arguments?
+// - Dropdown lists
 
 #include "raylib.h"
 #include "vec.h"
@@ -67,8 +69,6 @@ typedef struct Block {
     void* arguments; // arguments are of void type because of C. That makes the whole codebase a bit garbled, though :P
     Measurement ms;
     struct Block* parent;
-    struct Block* next;
-    struct Block* prev;
 } Block;
 
 typedef enum {
@@ -88,7 +88,14 @@ typedef struct {
 } BlockArgument;
 
 typedef struct {
+    Vector2 pos;
+    Block* blocks;
+} BlockChain;
+
+typedef struct {
     bool sidebar;
+    BlockChain* blockchain;
+    vec_size_t blockchain_index;
     Block* block;
     BlockArgument* argument;
     BlockArgument* prev_argument;
@@ -107,9 +114,9 @@ Font font;
 Font font_cond;
 
 Blockdef* registered_blocks;
-Block mouse_block = {0};
-Block* sidebar;
-Block* sprite_code;
+Block* sidebar; // Vector that contains block prototypes
+BlockChain mouse_blockchain = {0};
+BlockChain* sprite_code; // List of block chains
 HoverInfo hover_info = {0};
 
 void block_update_parent_links(Block* block) {
@@ -122,10 +129,10 @@ void block_update_parent_links(Block* block) {
 
 void update_root_nodes(void) {
     for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
-        if (sprite_code[i].next) {
-            sprite_code[i].next->prev = &sprite_code[i];
-        }
-        block_update_parent_links(&sprite_code[i]);
+        //if (sprite_code[i].next) {
+        //    sprite_code[i].next->prev = &sprite_code[i];
+        //}
+        block_update_parent_links(&sprite_code[i].blocks[0]);
     }
 }
 
@@ -189,12 +196,10 @@ Block new_block(int id) {
     block.pos = (Vector2) {0};
     block.ms = (Measurement) {0};
     block.arguments = id == -1 ? NULL : vector_create();
-    block.next = NULL;
-    block.prev = NULL;
     block.parent = NULL;
 
-    printf("New block\n\tId: %d\n", id);
     if (id != -1) {
+        printf("New block\n\tId: %d\n", id);
         Blockdef blockdef = registered_blocks[block.id];
         for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
             if (blockdef.inputs[i].type != INPUT_STRING) continue;
@@ -264,7 +269,7 @@ void free_block(Block* block) {
     }
 }
 
-void free_block_next(Block* block) {
+/*void free_block_next(Block* block) {
     printf("Free next blocks\n");
     Block* cur = block->next;
 
@@ -274,6 +279,59 @@ void free_block_next(Block* block) {
         free(cur);
         cur = next;
     }
+}*/
+
+BlockChain new_blockchain() {
+    printf("New blockchain\n");
+    BlockChain chain;
+    chain.pos = (Vector2) {0};
+    chain.blocks = vector_create();
+
+    return chain;
+}
+
+void blockchain_update_parent_links(BlockChain* chain) {
+    for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
+        block_update_parent_links(&chain->blocks[i]);
+    }
+}
+
+void blockchain_add_block(BlockChain* chain, Block block) {
+    vector_add(&chain->blocks, block);
+    blockchain_update_parent_links(chain);
+}
+
+void blockchain_clear_blocks(BlockChain* chain) {
+    for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
+        free_block(&chain->blocks[i]);
+    }
+    vector_clear(chain->blocks);
+}
+
+void blockchain_join(BlockChain* dst, BlockChain* src) {
+    vector_reserve(&dst->blocks, vector_size(dst->blocks) + vector_size(src->blocks));
+    for (vec_size_t i = 0; i < vector_size(src->blocks); i++) {
+        vector_add(&dst->blocks, src->blocks[i]);
+    }
+    blockchain_update_parent_links(dst);
+    vector_clear(src->blocks);
+}
+
+void blockchain_detach(BlockChain* dst, BlockChain* src, vec_size_t pos) {
+    assert(pos < vector_size(src->blocks));
+
+    vector_reserve(&dst->blocks, vector_size(dst->blocks) + vector_size(src->blocks) - pos);
+    for (vec_size_t i = pos; i < vector_size(src->blocks); i++) {
+        vector_add(&dst->blocks, src->blocks[i]);
+    }
+    blockchain_update_parent_links(dst);
+    vector_erase(src->blocks, pos, vector_size(src->blocks) - pos);
+}
+
+void blockchain_free(BlockChain* chain) {
+    printf("Free blockchain\n");
+    blockchain_clear_blocks(chain);
+    vector_free(chain->blocks);
 }
 
 void argument_set_block(BlockArgument* block_arg, Block block) {
@@ -461,7 +519,9 @@ void draw_block(Vector2 position, Block* block) {
     block_size.height = block->ms.size.y;
 
     DrawRectangleRec(block_size, ColorBrightness(color, collision ? 0.3 : 0.0));
+    //DrawRectangleRounded(block_size, 0.4, 8, ColorBrightness(color, collision ? 0.3 : 0.0));
     DrawRectangleLinesEx(block_size, BLOCK_LINE_SIZE, ColorBrightness(color, collision ? 0.5 : -0.2));
+    //DrawRectangleRoundedLines(block_size, 0.4, 8, BLOCK_LINE_SIZE, ColorBrightness(color, collision ? 0.5 : -0.2));
     cursor.x += BLOCK_PADDING;
 
     int arg_id = 0;
@@ -558,22 +618,19 @@ void draw_block(Vector2 position, Block* block) {
     }
 
 #ifdef DEBUG
+    //DrawTextEx(font_cond, TextFormat("Prev: %p", block->prev), (Vector2) { cursor.x + 10, cursor.y + block_size.height * 0.5 - conf.font_size * 0.5 }, conf.font_size * 0.5, 0.0, WHITE);
     if (!block->parent) {
-        DrawTextEx(font_cond, TextFormat("Prev: %p", block->prev), (Vector2) { cursor.x + 10, cursor.y }, conf.font_size * 0.5, 0.0, WHITE);
-        DrawTextEx(font_cond, TextFormat("%p", block), (Vector2) { cursor.x + 10, cursor.y + block_size.height - conf.font_size * 0.5 }, conf.font_size * 0.5, 0.0, WHITE);
-    } else {
-        //DrawTextEx(font_cond, TextFormat("Parent: %p", block->parent), (Vector2) { cursor.x + 10, cursor.y }, conf.font_size * 0.5, 0.0, GRAY);
+        DrawTextEx(font_cond, TextFormat("%p", block), (Vector2) { cursor.x + 10, cursor.y + block_size.height * 0.5 - conf.font_size * 0.25 }, conf.font_size * 0.5, 0.0, WHITE);
     }
 #endif
 }
 
-void draw_block_chain(Block* block) {
-    Vector2 pos = block->pos;
-    do {
-        draw_block(pos, block);
-        pos.y += block->ms.size.y;
-        block = block->next;
-    } while (block);
+void draw_block_chain(BlockChain* chain) {
+    Vector2 pos = chain->pos;
+    for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
+        draw_block(pos, &chain->blocks[i]);
+        pos.y += chain->blocks[i].ms.size.y;
+    }
 }
 
 Vector2 draw_button(Vector2 position, char* text, float text_scale, int padding, int margin, bool selected) {
@@ -586,7 +643,7 @@ Vector2 draw_button(Vector2 position, char* text, float text_scale, int padding,
         .height = conf.font_size,
     };
 
-    if (selected || (CheckCollisionPointRec(GetMousePosition(), rect) && mouse_block.id == -1)) {
+    if (selected || (CheckCollisionPointRec(GetMousePosition(), rect) && vector_size(mouse_blockchain.blocks) == 0)) {
         Color select_color = selected ? (Color){ 0xDD, 0xDD, 0xDD, 0xDD } :
                                         (Color){ 0x40, 0x40, 0x40, 0xFF };
         DrawRectangleRec(rect, select_color);
@@ -611,32 +668,25 @@ void draw_top_buttons(int sw) {
     DrawTextureEx(run_tex, run_pos, 0, (float)conf.font_size / (float)run_tex.width, WHITE);
 }
 
-void set_default_config(void) {
-    conf.font_size = 28;
-    conf.side_bar_size = 300;
-    conf.font_symbols = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?";
-}
-
 void handle_mouse_click(void) {
+    bool mouse_empty = vector_size(mouse_blockchain.blocks) == 0;
+
     if (hover_info.sidebar) {
         if (hover_info.select_argument) {
             hover_info.select_argument = NULL;
             return;
         }
-        if (mouse_block.id == -1 && hover_info.block) {
+        if (mouse_empty && hover_info.block) {
             // Pickup block
-            mouse_block = copy_block(hover_info.block);
-        } else {
-            if (mouse_block.id == -1) return; // Redundant, but saves some allocations
+            blockchain_add_block(&mouse_blockchain, new_block(hover_info.block->id));
+        } else if (!mouse_empty) {
             // Drop block
-            free_block_next(&mouse_block);
-            free_block(&mouse_block);
-            mouse_block = new_block(-1);
+            blockchain_clear_blocks(&mouse_blockchain);
         }
         return;
     }
 
-    if (mouse_block.id == -1) {
+    if (mouse_empty) {
         if (hover_info.block != hover_info.select_block) {
             hover_info.select_block = hover_info.block;
         }
@@ -651,61 +701,47 @@ void handle_mouse_click(void) {
         }
     }
 
-    if (mouse_block.id != -1) {
-        mouse_block.pos = GetMousePosition();
+    if (!mouse_empty) {
+        mouse_blockchain.pos = GetMousePosition();
         if (hover_info.argument) {
             // Attach to argument
-            if (mouse_block.next) return;
-            mouse_block.parent = hover_info.block;
-            argument_set_block(hover_info.argument, mouse_block);
-        } else if (hover_info.block && hover_info.block->next == NULL && hover_info.block->parent == NULL) {
+            printf("Attach to argument\n");
+            if (vector_size(mouse_blockchain.blocks) > 1) return;
+            mouse_blockchain.blocks[0].parent = hover_info.block;
+            argument_set_block(hover_info.argument, copy_block(&mouse_blockchain.blocks[0]));
+            blockchain_clear_blocks(&mouse_blockchain);
+        } else if (
+            hover_info.block && 
+            hover_info.blockchain && 
+            hover_info.blockchain_index == vector_size(hover_info.blockchain->blocks) - 1 && 
+            hover_info.block->parent == NULL
+        ) {
             // Attach block
-            printf("malloc\n");
-            Block* next = malloc(sizeof(mouse_block));
-            *next = mouse_block;
-            next->prev = hover_info.block;
-            hover_info.block->next = next;
-            if (next->next) {
-                // Properly link next block as its previous link changes
-                next->next->prev = next;
-            }
-            block_update_parent_links(next);
+            printf("Attach block\n");
+            blockchain_join(hover_info.blockchain, &mouse_blockchain);
         } else {
             // Put block
-            vector_add(&sprite_code, mouse_block);
-            update_root_nodes();
+            printf("Put block\n");
+            vector_add(&sprite_code, mouse_blockchain);
+            mouse_blockchain = new_blockchain();
         }
-        mouse_block = new_block(-1);
     } else if (hover_info.block) {
-        if (hover_info.block->prev) {
-            // Detach block
-            hover_info.block->prev->next = NULL;
-            hover_info.block->prev = NULL;
-            if (!IsKeyDown(KEY_BACKSPACE)) {
-                mouse_block = *hover_info.block;
-            } else {
-                free_block_next(hover_info.block);
-                free_block(hover_info.block);
-            }
-            printf("free\n");
-            free(hover_info.block);
-        } else if (hover_info.block->parent) {
+        if (hover_info.block->parent) {
             // Detach argument
+            printf("Detach argument\n");
             assert(hover_info.prev_argument != NULL);
 
-            mouse_block = *hover_info.block;
-            mouse_block.parent = NULL;
+            blockchain_add_block(&mouse_blockchain, *hover_info.block);
+            mouse_blockchain.blocks[0].parent = NULL;
             argument_set_text(hover_info.prev_argument, "");
-        } else {
-            // Get root block
-            if (!IsKeyDown(KEY_BACKSPACE)) {
-                mouse_block = *hover_info.block;
-            } else {
-                free_block_next(hover_info.block);
-                free_block(hover_info.block);
+        } else if (hover_info.blockchain) {
+            // Detach block
+            printf("Detach block\n");
+            blockchain_detach(&mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
+            if (hover_info.blockchain_index == 0) {
+                blockchain_free(hover_info.blockchain);
+                vector_remove(sprite_code, hover_info.blockchain - sprite_code);
             }
-            vector_remove(sprite_code, hover_info.block - sprite_code); // Evil pointer arithmetic >:)
-            update_root_nodes();
         }
     }
 }
@@ -755,16 +791,22 @@ void check_collisions(void) {
     } else {
         for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
             if (hover_info.block) break;
-            Block* block = &sprite_code[i];
-            Vector2 pos = block->pos;
-            do {
+            hover_info.blockchain = &sprite_code[i];
+            Vector2 pos = hover_info.blockchain->pos;
+            for (vec_size_t j = 0; j < vector_size(hover_info.blockchain->blocks); j++) {
                 if (hover_info.block) break;
-                block_update_collisions(pos, block);
-                pos.y += block->ms.size.y;
-                block = block->next;
-            } while (block);
+                hover_info.blockchain_index = j;
+                block_update_collisions(pos, &hover_info.blockchain->blocks[j]);
+                pos.y += hover_info.blockchain->blocks[j].ms.size.y;
+            }
         }
     }
+}
+
+void set_default_config(void) {
+    conf.font_size = 32;
+    conf.side_bar_size = 300;
+    conf.font_symbols = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?";
 }
 
 void setup(void) {
@@ -778,7 +820,6 @@ void setup(void) {
     SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_cond.texture, TEXTURE_FILTER_BILINEAR);
 
-    mouse_block = new_block(-1);
     registered_blocks = vector_create();
 
     int on_start = block_register("on_start", (Color) { 0xff, 0x77, 0x00, 0xFF });
@@ -800,8 +841,10 @@ void setup(void) {
     block_add_text(sc_plus, "+");
     block_add_string_input(sc_plus, "10");
 
-    sidebar = vector_create();
+    mouse_blockchain = new_blockchain();
     sprite_code = vector_create();
+
+    sidebar = vector_create();
     for (vec_size_t i = 0; i < vector_size(registered_blocks); i++) {
         vector_add(&sidebar, new_block(i));
     }
@@ -829,6 +872,8 @@ int main(void) {
         hover_info.block = NULL;
         hover_info.argument = NULL;
         hover_info.prev_argument = NULL;
+        hover_info.blockchain = NULL;
+        hover_info.blockchain_index = -1;
 
         check_collisions();
 
@@ -837,7 +882,7 @@ int main(void) {
         } else {
             handle_key_press();
         }
-        mouse_block.pos = GetMousePosition();
+        mouse_blockchain.pos = GetMousePosition();
 
         BeginDrawing();
         ClearBackground(GetColor(0x202020ff));
@@ -853,8 +898,11 @@ int main(void) {
         DrawTextEx(
             font_cond, 
             TextFormat(
-                "Block: %p\nArgument: %p\nPrev argument: %p\nSelect block: %p\nSelect arg: %p\nSidebar: %d", 
+                "BlockChain: %p, Ind: %d\nBlock: %p, Parent: %p\nArgument: %p\nPrev argument: %p\nSelect block: %p\nSelect arg: %p\nSidebar: %d", 
+                hover_info.blockchain,
+                hover_info.blockchain_index,
                 hover_info.block, 
+                hover_info.block ? hover_info.block->parent : NULL,
                 hover_info.argument, 
                 hover_info.prev_argument,
                 hover_info.select_block,
@@ -889,7 +937,7 @@ int main(void) {
         EndScissorMode();
 
         BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
-            draw_block_chain(&mouse_block);
+            draw_block_chain(&mouse_blockchain);
         EndScissorMode();
 
         DrawTextEx(font, "Scrap", (Vector2){ 5, conf.font_size * 0.1 }, conf.font_size * 0.8, 0.0, WHITE);
