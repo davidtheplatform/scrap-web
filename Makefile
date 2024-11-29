@@ -1,5 +1,5 @@
 CC := gcc
-CFLAGS := -Wall -Wextra -O0 -ggdb -DDEBUG
+CFLAGS := -Wall -Wextra -O0 -g -DDEBUG
 LDFLAGS := -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
 OBJFILES := vec.o scrap.o
 

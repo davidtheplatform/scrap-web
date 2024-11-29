@@ -20,6 +20,7 @@
 #define BLOCK_PADDING (5.0 * (float)conf.font_size / 32.0)
 #define BLOCK_LINE_SIZE (2.0 * (float)conf.font_size / 32.0)
 #define BLOCK_STRING_PADDING (10.0 * (float)conf.font_size / 32.0)
+#define BLOCK_CONTROL_INDENT (16.0 * (float)conf.font_size / 32.0)
 
 struct Config {
     int font_size;
@@ -140,15 +141,6 @@ void block_update_parent_links(Block* block) {
     }
 }
 
-void update_root_nodes(void) {
-    for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
-        //if (sprite_code[i].next) {
-        //    sprite_code[i].next->prev = &sprite_code[i];
-        //}
-        block_update_parent_links(&sprite_code[i].blocks[0]);
-    }
-}
-
 void update_measurements(Block* block) {
     if (block->id == -1) return;
     Blockdef blockdef = registered_blocks[block->id];
@@ -233,6 +225,7 @@ Block new_block(int id) {
     return block;
 }
 
+// Broken at the moment, not sure why
 Block copy_block(Block* block) {
     printf("Copy block id: %d\n", block->id);
     if (!block->arguments) return *block;
@@ -336,6 +329,7 @@ void blockchain_free(BlockChain* chain) {
     printf("Free blockchain\n");
     blockchain_clear_blocks(chain);
     vector_free(chain->blocks);
+    vector_free(chain->draw_stack);
 }
 
 void argument_set_block(BlockArgument* block_arg, Block block) {
@@ -638,14 +632,14 @@ void blockchain_check_collisions(BlockChain* chain) {
 
         Blockdef blockdef = registered_blocks[chain->blocks[i].id];
         if (blockdef.type == BLOCKTYPE_END && stack_amount > 0) {
-            pos.x -= 10;
+            pos.x -= BLOCK_CONTROL_INDENT;
             stack_amount--;
         }
 
         block_update_collisions(pos, &hover_info.blockchain->blocks[i]);
 
         if (blockdef.type == BLOCKTYPE_CONTROL) {
-            pos.x += 10;
+            pos.x += BLOCK_CONTROL_INDENT;
             stack_amount++;
         }
         pos.y += hover_info.blockchain->blocks[i].ms.size.y;
@@ -659,14 +653,14 @@ void draw_block_chain(BlockChain* chain) {
     for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
         Blockdef blockdef = registered_blocks[chain->blocks[i].id];
         if (blockdef.type == BLOCKTYPE_END && vector_size(chain->draw_stack) > 0) {
-            pos.x -= 10;
+            pos.x -= BLOCK_CONTROL_INDENT;
             DrawStack prev_block = chain->draw_stack[vector_size(chain->draw_stack) - 1];
             Blockdef prev_blockdef = registered_blocks[prev_block.block->id];
 
             Rectangle rect;
             rect.x = prev_block.pos.x;
             rect.y = prev_block.pos.y + prev_block.block->ms.size.y;
-            rect.width = 10;
+            rect.width = BLOCK_CONTROL_INDENT;
             rect.height = pos.y + chain->blocks[i].ms.size.y - (prev_block.pos.y + prev_block.block->ms.size.y);
             DrawRectangleRec(rect, prev_blockdef.color);
             DrawRectangleLinesEx(rect, BLOCK_LINE_SIZE, ColorBrightness(prev_blockdef.color, -0.2));
@@ -678,7 +672,7 @@ void draw_block_chain(BlockChain* chain) {
             stack_item.pos = pos;
             stack_item.block = &chain->blocks[i];
             vector_add(&chain->draw_stack, stack_item);
-            pos.x += 10;
+            pos.x += BLOCK_CONTROL_INDENT;
         }
         pos.y += chain->blocks[i].ms.size.y;
     }
@@ -769,6 +763,8 @@ void handle_mouse_click(void) {
             // Attach block
             printf("Attach block\n");
             blockchain_insert(hover_info.blockchain, &mouse_blockchain, hover_info.blockchain_index);
+            // Update block link to make valgrind happy
+            hover_info.block = &hover_info.blockchain->blocks[hover_info.blockchain_index];
         } else {
             // Put block
             printf("Put block\n");
@@ -791,6 +787,7 @@ void handle_mouse_click(void) {
             if (hover_info.blockchain_index == 0) {
                 blockchain_free(hover_info.blockchain);
                 vector_remove(sprite_code, hover_info.blockchain - sprite_code);
+                hover_info.block = NULL;
             }
         }
     }
@@ -886,6 +883,7 @@ void setup(void) {
     int *codepoints = LoadCodepoints(conf.font_symbols, &codepoints_count);
     font = LoadFontEx(DATA_PATH "nk57.otf", conf.font_size, codepoints, codepoints_count);
     font_cond = LoadFontEx(DATA_PATH "nk57-cond.otf", conf.font_size, codepoints, codepoints_count);
+    UnloadCodepoints(codepoints);
     SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_cond.texture, TEXTURE_FILTER_BILINEAR);
 
@@ -909,7 +907,7 @@ void setup(void) {
     block_add_text(sc_x, "X");
 
     int sc_loop = block_register("loop", BLOCKTYPE_CONTROL, (Color) { 0xff, 0x99, 0x00, 0xff });
-    block_add_text(sc_loop, "Loop");
+    block_add_text(sc_loop, "Loop forever");
 
     int sc_if = block_register("if", BLOCKTYPE_CONTROL, (Color) { 0xff, 0x99, 0x00, 0xff });
     block_add_text(sc_if, "If");
@@ -939,7 +937,7 @@ void setup(void) {
 }
 
 void free_registered_blocks(void) {
-    for (vec_size_t i = 0; i < vector_size(registered_blocks); i++) {
+    for (ssize_t i = (ssize_t)vector_size(registered_blocks) - 1; i >= 0 ; i--) {
         block_unregister(i);
     }
     vector_free(registered_blocks);
@@ -948,10 +946,11 @@ void free_registered_blocks(void) {
 int main(void) {
     set_default_config();
 
+    SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(800, 600, "Scrap");
     SetTargetFPS(60);
-    //EnableEventWaiting();
-    SetWindowState(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT);
+    EnableEventWaiting();
+    SetWindowState(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
 
     setup();
 
@@ -991,16 +990,17 @@ int main(void) {
         DrawTextEx(
             font_cond, 
             TextFormat(
-                "BlockChain: %p, Ind: %d\nBlock: %p, Parent: %p\nArgument: %p\nPrev argument: %p\nSelect block: %p\nSelect arg: %p\nSidebar: %d", 
+                "BlockChain: %p, Ind: %d\nBlock: %p, Parent: %p\nArgument: %p\nPrev argument: %p\nSelect block: %p\nSelect arg: %p\nSidebar: %d\nMouse: %p", 
                 hover_info.blockchain,
                 hover_info.blockchain_index,
-                hover_info.block, 
+                hover_info.block,
                 hover_info.block ? hover_info.block->parent : NULL,
                 hover_info.argument, 
                 hover_info.prev_argument,
                 hover_info.select_block,
                 hover_info.select_argument, 
-                hover_info.sidebar
+                hover_info.sidebar,
+                mouse_blockchain.blocks
             ), 
             (Vector2){ 
                 conf.side_bar_size + 5, 
@@ -1038,6 +1038,15 @@ int main(void) {
         EndDrawing();
     }
 
+    blockchain_free(&mouse_blockchain);
+    for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
+        blockchain_free(&sprite_code[i]);
+    }
+    vector_free(sprite_code);
+    for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
+        free_block(&sidebar[i]);
+    }
+    vector_free(sidebar);
     free_registered_blocks();
     CloseWindow();
 
