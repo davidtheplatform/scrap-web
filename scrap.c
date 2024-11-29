@@ -1,8 +1,8 @@
 // TODO:
 // - Better collision resolution
-// - C-Blocks
 // - Swap blocks inside arguments?
 // - Dropdown lists
+// - Movement around codebase
 
 #include "raylib.h"
 #include "vec.h"
@@ -110,6 +110,7 @@ typedef struct {
     bool sidebar;
     BlockChain* blockchain;
     vec_size_t blockchain_index;
+    int blockchain_layer;
     Block* block;
     BlockArgument* argument;
     BlockArgument* prev_argument;
@@ -317,12 +318,24 @@ void blockchain_insert(BlockChain* dst, BlockChain* src, vec_size_t pos) {
 void blockchain_detach(BlockChain* dst, BlockChain* src, vec_size_t pos) {
     assert(pos < vector_size(src->blocks));
 
+    int current_layer = hover_info.blockchain_layer;
+    int layer_size = 0;
+
     vector_reserve(&dst->blocks, vector_size(dst->blocks) + vector_size(src->blocks) - pos);
     for (vec_size_t i = pos; i < vector_size(src->blocks); i++) {
+        BlockType block_type = registered_blocks[src->blocks[i].id].type;
+        if (block_type == BLOCKTYPE_END && hover_info.blockchain_layer == current_layer && current_layer != 0) break;
         vector_add(&dst->blocks, src->blocks[i]);
+        if (block_type == BLOCKTYPE_CONTROL) {
+            current_layer++;
+        } else if (block_type == BLOCKTYPE_END) {
+            current_layer--;
+        }
+        layer_size++;
     }
     blockchain_update_parent_links(dst);
-    vector_erase(src->blocks, pos, vector_size(src->blocks) - pos);
+    vector_erase(src->blocks, pos, layer_size);
+    blockchain_update_parent_links(src);
 }
 
 void blockchain_free(BlockChain* chain) {
@@ -502,7 +515,7 @@ void block_update_collisions(Vector2 position, Block* block) {
     }
 }
 
-void draw_block(Vector2 position, Block* block) {
+void draw_block(Vector2 position, Block* block, bool force_outline) {
     if (block->id == -1) return;
 
     bool collision = hover_info.block == block;
@@ -518,7 +531,9 @@ void draw_block(Vector2 position, Block* block) {
     block_size.height = block->ms.size.y;
 
     DrawRectangleRec(block_size, ColorBrightness(color, collision ? 0.3 : 0.0));
-    DrawRectangleLinesEx(block_size, BLOCK_LINE_SIZE, ColorBrightness(color, collision ? 0.5 : -0.2));
+    if (force_outline || (blockdef.type != BLOCKTYPE_CONTROL)) {
+        DrawRectangleLinesEx(block_size, BLOCK_LINE_SIZE, ColorBrightness(color, collision ? 0.5 : -0.2));
+    }
     cursor.x += BLOCK_PADDING;
 
     int arg_id = 0;
@@ -574,7 +589,7 @@ void draw_block(Vector2 position, Block* block) {
                 block_pos.x = cursor.x;
                 block_pos.y = cursor.y + block_size.height * 0.5 - block_args[arg_id].ms.size.y * 0.5;
 
-                draw_block(block_pos, &block_args[arg_id].data.block);
+                draw_block(block_pos, &block_args[arg_id].data.block, true);
                 break;
             default:
                 assert(false && "Unimplemented argument draw");
@@ -622,25 +637,73 @@ void draw_block(Vector2 position, Block* block) {
 #endif
 }
 
+void draw_control_outline(DrawStack* block, Vector2 end_pos, Color color, bool draw_end) {
+    Vector2 block_size = block->block->ms.size;
+
+    // Draw order
+    //         1
+    // /---------------\
+    // |               | 2
+    // |     /---------/
+    // |     |    3
+    // | 4   | 8
+    // |     |    7
+    // |-----\---------\
+    // |  9            | 6
+    // \---------------/
+    //         5
+
+    /* 1 */ DrawRectangle(block->pos.x, block->pos.y, block_size.x, BLOCK_LINE_SIZE, color);
+    /* 2 */ DrawRectangle(block->pos.x + block_size.x - BLOCK_LINE_SIZE, block->pos.y, BLOCK_LINE_SIZE, block_size.y, color);
+    /* 3 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_LINE_SIZE, block->pos.y + block_size.y - BLOCK_LINE_SIZE, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_LINE_SIZE, BLOCK_LINE_SIZE, color);
+    if (draw_end) {
+        /* 4 */ DrawRectangle(block->pos.x, block->pos.y, BLOCK_LINE_SIZE, end_pos.y + conf.font_size - block->pos.y, color);
+        /* 5 */ DrawRectangle(end_pos.x, end_pos.y + conf.font_size - BLOCK_LINE_SIZE, block_size.x, BLOCK_LINE_SIZE, color);
+        /* 6 */ DrawRectangle(end_pos.x + block_size.x - BLOCK_LINE_SIZE, end_pos.y, BLOCK_LINE_SIZE, conf.font_size, color);
+        /* 7 */ DrawRectangle(end_pos.x + BLOCK_CONTROL_INDENT - BLOCK_LINE_SIZE, end_pos.y, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_LINE_SIZE, BLOCK_LINE_SIZE, color);
+    } else {
+        /* 4 */ DrawRectangle(block->pos.x, block->pos.y, BLOCK_LINE_SIZE, end_pos.y - block->pos.y, color);
+        /* 9 */ DrawRectangle(end_pos.x, end_pos.y - BLOCK_LINE_SIZE, BLOCK_CONTROL_INDENT, BLOCK_LINE_SIZE, color);
+    }
+    /* 8 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_LINE_SIZE, block->pos.y + block_size.y, BLOCK_LINE_SIZE, end_pos.y - (block->pos.y + block_size.y), color);
+}
+
 void blockchain_check_collisions(BlockChain* chain) {
-    int stack_amount = 0;
+    vector_clear(chain->draw_stack);
+
     hover_info.blockchain = chain;
+    hover_info.blockchain_layer = 0;
     Vector2 pos = hover_info.blockchain->pos;
     for (vec_size_t i = 0; i < vector_size(hover_info.blockchain->blocks); i++) {
         if (hover_info.block) break;
+        hover_info.blockchain_layer = vector_size(chain->draw_stack);
         hover_info.blockchain_index = i;
 
         Blockdef blockdef = registered_blocks[chain->blocks[i].id];
-        if (blockdef.type == BLOCKTYPE_END && stack_amount > 0) {
+        if (blockdef.type == BLOCKTYPE_END && vector_size(chain->draw_stack) > 0) {
             pos.x -= BLOCK_CONTROL_INDENT;
-            stack_amount--;
+
+            DrawStack prev_block = chain->draw_stack[vector_size(chain->draw_stack) - 1];
+            Rectangle rect;
+            rect.x = pos.x;
+            rect.y = pos.y;
+            rect.width = prev_block.block->ms.size.x;
+            rect.height = conf.font_size;
+
+            if (CheckCollisionPointRec(GetMousePosition(), rect)) {
+                hover_info.block = &hover_info.blockchain->blocks[i];
+            }
+            vector_pop(chain->draw_stack);
+        } else {
+            block_update_collisions(pos, &hover_info.blockchain->blocks[i]);
         }
 
-        block_update_collisions(pos, &hover_info.blockchain->blocks[i]);
-
         if (blockdef.type == BLOCKTYPE_CONTROL) {
+            DrawStack stack_item;
+            stack_item.pos = pos;
+            stack_item.block = &chain->blocks[i];
+            vector_add(&chain->draw_stack, stack_item);
             pos.x += BLOCK_CONTROL_INDENT;
-            stack_amount++;
         }
         pos.y += hover_info.blockchain->blocks[i].ms.size.y;
     }
@@ -661,12 +724,21 @@ void draw_block_chain(BlockChain* chain) {
             rect.x = prev_block.pos.x;
             rect.y = prev_block.pos.y + prev_block.block->ms.size.y;
             rect.width = BLOCK_CONTROL_INDENT;
-            rect.height = pos.y + chain->blocks[i].ms.size.y - (prev_block.pos.y + prev_block.block->ms.size.y);
+            rect.height = pos.y - (prev_block.pos.y + prev_block.block->ms.size.y);
             DrawRectangleRec(rect, prev_blockdef.color);
-            DrawRectangleLinesEx(rect, BLOCK_LINE_SIZE, ColorBrightness(prev_blockdef.color, -0.2));
+            DrawRectangle(pos.x, pos.y, prev_block.block->ms.size.x, conf.font_size, ColorBrightness(prev_blockdef.color, hover_info.block == &chain->blocks[i] ? 0.3 : 0.0));
+
+            draw_control_outline(
+                &prev_block, 
+                pos, 
+                ColorBrightness(prev_blockdef.color, hover_info.block == prev_block.block || hover_info.block == &chain->blocks[i] ? 0.5 : -0.2),
+                true
+            );
+
             vector_pop(chain->draw_stack);
+        } else {
+            draw_block(pos, &chain->blocks[i], false);
         }
-        draw_block(pos, &chain->blocks[i]);
         if (blockdef.type == BLOCKTYPE_CONTROL) {
             DrawStack stack_item;
             stack_item.pos = pos;
@@ -675,6 +747,23 @@ void draw_block_chain(BlockChain* chain) {
             pos.x += BLOCK_CONTROL_INDENT;
         }
         pos.y += chain->blocks[i].ms.size.y;
+    }
+
+    pos.y += conf.font_size;
+    Rectangle rect;
+    for (vec_size_t i = 0; i < vector_size(chain->draw_stack); i++) {
+        DrawStack prev_block = chain->draw_stack[i];
+        Blockdef prev_blockdef = registered_blocks[prev_block.block->id];
+
+        pos.x = prev_block.pos.x;
+
+        rect.x = prev_block.pos.x;
+        rect.y = prev_block.pos.y + prev_block.block->ms.size.y;
+        rect.width = BLOCK_CONTROL_INDENT;
+        rect.height = pos.y - (prev_block.pos.y + prev_block.block->ms.size.y);
+
+        DrawRectangleRec(rect, prev_blockdef.color);
+        draw_control_outline(&prev_block, pos, ColorBrightness(prev_blockdef.color, hover_info.block == prev_block.block ? 0.5 : -0.2), false);
     }
 }
 
@@ -898,16 +987,15 @@ void setup(void) {
     block_add_text(sc_print, "Print");
     block_add_string_input(sc_print, "Привет, мусороид!");
 
-    int move_steps = block_register("move_steps", BLOCKTYPE_NORMAL, (Color) { 0x00, 0x77, 0xff, 0xFF });
-    block_add_text(move_steps, "Move");
-    block_add_string_input(move_steps, "");
-    block_add_text(move_steps, "pixels");
+    int sc_set_x = block_register("set_x", BLOCKTYPE_NORMAL, (Color) { 0x00, 0x77, 0xff, 0xFF });
+    block_add_text(sc_set_x, "Set X:");
+    block_add_string_input(sc_set_x, "10");
 
     int sc_x = block_register("x_pos", BLOCKTYPE_NORMAL, (Color) { 0x00, 0x77, 0xff, 0xFF });
     block_add_text(sc_x, "X");
 
     int sc_loop = block_register("loop", BLOCKTYPE_CONTROL, (Color) { 0xff, 0x99, 0x00, 0xff });
-    block_add_text(sc_loop, "Loop forever");
+    block_add_text(sc_loop, "Loop");
 
     int sc_if = block_register("if", BLOCKTYPE_CONTROL, (Color) { 0xff, 0x99, 0x00, 0xff });
     block_add_text(sc_if, "If");
@@ -923,9 +1011,9 @@ void setup(void) {
     block_add_string_input(sc_plus, "10");
 
     int sc_less = block_register("less", BLOCKTYPE_NORMAL, (Color) { 0x00, 0xcc, 0x77, 0xFF });
-    block_add_string_input(sc_less, "");
+    block_add_string_input(sc_less, "9");
     block_add_text(sc_less, "<");
-    block_add_string_input(sc_less, "");
+    block_add_string_input(sc_less, "11");
 
     mouse_blockchain = new_blockchain();
     sprite_code = vector_create();
@@ -961,6 +1049,7 @@ int main(void) {
         hover_info.prev_argument = NULL;
         hover_info.blockchain = NULL;
         hover_info.blockchain_index = -1;
+        hover_info.blockchain_layer = 0;
 
         check_collisions();
 
@@ -990,9 +1079,10 @@ int main(void) {
         DrawTextEx(
             font_cond, 
             TextFormat(
-                "BlockChain: %p, Ind: %d\nBlock: %p, Parent: %p\nArgument: %p\nPrev argument: %p\nSelect block: %p\nSelect arg: %p\nSidebar: %d\nMouse: %p", 
+                "BlockChain: %p, Ind: %d, Layer: %d\nBlock: %p, Parent: %p\nArgument: %p\nPrev argument: %p\nSelect block: %p\nSelect arg: %p\nSidebar: %d\nMouse: %p", 
                 hover_info.blockchain,
                 hover_info.blockchain_index,
+                hover_info.blockchain_layer,
                 hover_info.block,
                 hover_info.block ? hover_info.block->parent : NULL,
                 hover_info.argument, 
@@ -1017,7 +1107,7 @@ int main(void) {
 
             int pos_y = conf.font_size * 2 + 10;
             for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
-                draw_block((Vector2){ 10, pos_y }, &sidebar[i]);
+                draw_block((Vector2){ 10, pos_y }, &sidebar[i], true);
                 pos_y += conf.font_size + 10;
             }
 
