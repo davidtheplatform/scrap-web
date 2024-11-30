@@ -2,16 +2,17 @@ CC := gcc
 CFLAGS := -Wall -Wextra -O0 -g -DDEBUG
 LDFLAGS := -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
 OBJFILES := vec.o scrap.o
+EXE_NAME := scrap
 
-all: scrap
+all: $(EXE_NAME)
 
 clean:
-	rm $(OBJFILES) scrap
+	rm $(OBJFILES) $(EXE_NAME)
 
-run: scrap
-	./scrap
+run: $(EXE_NAME)
+	./$(EXE_NAME)
 
-scrap: $(OBJFILES)
+$(EXE_NAME): $(OBJFILES)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 vec.o: vec.c
