@@ -18,9 +18,10 @@
 #define BLOCK_TEXT_SIZE (conf.font_size * 0.6)
 #define DATA_PATH "data/"
 #define BLOCK_PADDING (5.0 * (float)conf.font_size / 32.0)
-#define BLOCK_LINE_SIZE (2.0 * (float)conf.font_size / 32.0)
+#define BLOCK_OUTLINE_SIZE (2.0 * (float)conf.font_size / 32.0)
 #define BLOCK_STRING_PADDING (10.0 * (float)conf.font_size / 32.0)
 #define BLOCK_CONTROL_INDENT (16.0 * (float)conf.font_size / 32.0)
+#define DROP_TEX_WIDTH ((float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)drop_tex.height * (float)drop_tex.width)
 
 struct Config {
     int font_size;
@@ -32,25 +33,49 @@ typedef struct Measurement {
     Vector2 size;
 } Measurement;
 
+typedef enum {
+    BLOCKCONSTR_UNLIMITED, // Can put anything as argument
+    BLOCKCONSTR_STRING, // Can only put strings as argument
+} BlockArgumentConstraint;
+
+typedef enum {
+    DROPDOWN_SOURCE_LISTREF,
+} BlockDropdownSource;
+
 typedef struct {
     Measurement ms;
     char* text;
 } InputStaticText;
 
 typedef struct {
+    BlockArgumentConstraint constr;
+    Measurement ms;
+    char* text;
+} InputArgument;
+
+typedef struct {
     Measurement ms;
     Texture2D image;
 } InputStaticImage;
 
+typedef struct {
+    BlockDropdownSource source;
+    char** ref;
+    size_t ref_len;
+} InputDropdown;
+
 typedef enum {
     INPUT_TEXT_DISPLAY,
     INPUT_ARGUMENT,
+    INPUT_DROPDOWN,
     INPUT_IMAGE_DISPLAY,
 } BlockInputType;
 
 typedef union {
     InputStaticText stext;
     InputStaticImage simage;
+    InputArgument arg;
+    InputDropdown drop;
 } BlockInputData;
 
 typedef struct {
@@ -83,6 +108,7 @@ typedef struct Block {
 typedef enum {
     ARGUMENT_TEXT,
     ARGUMENT_BLOCK,
+    ARGUMENT_CONST_STRING,
 } BlockArgumentType;
 
 typedef union {
@@ -92,6 +118,7 @@ typedef union {
 
 typedef struct {
     Measurement ms;
+    vec_size_t input_id;
     BlockArgumentType type;
     BlockArgumentData data;
 } BlockArgument;
@@ -114,9 +141,13 @@ typedef struct {
     int blockchain_layer;
     Block* block;
     BlockArgument* argument;
+    Vector2 argument_pos;
     BlockArgument* prev_argument;
     Block* select_block;
     BlockArgument* select_argument;
+    Vector2 select_argument_pos;
+    Vector2 last_mouse_pos;
+    float time_at_last_pos;
 } HoverInfo;
 
 char *top_buttons_text[] = {
@@ -126,6 +157,7 @@ char *top_buttons_text[] = {
 
 struct Config conf;
 Texture2D run_tex;
+Texture2D drop_tex;
 Font font;
 Font font_cond;
 
@@ -136,66 +168,25 @@ BlockChain* sprite_code; // List of block chains
 HoverInfo hover_info = {0};
 int end_block_id = -1;
 
+char* keys_list[] = {
+    "Space",
+    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", 
+    "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", 
+    "U", "V", "W", "X", "Y", "Z",
+};
+/*char* keys_list[] = {
+    "Aboba", "Musor", "Govno",
+    "Super duper long name",
+};*/
+
+void update_measurements(Block* block);
+
 void block_update_parent_links(Block* block) {
     BlockArgument* block_args = block->arguments;
     for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
         if (block_args[i].type != ARGUMENT_BLOCK) continue;
         block_args[i].data.block.parent = block;
     }
-}
-
-void update_measurements(Block* block) {
-    if (block->id == -1) return;
-    Blockdef blockdef = registered_blocks[block->id];
-
-    block->ms.size.x = BLOCK_PADDING;
-    block->ms.size.y = conf.font_size;
-
-    int arg_id = 0;
-    for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
-        Measurement ms;
-        switch (blockdef.inputs[i].type) {
-        case INPUT_TEXT_DISPLAY:
-            ms = blockdef.inputs[i].data.stext.ms;
-            break;
-        case INPUT_ARGUMENT:
-            BlockArgument* block_args = block->arguments;
-
-            switch (block_args[arg_id].type) {
-            case ARGUMENT_TEXT:
-                Measurement string_ms;
-                string_ms.size = MeasureTextEx(font_cond, block_args[arg_id].data.text, BLOCK_TEXT_SIZE, 0.0);
-                string_ms.size.x += BLOCK_STRING_PADDING;
-                string_ms.size.x = MAX(conf.font_size - BLOCK_LINE_SIZE * 4, string_ms.size.x);
-
-                block_args[arg_id].ms = string_ms;
-                ms = string_ms;
-                ms.size.y = MAX(conf.font_size - BLOCK_LINE_SIZE * 4, ms.size.y);
-                break;
-            case ARGUMENT_BLOCK:
-                block_args[arg_id].ms = block_args[arg_id].data.block.ms;
-                ms = block_args[arg_id].ms;
-                break;
-            default:
-                assert(false && "Unimplemented argument measure");
-                break;
-            }
-            arg_id++;
-            break;
-        case INPUT_IMAGE_DISPLAY:
-            ms = blockdef.inputs[i].data.simage.ms;
-            break;
-        default:
-            ms.size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
-            break;
-        }
-        ms.size.x += BLOCK_PADDING;
-
-        block->ms.size.x += ms.size.x;
-        block->ms.size.y = MAX(block->ms.size.y, ms.size.y + BLOCK_LINE_SIZE * 4);
-    }
-
-    if (block->parent) update_measurements(block->parent);
 }
 
 Block block_new(int id) {
@@ -209,17 +200,45 @@ Block block_new(int id) {
         printf("New block\n\tId: %d\n", id);
         Blockdef blockdef = registered_blocks[block.id];
         for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
-            if (blockdef.inputs[i].type != INPUT_ARGUMENT) continue;
+            if (blockdef.inputs[i].type != INPUT_ARGUMENT && blockdef.inputs[i].type != INPUT_DROPDOWN) continue;
             BlockArgument* arg = vector_add_dst((BlockArgument**)&block.arguments);
-            arg->ms = blockdef.inputs[i].data.stext.ms;
-            arg->type = ARGUMENT_TEXT;
             arg->data.text = vector_create();
+            arg->input_id = i;
 
-            for (char* pos = blockdef.inputs[i].data.stext.text; *pos; pos++) {
-                vector_add(&arg->data.text, *pos);
+            switch (blockdef.inputs[i].type) {
+            case INPUT_ARGUMENT:
+                arg->ms = blockdef.inputs[i].data.arg.ms;
+                switch (blockdef.inputs[i].data.arg.constr) {
+                case BLOCKCONSTR_UNLIMITED:
+                    arg->type = ARGUMENT_TEXT;
+                    break;
+                case BLOCKCONSTR_STRING:
+                    arg->type = ARGUMENT_CONST_STRING;
+                    break;
+                default:
+                    assert(false && "Unimplemented argument constraint");
+                    break;
+                }
+
+                for (char* pos = blockdef.inputs[i].data.arg.text; *pos; pos++) {
+                    vector_add(&arg->data.text, *pos);
+                }
+                break;
+            case INPUT_DROPDOWN:
+                arg->type = ARGUMENT_CONST_STRING;
+                arg->ms = (Measurement) {0};
+
+                if (!blockdef.inputs[i].data.drop.ref || blockdef.inputs[i].data.drop.ref_len == 0) break;
+
+                for (char* pos = blockdef.inputs[i].data.drop.ref[0]; *pos; pos++) {
+                    vector_add(&arg->data.text, *pos);
+                }
+                break;
+            default:
+                assert(false && "Unreachable");
+                break;
             }
             vector_add(&arg->data.text, 0);
-            printf("\tInput: %s, Size: %ld\n", arg->data.text, vector_size(arg->data.text));
         }
     }
 
@@ -262,6 +281,7 @@ void block_free(Block* block) {
         for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
             BlockArgument* block_args = block->arguments;
             switch (block_args[i].type) {
+            case ARGUMENT_CONST_STRING:
             case ARGUMENT_TEXT:
                 vector_free(block_args[i].data.text);
                 break;
@@ -409,26 +429,39 @@ void block_add_text(int block_id, char* text) {
     };
 }
 
-void block_add_argument(int block_id, char* defualt_data) {
+void block_add_argument(int block_id, char* defualt_data, BlockArgumentConstraint constraint) {
     Measurement ms = {0};
     ms.size = MeasureTextEx(font_cond, defualt_data, BLOCK_TEXT_SIZE, 0.0);
     ms.size.x += BLOCK_STRING_PADDING;
-    ms.size.x = MAX(conf.font_size - BLOCK_LINE_SIZE * 4, ms.size.x);
+    ms.size.x = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, ms.size.x);
 
     BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
     input->type = INPUT_ARGUMENT;
     input->data = (BlockInputData) {
-        .stext = {
+        .arg = {
             .text = defualt_data,
+            .constr = constraint,
             .ms = ms,
+        },
+    };
+}
+
+void block_add_dropdown(int block_id, BlockDropdownSource dropdown_source, char** list_ref, size_t list_len) {
+    BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
+    input->type = INPUT_DROPDOWN;
+    input->data = (BlockInputData) {
+        .drop = {
+            .source = dropdown_source,
+            .ref = list_ref,
+            .ref_len = list_len,
         },
     };
 }
 
 void block_add_image(int block_id, Texture2D texture) {
     Measurement ms = {0};
-    ms.size.x = (float)(conf.font_size - BLOCK_LINE_SIZE * 4) / (float)texture.height * (float)texture.width;
-    ms.size.y = conf.font_size - BLOCK_LINE_SIZE * 4;
+    ms.size.x = (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)texture.height * (float)texture.width;
+    ms.size.y = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
 
     BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
     input->type = INPUT_IMAGE_DISPLAY;
@@ -443,6 +476,83 @@ void block_add_image(int block_id, Texture2D texture) {
 void block_unregister(int block_id) {
     vector_free(registered_blocks[block_id].inputs);
     vector_remove(registered_blocks, block_id);
+}
+
+void update_measurements(Block* block) {
+    if (block->id == -1) return;
+    Blockdef blockdef = registered_blocks[block->id];
+
+    block->ms.size.x = BLOCK_PADDING;
+    block->ms.size.y = conf.font_size;
+
+    int arg_id = 0;
+    for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
+        Measurement ms;
+        BlockArgument* block_args = block->arguments;
+
+        switch (blockdef.inputs[i].type) {
+        case INPUT_TEXT_DISPLAY:
+            ms = blockdef.inputs[i].data.stext.ms;
+            break;
+        case INPUT_ARGUMENT:
+            switch (block_args[arg_id].type) {
+            case ARGUMENT_CONST_STRING:
+            case ARGUMENT_TEXT:
+                Measurement string_ms;
+                string_ms.size = MeasureTextEx(font_cond, block_args[arg_id].data.text, BLOCK_TEXT_SIZE, 0.0);
+                string_ms.size.x += BLOCK_STRING_PADDING;
+                string_ms.size.x = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, string_ms.size.x);
+
+                block_args[arg_id].ms = string_ms;
+                ms = string_ms;
+                ms.size.y = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, ms.size.y);
+                break;
+            case ARGUMENT_BLOCK:
+                block_args[arg_id].ms = block_args[arg_id].data.block.ms;
+                ms = block_args[arg_id].ms;
+                break;
+            default:
+                assert(false && "Unimplemented argument measure");
+                break;
+            }
+            arg_id++;
+            break;
+        case INPUT_DROPDOWN:
+            switch (block_args[arg_id].type) {
+            case ARGUMENT_CONST_STRING:
+                Measurement string_ms;
+                string_ms.size = MeasureTextEx(font_cond, block_args[arg_id].data.text, BLOCK_TEXT_SIZE, 0.0);
+                string_ms.size.x += BLOCK_STRING_PADDING + DROP_TEX_WIDTH;
+                string_ms.size.x = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, string_ms.size.x);
+
+                block_args[arg_id].ms = string_ms;
+                ms = string_ms;
+                ms.size.y = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, ms.size.y);
+                break;
+            case ARGUMENT_TEXT:
+            case ARGUMENT_BLOCK:
+                assert(false && "Illegal argument type");
+                break;
+            default:
+                assert(false && "Unimplemented argument measure");
+                break;
+            }
+            arg_id++;
+            break;
+        case INPUT_IMAGE_DISPLAY:
+            ms = blockdef.inputs[i].data.simage.ms;
+            break;
+        default:
+            ms.size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
+            break;
+        }
+        ms.size.x += BLOCK_PADDING;
+
+        block->ms.size.x += ms.size.x;
+        block->ms.size.y = MAX(block->ms.size.y, ms.size.y + BLOCK_OUTLINE_SIZE * 4);
+    }
+
+    if (block->parent) update_measurements(block->parent);
 }
 
 void block_update_collisions(Vector2 position, Block* block) {
@@ -467,25 +577,27 @@ void block_update_collisions(Vector2 position, Block* block) {
         if (hover_info.argument) return;
         int width = 0;
         BlockInput cur = blockdef.inputs[i];
+        BlockArgument* block_args = block->arguments;
+        Rectangle arg_size;
 
         switch (cur.type) {
         case INPUT_TEXT_DISPLAY:
             width = cur.data.stext.ms.size.x;
             break;
         case INPUT_ARGUMENT:
-            BlockArgument* block_args = block->arguments;
             width = block_args[arg_id].ms.size.x;
-            Rectangle arg_size;
 
             switch (block_args[arg_id].type) {
+            case ARGUMENT_CONST_STRING:
             case ARGUMENT_TEXT:
                 arg_size.x = cursor.x;
-                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_LINE_SIZE * 4) * 0.5;
+                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
                 arg_size.width = block_args[arg_id].ms.size.x;
-                arg_size.height = conf.font_size - BLOCK_LINE_SIZE * 4;
+                arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
 
                 if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
                     hover_info.argument = &block_args[arg_id];
+                    hover_info.argument_pos = cursor;
                     break;
                 }
                 break;
@@ -504,6 +616,34 @@ void block_update_collisions(Vector2 position, Block* block) {
                 }
                 
                 block_update_collisions(block_pos, &block_args[arg_id].data.block);
+                break;
+            default:
+                assert(false && "Unimplemented argument collision");
+                break;
+            }
+            arg_id++;
+            break;
+        case INPUT_DROPDOWN:
+            width = block_args[arg_id].ms.size.x;
+
+            switch (block_args[arg_id].type) {
+            case ARGUMENT_CONST_STRING:
+                arg_size.x = cursor.x;
+                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
+                arg_size.width = block_args[arg_id].ms.size.x;
+                arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
+
+                if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
+                    hover_info.argument = &block_args[arg_id];
+                    hover_info.argument_pos = cursor;
+                    break;
+                }
+                break;
+            case ARGUMENT_TEXT:
+                assert(false && "Illegal argument type ARGUMENT_TEXT");
+                break;
+            case ARGUMENT_BLOCK:
+                assert(false && "Illegal argument type ARGUMENT_BLOCK");
                 break;
             default:
                 assert(false && "Unimplemented argument collision");
@@ -539,7 +679,7 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
 
     DrawRectangleRec(block_size, ColorBrightness(color, collision ? 0.3 : 0.0));
     if (force_outline || (blockdef.type != BLOCKTYPE_CONTROL && blockdef.type != BLOCKTYPE_CONTROLEND)) {
-        DrawRectangleLinesEx(block_size, BLOCK_LINE_SIZE, ColorBrightness(color, collision ? 0.5 : -0.2));
+        DrawRectangleLinesEx(block_size, BLOCK_OUTLINE_SIZE, ColorBrightness(color, collision ? 0.5 : -0.2));
     }
     cursor.x += BLOCK_PADDING;
 
@@ -547,6 +687,7 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
         int width = 0;
         BlockInput cur = blockdef.inputs[i];
+        BlockArgument* block_args = block->arguments;
 
         switch (cur.type) {
         case INPUT_TEXT_DISPLAY:
@@ -576,21 +717,31 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
             );
             break;
         case INPUT_ARGUMENT:
-            BlockArgument* block_args = block->arguments;
             width = block_args[arg_id].ms.size.x;
 
             switch (block_args[arg_id].type) {
+            case ARGUMENT_CONST_STRING:
             case ARGUMENT_TEXT:
                 Rectangle arg_size;
                 arg_size.x = cursor.x;
-                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_LINE_SIZE * 4) * 0.5;
+                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
                 arg_size.width = width;
-                arg_size.height = conf.font_size - BLOCK_LINE_SIZE * 4;
+                arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
 
-                DrawRectangleRec(arg_size, WHITE);
-                if (&block_args[arg_id] == hover_info.argument || &block_args[arg_id] == hover_info.select_argument) {
-                    DrawRectangleLinesEx(arg_size, BLOCK_LINE_SIZE, ColorBrightness(color, &block_args[arg_id] == hover_info.select_argument ? -0.5 : 0.2));
-                }
+                bool hovered = &block_args[arg_id] == hover_info.argument;
+                bool selected = &block_args[arg_id] == hover_info.select_argument;
+
+                if (block_args[arg_id].type == ARGUMENT_CONST_STRING) {
+                    DrawRectangleRounded(arg_size, 0.5, 5, WHITE);
+                    if (hovered || selected) {
+                        DrawRectangleRoundedLines(arg_size, 0.5, 5, BLOCK_OUTLINE_SIZE, ColorBrightness(color, selected ? -0.5 : 0.5));
+                    }
+                } else if (block_args[arg_id].type == ARGUMENT_TEXT) {
+                    DrawRectangleRec(arg_size, WHITE);
+                    if (hovered || selected) {
+                        DrawRectangleLinesEx(arg_size, BLOCK_OUTLINE_SIZE, ColorBrightness(color, selected ? -0.5 : 0.2));
+                    }
+                } 
                 DrawTextEx(
                     font_cond, 
                     block_args[arg_id].data.text,
@@ -616,16 +767,100 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
             }
             arg_id++;
             break;
+        case INPUT_DROPDOWN:
+            width = block_args[arg_id].ms.size.x;
+
+            switch (block_args[arg_id].type) {
+            case ARGUMENT_CONST_STRING:
+                Rectangle arg_size;
+                arg_size.x = cursor.x;
+                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
+                arg_size.width = width;
+                arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
+
+                DrawRectangleRounded(arg_size, 0.5, 4, ColorBrightness(color, collision ? 0.0 : -0.3));
+
+                if (&block_args[arg_id] == hover_info.argument || &block_args[arg_id] == hover_info.select_argument) {
+                    DrawRectangleRoundedLines(arg_size, 0.5, 4, BLOCK_OUTLINE_SIZE, ColorBrightness(color, &block_args[arg_id] == hover_info.select_argument ? -0.5 : 0.5));
+                }
+                Vector2 ms = MeasureTextEx(font_cond, block_args[arg_id].data.text, BLOCK_TEXT_SIZE, 0);
+                DrawTextEx(
+                    font_cond, 
+                    block_args[arg_id].data.text,
+                    (Vector2) { 
+                        cursor.x + BLOCK_STRING_PADDING * 0.5 + 1, 
+                        cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5 + 1, 
+                    },
+                    BLOCK_TEXT_SIZE,
+                    0.0,
+                    (Color) { 0x00, 0x00, 0x00, 0x88 }
+                );
+                DrawTextEx(
+                    font_cond, 
+                    block_args[arg_id].data.text,
+                    (Vector2) { 
+                        cursor.x + BLOCK_STRING_PADDING * 0.5, 
+                        cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
+                    },
+                    BLOCK_TEXT_SIZE,
+                    0.0,
+                    WHITE
+                );
+                DrawTextureEx(
+                    drop_tex,
+                    (Vector2) { 
+                        cursor.x + ms.x + BLOCK_STRING_PADDING * 0.5 + 1,
+                        cursor.y + BLOCK_OUTLINE_SIZE * 2 + 1,
+                    }, 
+                    0.0, 
+                    (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)drop_tex.height, 
+                    (Color) { 0x00, 0x00, 0x00, 0x88 }
+                );
+
+                DrawTextureEx(
+                    drop_tex,
+                    (Vector2) { 
+                        cursor.x + ms.x + BLOCK_STRING_PADDING * 0.5,
+                        cursor.y + BLOCK_OUTLINE_SIZE * 2,
+                    }, 
+                    0.0, 
+                    (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)drop_tex.height, 
+                    WHITE
+                );
+
+                break;
+            case ARGUMENT_TEXT:
+                assert(false && "Illegal argument type ARGUMENT_TEXT");
+                break;
+            case ARGUMENT_BLOCK:
+                assert(false && "Illegal argument type ARGUMENT_BLOCK");
+                break;
+            default:
+                assert(false && "Unimplemented argument draw");
+                break;
+            }
+            arg_id++;
+            break;
         case INPUT_IMAGE_DISPLAY:
             width = cur.data.simage.ms.size.x;
             DrawTextureEx(
                 cur.data.simage.image, 
                 (Vector2) { 
-                    cursor.x, 
-                    cursor.y + BLOCK_LINE_SIZE * 2,
+                    cursor.x + 1, 
+                    cursor.y + BLOCK_OUTLINE_SIZE * 2 + 1,
                 }, 
                 0.0, 
-                (float)(conf.font_size - BLOCK_LINE_SIZE * 4) / (float)cur.data.simage.image.height, 
+                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)cur.data.simage.image.height, 
+                (Color) { 0x00, 0x00, 0x00, 0x88 }
+            );
+            DrawTextureEx(
+                cur.data.simage.image, 
+                (Vector2) { 
+                    cursor.x, 
+                    cursor.y + BLOCK_OUTLINE_SIZE * 2,
+                }, 
+                0.0, 
+                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)cur.data.simage.image.height, 
                 WHITE
             );
             break;
@@ -675,14 +910,14 @@ void draw_controlend_outline(DrawStack* block, Vector2 end_pos, Color color) {
     Vector2 block_size = block->block->ms.size;
     
     if (blocktype == BLOCKTYPE_CONTROL) {
-        /* 1 */ DrawRectangle(block->pos.x, block->pos.y, block_size.x, BLOCK_LINE_SIZE, color);
+        /* 1 */ DrawRectangle(block->pos.x, block->pos.y, block_size.x, BLOCK_OUTLINE_SIZE, color);
     } else if (blocktype == BLOCKTYPE_CONTROLEND) {
-        /* 12 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_LINE_SIZE, block->pos.y, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_LINE_SIZE, BLOCK_LINE_SIZE, color);
+        /* 12 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_OUTLINE_SIZE, block->pos.y, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_OUTLINE_SIZE, BLOCK_OUTLINE_SIZE, color);
     }
-    /* 2 */ DrawRectangle(block->pos.x + block_size.x - BLOCK_LINE_SIZE, block->pos.y, BLOCK_LINE_SIZE, block_size.y, color);
-    /* 3 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_LINE_SIZE, block->pos.y + block_size.y - BLOCK_LINE_SIZE, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_LINE_SIZE, BLOCK_LINE_SIZE, color);
-    /* 8 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_LINE_SIZE, block->pos.y + block_size.y, BLOCK_LINE_SIZE, end_pos.y - (block->pos.y + block_size.y), color);
-    /* 10 */ DrawRectangle(block->pos.x, block->pos.y, BLOCK_LINE_SIZE, end_pos.y - block->pos.y, color);
+    /* 2 */ DrawRectangle(block->pos.x + block_size.x - BLOCK_OUTLINE_SIZE, block->pos.y, BLOCK_OUTLINE_SIZE, block_size.y, color);
+    /* 3 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_OUTLINE_SIZE, block->pos.y + block_size.y - BLOCK_OUTLINE_SIZE, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_OUTLINE_SIZE, BLOCK_OUTLINE_SIZE, color);
+    /* 8 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_OUTLINE_SIZE, block->pos.y + block_size.y, BLOCK_OUTLINE_SIZE, end_pos.y - (block->pos.y + block_size.y), color);
+    /* 10 */ DrawRectangle(block->pos.x, block->pos.y, BLOCK_OUTLINE_SIZE, end_pos.y - block->pos.y, color);
 }
 
 void draw_control_outline(DrawStack* block, Vector2 end_pos, Color color, bool draw_end) {
@@ -690,22 +925,22 @@ void draw_control_outline(DrawStack* block, Vector2 end_pos, Color color, bool d
     Vector2 block_size = block->block->ms.size;
 
     if (blocktype == BLOCKTYPE_CONTROL) {
-        /* 1 */ DrawRectangle(block->pos.x, block->pos.y, block_size.x, BLOCK_LINE_SIZE, color);
+        /* 1 */ DrawRectangle(block->pos.x, block->pos.y, block_size.x, BLOCK_OUTLINE_SIZE, color);
     } else if (blocktype == BLOCKTYPE_CONTROLEND) {
-        /* 12 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_LINE_SIZE, block->pos.y, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_LINE_SIZE, BLOCK_LINE_SIZE, color);
+        /* 12 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_OUTLINE_SIZE, block->pos.y, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_OUTLINE_SIZE, BLOCK_OUTLINE_SIZE, color);
     }
-    /* 2 */ DrawRectangle(block->pos.x + block_size.x - BLOCK_LINE_SIZE, block->pos.y, BLOCK_LINE_SIZE, block_size.y, color);
-    /* 3 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_LINE_SIZE, block->pos.y + block_size.y - BLOCK_LINE_SIZE, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_LINE_SIZE, BLOCK_LINE_SIZE, color);
+    /* 2 */ DrawRectangle(block->pos.x + block_size.x - BLOCK_OUTLINE_SIZE, block->pos.y, BLOCK_OUTLINE_SIZE, block_size.y, color);
+    /* 3 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_OUTLINE_SIZE, block->pos.y + block_size.y - BLOCK_OUTLINE_SIZE, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_OUTLINE_SIZE, BLOCK_OUTLINE_SIZE, color);
     if (draw_end) {
-        /* 4 */ DrawRectangle(block->pos.x, block->pos.y, BLOCK_LINE_SIZE, end_pos.y + conf.font_size - block->pos.y, color);
-        /* 5 */ DrawRectangle(end_pos.x, end_pos.y + conf.font_size - BLOCK_LINE_SIZE, block_size.x, BLOCK_LINE_SIZE, color);
-        /* 6 */ DrawRectangle(end_pos.x + block_size.x - BLOCK_LINE_SIZE, end_pos.y, BLOCK_LINE_SIZE, conf.font_size, color);
-        /* 7 */ DrawRectangle(end_pos.x + BLOCK_CONTROL_INDENT - BLOCK_LINE_SIZE, end_pos.y, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_LINE_SIZE, BLOCK_LINE_SIZE, color);
+        /* 4 */ DrawRectangle(block->pos.x, block->pos.y, BLOCK_OUTLINE_SIZE, end_pos.y + conf.font_size - block->pos.y, color);
+        /* 5 */ DrawRectangle(end_pos.x, end_pos.y + conf.font_size - BLOCK_OUTLINE_SIZE, block_size.x, BLOCK_OUTLINE_SIZE, color);
+        /* 6 */ DrawRectangle(end_pos.x + block_size.x - BLOCK_OUTLINE_SIZE, end_pos.y, BLOCK_OUTLINE_SIZE, conf.font_size, color);
+        /* 7 */ DrawRectangle(end_pos.x + BLOCK_CONTROL_INDENT - BLOCK_OUTLINE_SIZE, end_pos.y, block_size.x - BLOCK_CONTROL_INDENT + BLOCK_OUTLINE_SIZE, BLOCK_OUTLINE_SIZE, color);
     } else {
-        /* 9 */ DrawRectangle(end_pos.x, end_pos.y - BLOCK_LINE_SIZE, BLOCK_CONTROL_INDENT, BLOCK_LINE_SIZE, color);
-        /* 10 */ DrawRectangle(block->pos.x, block->pos.y, BLOCK_LINE_SIZE, end_pos.y - block->pos.y, color);
+        /* 9 */ DrawRectangle(end_pos.x, end_pos.y - BLOCK_OUTLINE_SIZE, BLOCK_CONTROL_INDENT, BLOCK_OUTLINE_SIZE, color);
+        /* 10 */ DrawRectangle(block->pos.x, block->pos.y, BLOCK_OUTLINE_SIZE, end_pos.y - block->pos.y, color);
     }
-    /* 8 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_LINE_SIZE, block->pos.y + block_size.y, BLOCK_LINE_SIZE, end_pos.y - (block->pos.y + block_size.y), color);
+    /* 8 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_OUTLINE_SIZE, block->pos.y + block_size.y, BLOCK_OUTLINE_SIZE, end_pos.y - (block->pos.y + block_size.y), color);
 }
 
 void blockchain_check_collisions(BlockChain* chain) {
@@ -855,12 +1090,66 @@ void draw_top_buttons(int sw) {
     DrawTextureEx(run_tex, run_pos, 0, (float)conf.font_size / (float)run_tex.width, WHITE);
 }
 
+void draw_tooltip(void) {
+    if (hover_info.time_at_last_pos < 0.5 || !hover_info.block) return;
+
+    Vector2 pos = GetMousePosition();
+    pos.x += 10.0;
+    pos.y += 10.0;
+
+    char* text = "Amog";
+    Vector2 ms = MeasureTextEx(font_cond, text, conf.font_size * 0.5, 0);   
+    DrawRectangle(pos.x - 5, pos.y - 5, ms.x + 10, ms.y + 10, (Color) { 0x00, 0x00, 0x00, 0x80 });
+    DrawTextEx(font_cond, text, pos, conf.font_size * 0.5, 0, WHITE);
+}
+
+void draw_dropdown_list(void) {
+    if (!hover_info.select_argument) return;
+
+    Blockdef blockdef = registered_blocks[hover_info.select_block->id];
+    BlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
+
+    if (block_input.type != INPUT_DROPDOWN) return;
+    assert(hover_info.blockchain != NULL);
+
+    Vector2 ms = (Vector2) {0};
+    ms.x = hover_info.select_argument->ms.size.x;
+    ms.y = 5.0;
+
+    Vector2 pos = hover_info.select_argument_pos;
+    pos.y += hover_info.select_block->ms.size.y;
+    for (size_t i = 0; i < block_input.data.drop.ref_len; i++) {
+        if (pos.y > GetScreenHeight()) break;
+        Vector2 text_ms = MeasureTextEx(font_cond, block_input.data.drop.ref[i], BLOCK_TEXT_SIZE, 0);
+        ms.x = MAX(text_ms.x + 10, ms.x);
+        ms.y += conf.font_size;
+        pos.y += conf.font_size;
+    }
+    
+    pos = hover_info.select_argument_pos;
+    pos.y += hover_info.select_block->ms.size.y;
+
+    DrawRectangle(pos.x, pos.y, ms.x, ms.y, ColorBrightness(blockdef.color, -0.3));
+
+    pos.x += 5.0;
+    pos.y += 5.0;
+
+    for (size_t i = 0; i < block_input.data.drop.ref_len; i++) {
+        if (pos.y > GetScreenHeight()) break;
+        DrawTextEx(font_cond, block_input.data.drop.ref[i], (Vector2) { pos.x + 1, pos.y + 1 }, BLOCK_TEXT_SIZE, 0, BLACK);
+        DrawTextEx(font_cond, block_input.data.drop.ref[i], pos, BLOCK_TEXT_SIZE, 0, WHITE);
+        pos.y += conf.font_size;
+    }
+}
+
 void handle_mouse_click(void) {
     bool mouse_empty = vector_size(mouse_blockchain.blocks) == 0;
 
     if (hover_info.sidebar) {
         if (hover_info.select_argument) {
             hover_info.select_argument = NULL;
+            hover_info.select_argument_pos.x = 0;
+            hover_info.select_argument_pos.y = 0;
             return;
         }
         if (mouse_empty && hover_info.block) {
@@ -883,6 +1172,7 @@ void handle_mouse_click(void) {
 
         if (hover_info.argument != hover_info.select_argument) {
             hover_info.select_argument = hover_info.argument;
+            hover_info.select_argument_pos = hover_info.argument_pos;
             return;
         }
 
@@ -897,6 +1187,7 @@ void handle_mouse_click(void) {
             // Attach to argument
             printf("Attach to argument\n");
             if (vector_size(mouse_blockchain.blocks) > 1) return;
+            if (hover_info.argument->type != ARGUMENT_TEXT) return;
             mouse_blockchain.blocks[0].parent = hover_info.block;
             argument_set_block(hover_info.argument, mouse_blockchain.blocks[0]);
             vector_clear(mouse_blockchain.blocks);
@@ -940,7 +1231,8 @@ void handle_mouse_click(void) {
 
 void handle_key_press(void) {
     if (!hover_info.select_argument) return;
-    assert(hover_info.select_argument->type == ARGUMENT_TEXT);
+    assert(hover_info.select_argument->type == ARGUMENT_TEXT || hover_info.select_argument->type == ARGUMENT_CONST_STRING);
+    if (registered_blocks[hover_info.select_block->id].inputs[hover_info.select_argument->input_id].type == INPUT_DROPDOWN) return;
 
     if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
         char* arg_text = hover_info.select_argument->data.text;
@@ -1023,6 +1315,8 @@ void set_default_config(void) {
 void setup(void) {
     run_tex = LoadTexture(DATA_PATH "run.png");
     SetTextureFilter(run_tex, TEXTURE_FILTER_BILINEAR);
+    drop_tex = LoadTexture(DATA_PATH "drop.png");
+    SetTextureFilter(drop_tex, TEXTURE_FILTER_BILINEAR);
 
     int codepoints_count;
     int *codepoints = LoadCodepoints(conf.font_symbols, &codepoints_count);
@@ -1039,28 +1333,26 @@ void setup(void) {
     block_add_image(on_start, run_tex);
     block_add_text(on_start, "clicked");
 
+    int on_key_press = block_register("on_key_press", BLOCKTYPE_NORMAL, (Color) { 0xff, 0x77, 0x00, 0xFF });
+    block_add_text(on_key_press, "When");
+    block_add_dropdown(on_key_press, DROPDOWN_SOURCE_LISTREF, keys_list, ARRLEN(keys_list));
+    block_add_text(on_key_press, "pressed");
+
     int sc_print = block_register("print", BLOCKTYPE_NORMAL, (Color) { 0x00, 0xaa, 0x44, 0xFF });
     block_add_text(sc_print, "Print");
-    block_add_argument(sc_print, "Привет, мусороид!");
-
-    int sc_set_x = block_register("set_x", BLOCKTYPE_NORMAL, (Color) { 0x00, 0x77, 0xff, 0xFF });
-    block_add_text(sc_set_x, "Set X:");
-    block_add_argument(sc_set_x, "10");
-
-    int sc_x = block_register("x_pos", BLOCKTYPE_NORMAL, (Color) { 0x00, 0x77, 0xff, 0xFF });
-    block_add_text(sc_x, "X");
+    block_add_argument(sc_print, "Привет, мусороид!", BLOCKCONSTR_UNLIMITED);
 
     int sc_loop = block_register("loop", BLOCKTYPE_CONTROL, (Color) { 0xff, 0x99, 0x00, 0xff });
     block_add_text(sc_loop, "Loop");
 
     int sc_if = block_register("if", BLOCKTYPE_CONTROL, (Color) { 0xff, 0x99, 0x00, 0xff });
     block_add_text(sc_if, "If");
-    block_add_argument(sc_if, "");
+    block_add_argument(sc_if, "", BLOCKCONSTR_UNLIMITED);
     block_add_text(sc_if, ", then");
 
     int sc_else_if = block_register("else_if", BLOCKTYPE_CONTROLEND, (Color) { 0xff, 0x99, 0x00, 0xff });
     block_add_text(sc_else_if, "Else if");
-    block_add_argument(sc_else_if, "");
+    block_add_argument(sc_else_if, "", BLOCKCONSTR_UNLIMITED);
     block_add_text(sc_else_if, ", then");
 
     int sc_else = block_register("else", BLOCKTYPE_CONTROLEND, (Color) { 0xff, 0x99, 0x00, 0xff });
@@ -1069,21 +1361,24 @@ void setup(void) {
     int sc_end = block_register("end", BLOCKTYPE_END, (Color) { 0x77, 0x77, 0x77, 0xff });
     block_add_text(sc_end, "End");
 
-    int sc_decl_var = block_register("decl_var", BLOCKTYPE_NORMAL, (Color) { 0xff, 0x66, 0x00, 0xff });
-    block_add_text(sc_decl_var, "Declare");
-    block_add_argument(sc_decl_var, "my variable");
-    block_add_text(sc_decl_var, "=");
-    block_add_argument(sc_decl_var, "");
-
     int sc_plus = block_register("plus", BLOCKTYPE_NORMAL, (Color) { 0x00, 0xcc, 0x77, 0xFF });
-    block_add_argument(sc_plus, "9");
+    block_add_argument(sc_plus, "9", BLOCKCONSTR_UNLIMITED);
     block_add_text(sc_plus, "+");
-    block_add_argument(sc_plus, "10");
+    block_add_argument(sc_plus, "10", BLOCKCONSTR_UNLIMITED);
 
     int sc_less = block_register("less", BLOCKTYPE_NORMAL, (Color) { 0x00, 0xcc, 0x77, 0xFF });
-    block_add_argument(sc_less, "9");
+    block_add_argument(sc_less, "9", BLOCKCONSTR_UNLIMITED);
     block_add_text(sc_less, "<");
-    block_add_argument(sc_less, "11");
+    block_add_argument(sc_less, "11", BLOCKCONSTR_UNLIMITED);
+
+    int sc_decl_var = block_register("decl_var", BLOCKTYPE_NORMAL, (Color) { 0xff, 0x66, 0x00, 0xff });
+    block_add_text(sc_decl_var, "Declare");
+    block_add_argument(sc_decl_var, "my variable", BLOCKCONSTR_STRING);
+    block_add_text(sc_decl_var, "=");
+    block_add_argument(sc_decl_var, "", BLOCKCONSTR_UNLIMITED);
+
+    int sc_get_var = block_register("get_var", BLOCKTYPE_NORMAL, (Color) { 0xff, 0x66, 0x00, 0xff });
+    block_add_argument(sc_get_var, "my variable", BLOCKCONSTR_STRING);
 
     mouse_blockchain = blockchain_new();
     sprite_code = vector_create();
@@ -1108,7 +1403,7 @@ int main(void) {
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(800, 600, "Scrap");
     SetTargetFPS(60);
-    EnableEventWaiting();
+    //EnableEventWaiting();
     SetWindowState(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
 
     setup();
@@ -1117,10 +1412,20 @@ int main(void) {
         hover_info.sidebar = GetMouseX() < conf.side_bar_size && GetMouseY() > conf.font_size * 2;
         hover_info.block = NULL;
         hover_info.argument = NULL;
+        hover_info.argument_pos.x = 0;
+        hover_info.argument_pos.y = 0;
         hover_info.prev_argument = NULL;
         hover_info.blockchain = NULL;
         hover_info.blockchain_index = -1;
         hover_info.blockchain_layer = 0;
+
+        Vector2 mouse_pos = GetMousePosition();
+        if ((int)hover_info.last_mouse_pos.x == (int)mouse_pos.x && (int)hover_info.last_mouse_pos.y == (int)mouse_pos.y) {
+            hover_info.time_at_last_pos += GetFrameTime();
+        } else {
+            hover_info.last_mouse_pos = mouse_pos;
+            hover_info.time_at_last_pos = 0;
+        }
 
         check_collisions();
 
@@ -1159,18 +1464,28 @@ int main(void) {
         DrawTextEx(
             font_cond, 
             TextFormat(
-                "BlockChain: %p, Ind: %d, Layer: %d\nBlock: %p, Parent: %p\nArgument: %p\nPrev argument: %p\nSelect block: %p\nSelect arg: %p\nSidebar: %d\nMouse: %p", 
+                "BlockChain: %p, Ind: %d, Layer: %d\n"
+                "Block: %p, Parent: %p\n"
+                "Argument: %p, Pos: (%.3f, %.3f)\n"
+                "Prev argument: %p\n"
+                "Select block: %p\n"
+                "Select arg: %p, Pos: (%.3f, %.3f)\n"
+                "Sidebar: %d\n"
+                "Mouse: %p, Time: %.3f, Pos: (%d, %d), Last: (%d, %d)", 
                 hover_info.blockchain,
                 hover_info.blockchain_index,
                 hover_info.blockchain_layer,
                 hover_info.block,
                 hover_info.block ? hover_info.block->parent : NULL,
-                hover_info.argument, 
+                hover_info.argument, hover_info.argument_pos.x, hover_info.argument_pos.y, 
                 hover_info.prev_argument,
                 hover_info.select_block,
-                hover_info.select_argument, 
+                hover_info.select_argument, hover_info.select_argument_pos.x, hover_info.select_argument_pos.y, 
                 hover_info.sidebar,
-                mouse_blockchain.blocks
+                mouse_blockchain.blocks,
+                hover_info.time_at_last_pos,
+                (int)mouse_pos.x, (int)mouse_pos.y,
+                (int)hover_info.last_mouse_pos.x, (int)hover_info.last_mouse_pos.y
             ), 
             (Vector2){ 
                 conf.side_bar_size + 5, 
@@ -1202,6 +1517,9 @@ int main(void) {
         BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
             draw_block_chain(&mouse_blockchain);
         EndScissorMode();
+
+        draw_dropdown_list();
+        draw_tooltip();
 
         DrawTextEx(font, "Scrap", (Vector2){ 5, conf.font_size * 0.1 }, conf.font_size * 0.8, 0.0, WHITE);
 
