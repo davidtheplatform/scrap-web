@@ -1,7 +1,6 @@
 // TODO:
 // - Better collision resolution
 // - Swap blocks inside arguments?
-// - Dropdown lists
 // - Movement around codebase
 
 #include "raylib.h"
@@ -58,18 +57,33 @@ typedef struct {
     Texture2D image;
 } InputStaticImage;
 
-typedef struct {
-    BlockDropdownSource source;
-    char** ref;
-    size_t ref_len;
-} InputDropdown;
-
 typedef enum {
     INPUT_TEXT_DISPLAY,
     INPUT_ARGUMENT,
     INPUT_DROPDOWN,
     INPUT_IMAGE_DISPLAY,
 } BlockInputType;
+
+typedef enum {
+    BLOCKTYPE_NORMAL,
+    BLOCKTYPE_CONTROL,
+    BLOCKTYPE_CONTROLEND,
+    BLOCKTYPE_END,
+} BlockType;
+
+typedef struct Block {
+    int id;
+    void* arguments; // arguments are of void type because of C. That makes the whole codebase a bit garbled, though :P
+    Measurement ms;
+    struct Block* parent;
+} Block;
+
+typedef char** (*ListAccessor)(Block* block, size_t* list_len);
+
+typedef struct {
+    BlockDropdownSource source;
+    ListAccessor list;
+} InputDropdown;
 
 typedef union {
     InputStaticText stext;
@@ -83,13 +97,6 @@ typedef struct {
     BlockInputData data;
 } BlockInput;
 
-typedef enum {
-    BLOCKTYPE_NORMAL,
-    BLOCKTYPE_CONTROL,
-    BLOCKTYPE_CONTROLEND,
-    BLOCKTYPE_END,
-} BlockType;
-
 typedef struct {
     char* id;
     Color color;
@@ -97,13 +104,6 @@ typedef struct {
     bool hidden;
     BlockInput* inputs;
 } Blockdef;
-
-typedef struct Block {
-    int id;
-    void* arguments; // arguments are of void type because of C. That makes the whole codebase a bit garbled, though :P
-    Measurement ms;
-    struct Block* parent;
-} Block;
 
 typedef enum {
     ARGUMENT_TEXT,
@@ -148,7 +148,13 @@ typedef struct {
     Vector2 select_argument_pos;
     Vector2 last_mouse_pos;
     float time_at_last_pos;
+    int dropdown_hover_ind;
 } HoverInfo;
+
+typedef struct {
+    Measurement ms;
+    int scroll_amount;
+} Dropdown;
 
 char *top_buttons_text[] = {
     "Code",
@@ -166,10 +172,11 @@ Block* sidebar; // Vector that contains block prototypes
 BlockChain mouse_blockchain = {0};
 BlockChain* sprite_code; // List of block chains
 HoverInfo hover_info = {0};
+Dropdown dropdown = {0};
 int end_block_id = -1;
 
 char* keys_list[] = {
-    "Space",
+    "Space", "Enter",
     "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", 
     "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", 
     "U", "V", "W", "X", "Y", "Z",
@@ -178,6 +185,12 @@ char* keys_list[] = {
     "Aboba", "Musor", "Govno",
     "Super duper long name",
 };*/
+
+char** keys_accessor(Block* block, size_t* list_len) {
+    (void)block;
+    *list_len = ARRLEN(keys_list);
+    return keys_list;
+}
 
 void update_measurements(Block* block);
 
@@ -228,9 +241,11 @@ Block block_new(int id) {
                 arg->type = ARGUMENT_CONST_STRING;
                 arg->ms = (Measurement) {0};
 
-                if (!blockdef.inputs[i].data.drop.ref || blockdef.inputs[i].data.drop.ref_len == 0) break;
+                size_t list_len = 0;
+                char** list = blockdef.inputs[i].data.drop.list(&block, &list_len);
+                if (!list || list_len == 0) break;
 
-                for (char* pos = blockdef.inputs[i].data.drop.ref[0]; *pos; pos++) {
+                for (char* pos = list[0]; *pos; pos++) {
                     vector_add(&arg->data.text, *pos);
                 }
                 break;
@@ -377,6 +392,24 @@ void argument_set_block(BlockArgument* block_arg, Block block) {
     update_measurements(&block_arg->data.block);
 }
 
+void argument_set_const_string(BlockArgument* block_arg, Block* block, char* text) {
+    assert(block_arg->type == ARGUMENT_CONST_STRING);
+
+    block_arg->type = ARGUMENT_CONST_STRING;
+    vector_clear(block_arg->data.text);
+
+    for (char* pos = text; *pos; pos++) {
+        vector_add(&block_arg->data.text, *pos);
+    }
+    vector_add(&block_arg->data.text, 0);
+
+    Measurement ms = {0};
+    ms.size = MeasureTextEx(font_cond, text, BLOCK_TEXT_SIZE, 0.0);
+    block_arg->ms = ms;
+
+    update_measurements(block);
+}
+
 void argument_set_text(BlockArgument* block_arg, char* text) {
     assert(block_arg->type == ARGUMENT_BLOCK);
     assert(block_arg->data.block.parent != NULL);
@@ -446,14 +479,13 @@ void block_add_argument(int block_id, char* defualt_data, BlockArgumentConstrain
     };
 }
 
-void block_add_dropdown(int block_id, BlockDropdownSource dropdown_source, char** list_ref, size_t list_len) {
+void block_add_dropdown(int block_id, BlockDropdownSource dropdown_source, ListAccessor accessor) {
     BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
     input->type = INPUT_DROPDOWN;
     input->data = (BlockInputData) {
         .drop = {
             .source = dropdown_source,
-            .ref = list_ref,
-            .ref_len = list_len,
+            .list = accessor,
         },
     };
 }
@@ -1110,34 +1142,25 @@ void draw_dropdown_list(void) {
     BlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
 
     if (block_input.type != INPUT_DROPDOWN) return;
-    assert(hover_info.blockchain != NULL);
-
-    Vector2 ms = (Vector2) {0};
-    ms.x = hover_info.select_argument->ms.size.x;
-    ms.y = 5.0;
-
-    Vector2 pos = hover_info.select_argument_pos;
-    pos.y += hover_info.select_block->ms.size.y;
-    for (size_t i = 0; i < block_input.data.drop.ref_len; i++) {
-        if (pos.y > GetScreenHeight()) break;
-        Vector2 text_ms = MeasureTextEx(font_cond, block_input.data.drop.ref[i], BLOCK_TEXT_SIZE, 0);
-        ms.x = MAX(text_ms.x + 10, ms.x);
-        ms.y += conf.font_size;
-        pos.y += conf.font_size;
-    }
     
+    Vector2 pos;
     pos = hover_info.select_argument_pos;
     pos.y += hover_info.select_block->ms.size.y;
 
-    DrawRectangle(pos.x, pos.y, ms.x, ms.y, ColorBrightness(blockdef.color, -0.3));
+    DrawRectangle(pos.x, pos.y, dropdown.ms.size.x, dropdown.ms.size.y, ColorBrightness(blockdef.color, -0.3));
+    if (hover_info.dropdown_hover_ind != -1) {
+        DrawRectangle(pos.x, pos.y + (hover_info.dropdown_hover_ind - dropdown.scroll_amount) * conf.font_size, dropdown.ms.size.x, conf.font_size, blockdef.color);
+    }
 
     pos.x += 5.0;
     pos.y += 5.0;
 
-    for (size_t i = 0; i < block_input.data.drop.ref_len; i++) {
+    size_t list_len = 0;
+    char** list = block_input.data.drop.list(hover_info.select_block, &list_len);
+    for (size_t i = dropdown.scroll_amount; i < list_len; i++) {
         if (pos.y > GetScreenHeight()) break;
-        DrawTextEx(font_cond, block_input.data.drop.ref[i], (Vector2) { pos.x + 1, pos.y + 1 }, BLOCK_TEXT_SIZE, 0, BLACK);
-        DrawTextEx(font_cond, block_input.data.drop.ref[i], pos, BLOCK_TEXT_SIZE, 0, WHITE);
+        DrawTextEx(font_cond, list[i], (Vector2) { pos.x + 1, pos.y + 1 }, BLOCK_TEXT_SIZE, 0, BLACK);
+        DrawTextEx(font_cond, list[i], pos, BLOCK_TEXT_SIZE, 0, WHITE);
         pos.y += conf.font_size;
     }
 }
@@ -1150,6 +1173,7 @@ void handle_mouse_click(void) {
             hover_info.select_argument = NULL;
             hover_info.select_argument_pos.x = 0;
             hover_info.select_argument_pos.y = 0;
+            dropdown.scroll_amount = 0;
             return;
         }
         if (mouse_empty && hover_info.block) {
@@ -1166,6 +1190,18 @@ void handle_mouse_click(void) {
     }
 
     if (mouse_empty) {
+        if (hover_info.dropdown_hover_ind != -1) {
+            Blockdef blockdef = registered_blocks[hover_info.select_block->id];
+            BlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
+            assert(block_input.type == INPUT_DROPDOWN);
+            
+            size_t list_len = 0;
+            char** list = block_input.data.drop.list(hover_info.select_block, &list_len);
+            assert((size_t)hover_info.dropdown_hover_ind < list_len);
+
+            argument_set_const_string(hover_info.select_argument, hover_info.select_block, list[hover_info.dropdown_hover_ind]);
+        }
+
         if (hover_info.block != hover_info.select_block) {
             hover_info.select_block = hover_info.block;
         }
@@ -1173,6 +1209,7 @@ void handle_mouse_click(void) {
         if (hover_info.argument != hover_info.select_argument) {
             hover_info.select_argument = hover_info.argument;
             hover_info.select_argument_pos = hover_info.argument_pos;
+            dropdown.scroll_amount = 0;
             return;
         }
 
@@ -1264,6 +1301,55 @@ void handle_key_press(void) {
     }
 }
 
+void handle_mouse_wheel(void) {
+    int wheel = (int)GetMouseWheelMove();
+
+    dropdown.scroll_amount = MAX(dropdown.scroll_amount - wheel, 0);
+}
+
+void dropdown_check_collisions(void) {
+    if (!hover_info.select_argument) return;
+
+    Blockdef blockdef = registered_blocks[hover_info.select_block->id];
+    BlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
+
+    if (block_input.type != INPUT_DROPDOWN) return;
+
+    dropdown.ms.size.x = hover_info.select_argument->ms.size.x;
+    dropdown.ms.size.y = 5.0;
+
+    size_t list_len = 0;
+    char** list = block_input.data.drop.list(hover_info.select_block, &list_len);
+
+    Vector2 pos = hover_info.select_argument_pos;
+    pos.y += hover_info.select_block->ms.size.y;
+    for (size_t i = dropdown.scroll_amount; i < list_len; i++) {
+        if (pos.y > GetScreenHeight()) break;
+        Vector2 text_ms = MeasureTextEx(font_cond, list[i], BLOCK_TEXT_SIZE, 0);
+        dropdown.ms.size.x = MAX(text_ms.x + 10, dropdown.ms.size.x);
+        dropdown.ms.size.y += conf.font_size;
+        pos.y += conf.font_size;
+    }
+
+    pos = hover_info.select_argument_pos;
+    pos.y += hover_info.select_block->ms.size.y;
+
+    for (size_t i = dropdown.scroll_amount; i < list_len; i++) {
+        if (pos.y > GetScreenHeight()) break;
+        Rectangle rect;
+        rect.x = pos.x;
+        rect.y = pos.y;
+        rect.width = dropdown.ms.size.x;
+        rect.height = conf.font_size;
+
+        if (CheckCollisionPointRec(GetMousePosition(), rect)) {
+            hover_info.dropdown_hover_ind = i;
+            break;
+        }
+        pos.y += conf.font_size;
+    }
+}
+
 void check_collisions(void) {
     if (hover_info.sidebar) {
         int pos_y = conf.font_size * 2 + 10;
@@ -1278,6 +1364,8 @@ void check_collisions(void) {
             blockchain_check_collisions(&sprite_code[i]);
         }
     }
+
+    dropdown_check_collisions();
 }
 
 void sanitize_block(Block* block) {
@@ -1335,7 +1423,7 @@ void setup(void) {
 
     int on_key_press = block_register("on_key_press", BLOCKTYPE_NORMAL, (Color) { 0xff, 0x77, 0x00, 0xFF });
     block_add_text(on_key_press, "When");
-    block_add_dropdown(on_key_press, DROPDOWN_SOURCE_LISTREF, keys_list, ARRLEN(keys_list));
+    block_add_dropdown(on_key_press, DROPDOWN_SOURCE_LISTREF, &keys_accessor);
     block_add_text(on_key_press, "pressed");
 
     int sc_print = block_register("print", BLOCKTYPE_NORMAL, (Color) { 0x00, 0xaa, 0x44, 0xFF });
@@ -1418,6 +1506,7 @@ int main(void) {
         hover_info.blockchain = NULL;
         hover_info.blockchain_index = -1;
         hover_info.blockchain_layer = 0;
+        hover_info.dropdown_hover_ind = -1;
 
         Vector2 mouse_pos = GetMousePosition();
         if ((int)hover_info.last_mouse_pos.x == (int)mouse_pos.x && (int)hover_info.last_mouse_pos.y == (int)mouse_pos.y) {
@@ -1428,6 +1517,10 @@ int main(void) {
         }
 
         check_collisions();
+
+        if (GetMouseWheelMove() != 0.0) {
+            handle_mouse_wheel();
+        }
 
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             handle_mouse_click();
@@ -1471,7 +1564,8 @@ int main(void) {
                 "Select block: %p\n"
                 "Select arg: %p, Pos: (%.3f, %.3f)\n"
                 "Sidebar: %d\n"
-                "Mouse: %p, Time: %.3f, Pos: (%d, %d), Last: (%d, %d)", 
+                "Mouse: %p, Time: %.3f, Pos: (%d, %d), Last: (%d, %d)\n"
+                "Dropdown ind: %d, Scroll: %d",
                 hover_info.blockchain,
                 hover_info.blockchain_index,
                 hover_info.blockchain_layer,
@@ -1485,7 +1579,8 @@ int main(void) {
                 mouse_blockchain.blocks,
                 hover_info.time_at_last_pos,
                 (int)mouse_pos.x, (int)mouse_pos.y,
-                (int)hover_info.last_mouse_pos.x, (int)hover_info.last_mouse_pos.y
+                (int)hover_info.last_mouse_pos.x, (int)hover_info.last_mouse_pos.y,
+                hover_info.dropdown_hover_ind, dropdown.scroll_amount
             ), 
             (Vector2){ 
                 conf.side_bar_size + 5, 
