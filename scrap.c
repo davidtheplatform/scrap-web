@@ -166,6 +166,8 @@ Texture2D run_tex;
 Texture2D drop_tex;
 Font font;
 Font font_cond;
+Shader line_shader;
+int shader_time_loc;
 
 Blockdef* registered_blocks;
 Block* sidebar; // Vector that contains block prototypes
@@ -1165,6 +1167,26 @@ void draw_dropdown_list(void) {
     }
 }
 
+void draw_dots(void) {
+    int win_width = GetScreenWidth();
+    int win_height = GetScreenHeight();
+
+    for (int y = 0; y < win_height; y += conf.font_size * 2) {
+        for (int x = 0; x < win_width; x += conf.font_size * 2) {
+            DrawPixel(x, y, (Color) { 0x50, 0x50, 0x50, 0xff });
+        }
+    }
+
+    BeginShaderMode(line_shader);
+    for (int y = 0; y < win_height; y += conf.font_size * 2) {
+        DrawLine(0, y, win_width, y, (Color) { 0x40, 0x40, 0x40, 0xff });
+    }
+    for (int x = 0; x < win_width; x += conf.font_size * 2) {
+        DrawLine(x, 0, x, win_height, (Color) { 0x40, 0x40, 0x40, 0xff });
+    }
+    EndShaderMode();
+}
+
 void handle_mouse_click(void) {
     bool mouse_empty = vector_size(mouse_blockchain.blocks) == 0;
 
@@ -1414,6 +1436,9 @@ void setup(void) {
     SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_cond.texture, TEXTURE_FILTER_BILINEAR);
 
+    line_shader = LoadShader(DATA_PATH "line.vs", DATA_PATH "line.fs");
+    shader_time_loc = GetShaderLocation(line_shader, "time");
+
     registered_blocks = vector_create();
 
     int on_start = block_register("on_start", BLOCKTYPE_NORMAL, (Color) { 0xff, 0x77, 0x00, 0xFF });
@@ -1496,6 +1521,8 @@ int main(void) {
 
     setup();
 
+    float time = 0.0;
+
     while (!WindowShouldClose()) {
         hover_info.sidebar = GetMouseX() < conf.side_bar_size && GetMouseY() > conf.font_size * 2;
         hover_info.block = NULL;
@@ -1534,6 +1561,10 @@ int main(void) {
         }
 
         mouse_blockchain.pos = GetMousePosition();
+
+        if (shader_time_loc != -1) SetShaderValue(line_shader, shader_time_loc, &time, SHADER_UNIFORM_FLOAT);
+        time += GetFrameTime() / 3.0;
+        if (time >= 1.0) time -= 1.0;
         // I have no idea why, but this code may occasionally crash X server, so it is turned off for now
         /*if (hover_info.argument || hover_info.select_argument) {
             SetMouseCursor(MOUSE_CURSOR_IBEAM);
@@ -1548,9 +1579,11 @@ int main(void) {
 
         int sw = GetScreenWidth();
         int sh = GetScreenHeight();
+
+        draw_dots();
+
         DrawRectangle(0, 0, sw, conf.font_size, (Color){ 0x30, 0x30, 0x30, 0xFF });
         DrawRectangle(0, conf.font_size, sw, conf.font_size, (Color){ 0x2B, 0x2B, 0x2B, 0xFF });
-
         draw_top_buttons(sw);
 
 #ifdef DEBUG
@@ -1593,7 +1626,7 @@ int main(void) {
 #endif
 
         BeginScissorMode(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2);
-            DrawRectangle(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2, (Color){ 0, 0, 0, 0x40 });
+            DrawRectangle(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2, (Color){ 0, 0, 0, 0x60 });
 
             int pos_y = conf.font_size * 2 + 10;
             for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
