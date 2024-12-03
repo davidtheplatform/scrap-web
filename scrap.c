@@ -183,6 +183,35 @@ char* keys_list[] = {
     "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", 
     "U", "V", "W", "X", "Y", "Z",
 };
+
+const char* line_shader_vertex =
+    "#version 330\n"
+    "in vec3 vertexPosition;\n"
+    "in vec4 vertexColor;\n"
+    "out vec2 fragCoord;\n"
+    "out vec4 fragColor;\n"
+    "uniform mat4 mvp;\n"
+    "void main() {\n"
+    "    vec4 pos = mvp * vec4(vertexPosition, 1.0);\n"
+    "    fragCoord = pos.xy;\n"
+    "    fragColor = vertexColor;\n"
+    "    gl_Position = pos;\n"
+    "}";
+
+const char* line_shader_fragment =
+    "#version 330\n"
+    "in vec2 fragCoord;\n"
+    "in vec4 fragColor;\n"
+    "out vec4 finalColor;\n"
+    "uniform float time = 0.0;\n"
+    "void main() {\n"
+    "    vec2 coord = (fragCoord + 1.0) * 0.5;\n"
+    "    coord.y = 1.0 - coord.y;\n"
+    "    float pos = time * 3.0 - 1.0;\n"
+    "    float diff = 1.0 - (coord.x - pos) * (coord.y - pos);\n"
+    "    finalColor = vec4(fragColor.xyz, pow(diff, 12.0));\n"
+    "}";
+
 /*char* keys_list[] = {
     "Aboba", "Musor", "Govno",
     "Super duper long name",
@@ -1436,7 +1465,7 @@ void setup(void) {
     SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_cond.texture, TEXTURE_FILTER_BILINEAR);
 
-    line_shader = LoadShader(DATA_PATH "line.vs", DATA_PATH "line.fs");
+    line_shader = LoadShaderFromMemory(line_shader_vertex, line_shader_fragment);
     shader_time_loc = GetShaderLocation(line_shader, "time");
 
     registered_blocks = vector_create();
