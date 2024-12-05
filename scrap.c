@@ -1915,7 +1915,9 @@ void set_default_config(void) {
 
 void load_fonts(bool reload) {
     if (reload) {
+#ifdef LOGO
         UnloadTexture(logo_tex);
+#endif
         UnloadFont(font);
         UnloadFont(font_cond);
         UnloadFont(font_eb);
