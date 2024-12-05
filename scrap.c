@@ -9,10 +9,12 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <assert.h>
+#include <string.h>
 
 #define ARRLEN(x) (sizeof(x)/sizeof(x[0]))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define MOD(x, y) (((x) % (y) + (y)) % (y))
 
 #define BLOCK_TEXT_SIZE (conf.font_size * 0.6)
 #define DATA_PATH "data/"
@@ -21,6 +23,7 @@
 #define BLOCK_STRING_PADDING (10.0 * (float)conf.font_size / 32.0)
 #define BLOCK_CONTROL_INDENT (16.0 * (float)conf.font_size / 32.0)
 #define DROP_TEX_WIDTH ((float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)drop_tex.height * (float)drop_tex.width)
+#define ACTION_BAR_MAX_SIZE 128
 
 struct Config {
     int font_size;
@@ -147,14 +150,21 @@ typedef struct {
     BlockArgument* select_argument;
     Vector2 select_argument_pos;
     Vector2 last_mouse_pos;
+    Vector2 mouse_click_pos;
     float time_at_last_pos;
     int dropdown_hover_ind;
+    bool drag_cancelled;
 } HoverInfo;
 
 typedef struct {
     Measurement ms;
     int scroll_amount;
 } Dropdown;
+
+typedef struct {
+    float show_time;
+    char text[ACTION_BAR_MAX_SIZE];
+} ActionBar;
 
 char *top_buttons_text[] = {
     "Code",
@@ -164,8 +174,10 @@ char *top_buttons_text[] = {
 struct Config conf;
 Texture2D run_tex;
 Texture2D drop_tex;
+//Texture2D logo_tex;
 Font font;
 Font font_cond;
+Font font_eb;
 Shader line_shader;
 int shader_time_loc;
 
@@ -175,7 +187,12 @@ BlockChain mouse_blockchain = {0};
 BlockChain* sprite_code; // List of block chains
 HoverInfo hover_info = {0};
 Dropdown dropdown = {0};
+ActionBar actionbar;
 int end_block_id = -1;
+
+Vector2 camera_pos = {0};
+Vector2 camera_click_pos = {0};
+int blockchain_select_counter = -1;
 
 char* keys_list[] = {
     "Space", "Enter",
@@ -212,11 +229,6 @@ const char* line_shader_fragment =
     "    finalColor = vec4(fragColor.xyz, pow(diff, 12.0));\n"
     "}";
 
-/*char* keys_list[] = {
-    "Aboba", "Musor", "Govno",
-    "Super duper long name",
-};*/
-
 char** keys_accessor(Block* block, size_t* list_len) {
     (void)block;
     *list_len = ARRLEN(keys_list);
@@ -224,6 +236,11 @@ char** keys_accessor(Block* block, size_t* list_len) {
 }
 
 void update_measurements(Block* block);
+
+void actionbar_show(const char* text) {
+    strncpy(actionbar.text, text, ACTION_BAR_MAX_SIZE);
+    actionbar.show_time = 3.0;
+}
 
 void block_update_parent_links(Block* block) {
     BlockArgument* block_args = block->arguments;
@@ -1006,12 +1023,14 @@ void draw_control_outline(DrawStack* block, Vector2 end_pos, Color color, bool d
     /* 8 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_OUTLINE_SIZE, block->pos.y + block_size.y, BLOCK_OUTLINE_SIZE, end_pos.y - (block->pos.y + block_size.y), color);
 }
 
-void blockchain_check_collisions(BlockChain* chain) {
+void blockchain_check_collisions(BlockChain* chain, Vector2 camera_pos) {
     vector_clear(chain->draw_stack);
 
     hover_info.blockchain = chain;
     hover_info.blockchain_layer = 0;
     Vector2 pos = hover_info.blockchain->pos;
+    pos.x -= camera_pos.x;
+    pos.y -= camera_pos.y;
     for (vec_size_t i = 0; i < vector_size(hover_info.blockchain->blocks); i++) {
         if (hover_info.block) break;
         hover_info.blockchain_layer = vector_size(chain->draw_stack);
@@ -1051,10 +1070,12 @@ void blockchain_check_collisions(BlockChain* chain) {
     }
 }
 
-void draw_block_chain(BlockChain* chain) {
+void draw_block_chain(BlockChain* chain, Vector2 camera_pos) {
     vector_clear(chain->draw_stack);
 
     Vector2 pos = chain->pos;
+    pos.x -= camera_pos.x;
+    pos.y -= camera_pos.y;
     for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
         Blockdef blockdef = registered_blocks[chain->blocks[i].id];
         if ((blockdef.type == BLOCKTYPE_END || blockdef.type == BLOCKTYPE_CONTROLEND) && vector_size(chain->draw_stack) > 0) {
@@ -1129,13 +1150,13 @@ Vector2 draw_button(Vector2 position, char* text, float text_scale, int padding,
     };
 
     if (selected || (CheckCollisionPointRec(GetMousePosition(), rect) && vector_size(mouse_blockchain.blocks) == 0)) {
-        Color select_color = selected ? (Color){ 0xDD, 0xDD, 0xDD, 0xDD } :
+        Color select_color = selected ? (Color){ 0xFF, 0xFF, 0xFF, 0xFF } :
                                         (Color){ 0x40, 0x40, 0x40, 0xFF };
         DrawRectangleRec(rect, select_color);
     }
     if (text) {
         Color text_select_color = selected ? (Color){ 0x00, 0x00, 0x00, 0xFF } :
-                                             (Color){ 0xCC, 0xCC, 0xCC, 0xFF };
+                                             (Color){ 0xFF, 0xFF, 0xFF, 0xFF };
         DrawTextEx(font_cond, text, (Vector2){ rect.x + padding, rect.y + conf.font_size * 0.5 - text_size * 0.5 }, text_size, 0.0, text_select_color);
     }
 
@@ -1143,12 +1164,12 @@ Vector2 draw_button(Vector2 position, char* text, float text_scale, int padding,
 }
 
 void draw_top_buttons(int sw) {
-    Vector2 pos = (Vector2){ 0.0, conf.font_size };
+    Vector2 pos = (Vector2){ 0.0, conf.font_size * 1.2 };
     for (vec_size_t i = 0; i < ARRLEN(top_buttons_text); i++) {
         pos = draw_button(pos, top_buttons_text[i], 0.6, 10, 0, i == 0);
     }
 
-    Vector2 run_pos = (Vector2){ sw - conf.font_size, conf.font_size };
+    Vector2 run_pos = (Vector2){ sw - conf.font_size, conf.font_size * 1.2 };
     draw_button(run_pos, NULL, 0, conf.font_size * 0.5, 0, false);
     DrawTextureEx(run_tex, run_pos, 0, (float)conf.font_size / (float)run_tex.width, WHITE);
 }
@@ -1200,23 +1221,39 @@ void draw_dots(void) {
     int win_width = GetScreenWidth();
     int win_height = GetScreenHeight();
 
-    for (int y = 0; y < win_height; y += conf.font_size * 2) {
-        for (int x = 0; x < win_width; x += conf.font_size * 2) {
-            DrawPixel(x, y, (Color) { 0x50, 0x50, 0x50, 0xff });
+    for (int y = MOD(-(int)camera_pos.y, conf.font_size * 2); y < win_height; y += conf.font_size * 2) {
+        for (int x = MOD(-(int)camera_pos.x, conf.font_size * 2); x < win_width; x += conf.font_size * 2) {
+            DrawPixel(x, y, (Color) { 0x60, 0x60, 0x60, 0xff });
         }
     }
 
     BeginShaderMode(line_shader);
-    for (int y = 0; y < win_height; y += conf.font_size * 2) {
+    for (int y = MOD(-(int)camera_pos.y, conf.font_size * 2); y < win_height; y += conf.font_size * 2) {
         DrawLine(0, y, win_width, y, (Color) { 0x40, 0x40, 0x40, 0xff });
     }
-    for (int x = 0; x < win_width; x += conf.font_size * 2) {
+    for (int x = MOD(-(int)camera_pos.x, conf.font_size * 2); x < win_width; x += conf.font_size * 2) {
         DrawLine(x, 0, x, win_height, (Color) { 0x40, 0x40, 0x40, 0xff });
     }
     EndShaderMode();
 }
 
-void handle_mouse_click(void) {
+void draw_action_bar(void) {
+    if (actionbar.show_time <= 0) return;
+
+    int width = MeasureTextEx(font_eb, actionbar.text, conf.font_size * 0.75, 0.0).x;
+    Vector2 pos;
+    pos.x = (GetScreenWidth() - conf.side_bar_size) / 2 - width / 2 + conf.side_bar_size;
+    pos.y = GetScreenHeight() * 0.15;
+    Color color = YELLOW;
+    color.a = actionbar.show_time / 3.0 * 255.0;
+
+    DrawTextEx(font_eb, actionbar.text, pos, conf.font_size * 0.75, 0.0, color);
+}
+
+// Return value indicates if we should cancel dragging
+bool handle_mouse_click(void) {
+    hover_info.mouse_click_pos = GetMousePosition();
+    camera_click_pos = camera_pos;
     bool mouse_empty = vector_size(mouse_blockchain.blocks) == 0;
 
     if (hover_info.sidebar) {
@@ -1225,7 +1262,7 @@ void handle_mouse_click(void) {
             hover_info.select_argument_pos.x = 0;
             hover_info.select_argument_pos.y = 0;
             dropdown.scroll_amount = 0;
-            return;
+            return true;
         }
         if (mouse_empty && hover_info.block) {
             // Pickup block
@@ -1233,11 +1270,13 @@ void handle_mouse_click(void) {
             if (registered_blocks[hover_info.block->id].type == BLOCKTYPE_CONTROL && end_block_id != -1) {
                 blockchain_add_block(&mouse_blockchain, block_new(end_block_id));
             }
+            return true;
         } else if (!mouse_empty) {
             // Drop block
             blockchain_clear_blocks(&mouse_blockchain);
+            return true;
         }
-        return;
+        return true;
     }
 
     if (mouse_empty) {
@@ -1261,11 +1300,11 @@ void handle_mouse_click(void) {
             hover_info.select_argument = hover_info.argument;
             hover_info.select_argument_pos = hover_info.argument_pos;
             dropdown.scroll_amount = 0;
-            return;
+            return true;
         }
 
         if (hover_info.select_argument) {
-            return;
+            return true;
         }
     }
 
@@ -1274,8 +1313,8 @@ void handle_mouse_click(void) {
         if (hover_info.argument) {
             // Attach to argument
             printf("Attach to argument\n");
-            if (vector_size(mouse_blockchain.blocks) > 1) return;
-            if (hover_info.argument->type != ARGUMENT_TEXT) return;
+            if (vector_size(mouse_blockchain.blocks) > 1) return true;
+            if (hover_info.argument->type != ARGUMENT_TEXT) return true;
             mouse_blockchain.blocks[0].parent = hover_info.block;
             argument_set_block(hover_info.argument, mouse_blockchain.blocks[0]);
             vector_clear(mouse_blockchain.blocks);
@@ -1292,9 +1331,12 @@ void handle_mouse_click(void) {
         } else {
             // Put block
             printf("Put block\n");
+            mouse_blockchain.pos.x += camera_pos.x;
+            mouse_blockchain.pos.y += camera_pos.y;
             vector_add(&sprite_code, mouse_blockchain);
             mouse_blockchain = blockchain_new();
         }
+        return true;
     } else if (hover_info.block) {
         if (hover_info.block->parent) {
             // Detach argument
@@ -1314,11 +1356,23 @@ void handle_mouse_click(void) {
                 hover_info.block = NULL;
             }
         }
+        return true;
     }
+    return false;
 }
 
 void handle_key_press(void) {
-    if (!hover_info.select_argument) return;
+    if (!hover_info.select_argument) {
+        if (IsKeyPressed(KEY_SPACE) && vector_size(sprite_code) > 0) {
+            blockchain_select_counter++;
+            if ((vec_size_t)blockchain_select_counter >= vector_size(sprite_code)) blockchain_select_counter = 0;
+
+            camera_pos.x = sprite_code[blockchain_select_counter].pos.x - GetScreenWidth() / 2;
+            camera_pos.y = sprite_code[blockchain_select_counter].pos.y - GetScreenHeight() / 2;
+            actionbar_show(TextFormat("Jump to chain (%d/%d)", blockchain_select_counter + 1, vector_size(sprite_code)));
+        }
+        return;
+    };
     assert(hover_info.select_argument->type == ARGUMENT_TEXT || hover_info.select_argument->type == ARGUMENT_CONST_STRING);
     if (registered_blocks[hover_info.select_block->id].inputs[hover_info.select_argument->input_id].type == INPUT_DROPDOWN) return;
 
@@ -1356,6 +1410,15 @@ void handle_mouse_wheel(void) {
     int wheel = (int)GetMouseWheelMove();
 
     dropdown.scroll_amount = MAX(dropdown.scroll_amount - wheel, 0);
+}
+
+void handle_mouse_drag(void) {
+    if (hover_info.drag_cancelled) return;
+
+    Vector2 mouse_pos = GetMousePosition();
+
+    camera_pos.x = camera_click_pos.x - (mouse_pos.x - hover_info.mouse_click_pos.x);
+    camera_pos.y = camera_click_pos.y - (mouse_pos.y - hover_info.mouse_click_pos.y);
 }
 
 void dropdown_check_collisions(void) {
@@ -1412,7 +1475,7 @@ void check_collisions(void) {
     } else {
         for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
             if (hover_info.block) break;
-            blockchain_check_collisions(&sprite_code[i]);
+            blockchain_check_collisions(&sprite_code[i], camera_pos);
         }
     }
 
@@ -1457,13 +1520,20 @@ void setup(void) {
     drop_tex = LoadTexture(DATA_PATH "drop.png");
     SetTextureFilter(drop_tex, TEXTURE_FILTER_BILINEAR);
 
+    //Image logo = LoadImageSvg(DATA_PATH "logo.svg", conf.font_size, conf.font_size);
+    //logo_tex = LoadTextureFromImage(logo);
+    //SetTextureFilter(logo_tex, TEXTURE_FILTER_BILINEAR);
+    //UnloadImage(logo);
+
     int codepoints_count;
     int *codepoints = LoadCodepoints(conf.font_symbols, &codepoints_count);
     font = LoadFontEx(DATA_PATH "nk57.otf", conf.font_size, codepoints, codepoints_count);
     font_cond = LoadFontEx(DATA_PATH "nk57-cond.otf", conf.font_size, codepoints, codepoints_count);
+    font_eb = LoadFontEx(DATA_PATH "nk57-eb.otf", conf.font_size, codepoints, codepoints_count);
     UnloadCodepoints(codepoints);
     SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_cond.texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(font_eb.texture, TEXTURE_FILTER_BILINEAR);
 
     line_shader = LoadShaderFromMemory(line_shader_vertex, line_shader_fragment);
     shader_time_loc = GetShaderLocation(line_shader, "time");
@@ -1579,21 +1649,32 @@ int main(void) {
         }
 
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            handle_mouse_click();
+            hover_info.drag_cancelled = handle_mouse_click();
 #ifdef DEBUG
             // This will traverse through all blocks in codebase, which is expensive in large codebase.
             // Ideally all functions should not be broken in the first place. This helps with debugging invalid states
             sanitize_links();
 #endif
+
+        } else if (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)) {
+            hover_info.mouse_click_pos = GetMousePosition();
+            camera_click_pos = camera_pos;
+        } else if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) || IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            handle_mouse_drag();
         } else {
+            hover_info.drag_cancelled = false;
             handle_key_press();
         }
 
         mouse_blockchain.pos = GetMousePosition();
 
+        actionbar.show_time -= GetFrameTime();
+        if (actionbar.show_time < 0) actionbar.show_time = 0;
+
         if (shader_time_loc != -1) SetShaderValue(line_shader, shader_time_loc, &time, SHADER_UNIFORM_FLOAT);
-        time += GetFrameTime() / 3.0;
+        time += GetFrameTime() / 8.0;
         if (time >= 1.0) time -= 1.0;
+
         // I have no idea why, but this code may occasionally crash X server, so it is turned off for now
         /*if (hover_info.argument || hover_info.select_argument) {
             SetMouseCursor(MOUSE_CURSOR_IBEAM);
@@ -1611,8 +1692,8 @@ int main(void) {
 
         draw_dots();
 
-        DrawRectangle(0, 0, sw, conf.font_size, (Color){ 0x30, 0x30, 0x30, 0xFF });
-        DrawRectangle(0, conf.font_size, sw, conf.font_size, (Color){ 0x2B, 0x2B, 0x2B, 0xFF });
+        DrawRectangle(0, 0, sw, conf.font_size * 1.2, (Color){ 0x30, 0x30, 0x30, 0xFF });
+        DrawRectangle(0, conf.font_size * 1.2, sw, conf.font_size, (Color){ 0x2B, 0x2B, 0x2B, 0xFF });
         draw_top_buttons(sw);
 
 #ifdef DEBUG
@@ -1626,7 +1707,8 @@ int main(void) {
                 "Select block: %p\n"
                 "Select arg: %p, Pos: (%.3f, %.3f)\n"
                 "Sidebar: %d\n"
-                "Mouse: %p, Time: %.3f, Pos: (%d, %d), Last: (%d, %d)\n"
+                "Mouse: %p, Time: %.3f, Pos: (%d, %d), Click: (%d, %d)\n"
+                "Camera: (%.3f, %.3f), Click: (%.3f, %.3f)\n"
                 "Dropdown ind: %d, Scroll: %d",
                 hover_info.blockchain,
                 hover_info.blockchain_index,
@@ -1641,12 +1723,13 @@ int main(void) {
                 mouse_blockchain.blocks,
                 hover_info.time_at_last_pos,
                 (int)mouse_pos.x, (int)mouse_pos.y,
-                (int)hover_info.last_mouse_pos.x, (int)hover_info.last_mouse_pos.y,
+                (int)hover_info.mouse_click_pos.x, (int)hover_info.mouse_click_pos.y,
+                camera_pos.x, camera_pos.y, camera_click_pos.x, camera_click_pos.y,
                 hover_info.dropdown_hover_ind, dropdown.scroll_amount
             ), 
             (Vector2){ 
                 conf.side_bar_size + 5, 
-                conf.font_size * 2 + 5
+                conf.font_size * 2.2 + 5
             }, 
             conf.font_size * 0.5,
             0.0, 
@@ -1654,10 +1737,16 @@ int main(void) {
         );
 #endif
 
-        BeginScissorMode(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2);
-            DrawRectangle(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2, (Color){ 0, 0, 0, 0x60 });
+        BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
+            for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
+                draw_block_chain(&sprite_code[i], camera_pos);
+            }
+        EndScissorMode();
 
-            int pos_y = conf.font_size * 2 + 10;
+        BeginScissorMode(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2);
+            DrawRectangle(0, conf.font_size * 2.2, conf.side_bar_size, sh - conf.font_size * 2.2, (Color){ 0, 0, 0, 0x60 });
+
+            int pos_y = conf.font_size * 2.2 + 10;
             for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
                 draw_block((Vector2){ 10, pos_y }, &sidebar[i], true);
                 pos_y += conf.font_size + 10;
@@ -1665,20 +1754,16 @@ int main(void) {
 
         EndScissorMode();
 
-        BeginScissorMode(conf.side_bar_size, conf.font_size * 2, sw - conf.side_bar_size, sh - conf.font_size * 2);
-            for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
-                draw_block_chain(&sprite_code[i]);
-            }
-        EndScissorMode();
-
         BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
-            draw_block_chain(&mouse_blockchain);
+            draw_block_chain(&mouse_blockchain, (Vector2) {0});
         EndScissorMode();
 
+        draw_action_bar();
         draw_dropdown_list();
         draw_tooltip();
 
-        DrawTextEx(font, "Scrap", (Vector2){ 5, conf.font_size * 0.1 }, conf.font_size * 0.8, 0.0, WHITE);
+        //DrawTexture(logo_tex, 5, conf.font_size * 0.1, WHITE);
+        DrawTextEx(font_eb, "Scrap", (Vector2){ 10 + conf.font_size, conf.font_size * 0.2 }, conf.font_size * 0.8, 0.0, WHITE);
 
         EndDrawing();
     }
