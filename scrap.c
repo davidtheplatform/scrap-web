@@ -137,6 +137,17 @@ typedef struct {
     Block* blocks;
 } BlockChain;
 
+typedef enum {
+    TOPBAR_TOP,
+    TOPBAR_TABS,
+    TOPBAR_RUN_BUTTON,
+} TopBarType;
+
+typedef struct {
+    TopBarType type;
+    int ind;
+} TopBars;
+
 typedef struct {
     bool sidebar;
     BlockChain* blockchain;
@@ -154,6 +165,7 @@ typedef struct {
     float time_at_last_pos;
     int dropdown_hover_ind;
     bool drag_cancelled;
+    TopBars top_bars;
 } HoverInfo;
 
 typedef struct {
@@ -166,7 +178,13 @@ typedef struct {
     char text[ACTION_BAR_MAX_SIZE];
 } ActionBar;
 
-char *top_buttons_text[] = {
+char* top_bar_buttons_text[] = {
+    "File",
+    "Settings",
+    "About",
+};
+
+char* tab_bar_buttons_text[] = {
     "Code",
     "Output",
 };
@@ -174,7 +192,9 @@ char *top_buttons_text[] = {
 struct Config conf;
 Texture2D run_tex;
 Texture2D drop_tex;
-//Texture2D logo_tex;
+#ifdef LOGO
+Texture2D logo_tex;
+#endif
 Font font;
 Font font_cond;
 Font font_eb;
@@ -1139,17 +1159,37 @@ void draw_block_chain(BlockChain* chain, Vector2 camera_pos) {
     }
 }
 
-Vector2 draw_button(Vector2 position, char* text, float text_scale, int padding, int margin, bool selected) {
-    int text_size = conf.font_size * text_scale;
+bool button_check_collisions(Vector2* position, char* text, float button_scale, float side_padding, float side_margin) {
+    side_padding *= conf.font_size;
+    side_margin *= conf.font_size;
+
+    int text_size = conf.font_size * 0.6;
     int text_width = text ? MeasureTextEx(font_cond, text, text_size, 0.0).x : 0;
     Rectangle rect = {
-        .x = position.x,
-        .y = position.y,
-        .width = text_width + padding * 2,
-        .height = conf.font_size,
+        .x = position->x,
+        .y = position->y,
+        .width = text_width + side_padding * 2,
+        .height = conf.font_size * button_scale,
     };
 
-    if (selected || (CheckCollisionPointRec(GetMousePosition(), rect) && vector_size(mouse_blockchain.blocks) == 0)) {
+    position->x += rect.width + side_margin;
+    return CheckCollisionPointRec(GetMousePosition(), rect) && vector_size(mouse_blockchain.blocks) == 0;
+}
+
+void draw_button(Vector2* position, char* text, float button_scale, float side_padding, float side_margin, bool selected, bool hovered) {
+    side_padding *= conf.font_size;
+    side_margin *= conf.font_size;
+
+    int text_size = conf.font_size * 0.6;
+    int text_width = text ? MeasureTextEx(font_cond, text, text_size, 0.0).x : 0;
+    Rectangle rect = {
+        .x = position->x,
+        .y = position->y,
+        .width = text_width + side_padding * 2,
+        .height = conf.font_size * button_scale,
+    };
+
+    if (selected || hovered) {
         Color select_color = selected ? (Color){ 0xFF, 0xFF, 0xFF, 0xFF } :
                                         (Color){ 0x40, 0x40, 0x40, 0xFF };
         DrawRectangleRec(rect, select_color);
@@ -1157,22 +1197,68 @@ Vector2 draw_button(Vector2 position, char* text, float text_scale, int padding,
     if (text) {
         Color text_select_color = selected ? (Color){ 0x00, 0x00, 0x00, 0xFF } :
                                              (Color){ 0xFF, 0xFF, 0xFF, 0xFF };
-        DrawTextEx(font_cond, text, (Vector2){ rect.x + padding, rect.y + conf.font_size * 0.5 - text_size * 0.5 }, text_size, 0.0, text_select_color);
+        DrawTextEx(font_cond, text, (Vector2){ rect.x + side_padding, rect.y + rect.height * 0.5 - text_size * 0.5 }, text_size, 0.0, text_select_color);
     }
 
-    return (Vector2){ rect.x + rect.width + margin, rect.y };
+    position->x += rect.width + side_margin;
 }
 
-void draw_top_buttons(int sw) {
+void bars_check_collisions(void) {
     Vector2 pos = (Vector2){ 0.0, conf.font_size * 1.2 };
-    for (vec_size_t i = 0; i < ARRLEN(top_buttons_text); i++) {
-        pos = draw_button(pos, top_buttons_text[i], 0.6, 10, 0, i == 0);
+    for (vec_size_t i = 0; i < ARRLEN(tab_bar_buttons_text); i++) {
+        if (button_check_collisions(&pos, tab_bar_buttons_text[i], 1.0, 0.3, 0)) {
+            hover_info.top_bars.type = TOPBAR_TABS;
+            hover_info.top_bars.ind = i;
+            return;
+        }
+    }
+
+    Vector2 run_pos = (Vector2){ GetScreenWidth() - conf.font_size, conf.font_size * 1.2 };
+    if (button_check_collisions(&run_pos, NULL, 1.0, 0.5, 0)) {
+        hover_info.top_bars.type = TOPBAR_RUN_BUTTON;
+        hover_info.top_bars.ind = 0;
+        return;
+    }
+
+    int width = MeasureTextEx(font_eb, "Scrap", conf.font_size * 0.8, 0.0).x;
+    pos = (Vector2){ 20 + conf.font_size + width, 0 };
+    for (vec_size_t i = 0; i < ARRLEN(top_bar_buttons_text); i++) {
+        if (button_check_collisions(&pos, top_bar_buttons_text[i], 1.2, 0.3, 0)) {
+            hover_info.top_bars.type = TOPBAR_TOP;
+            hover_info.top_bars.ind = i;
+            return;
+        }
+    }
+}
+
+#define COLLISION_AT(bar_type, index) (hover_info.top_bars.type == (bar_type) && hover_info.top_bars.ind == (int)(index))
+void draw_tab_buttons(int sw) {
+    Vector2 pos = (Vector2){ 0.0, conf.font_size * 1.2 };
+    for (vec_size_t i = 0; i < ARRLEN(tab_bar_buttons_text); i++) {
+        draw_button(&pos, tab_bar_buttons_text[i], 1.0, 0.3, 0, i == 0, COLLISION_AT(TOPBAR_TABS, i));
     }
 
     Vector2 run_pos = (Vector2){ sw - conf.font_size, conf.font_size * 1.2 };
-    draw_button(run_pos, NULL, 0, conf.font_size * 0.5, 0, false);
+    Vector2 run_pos_copy = run_pos;
+    draw_button(&run_pos_copy, NULL, 1.0, 0.5, 0, false, COLLISION_AT(TOPBAR_RUN_BUTTON, 0));
     DrawTextureEx(run_tex, run_pos, 0, (float)conf.font_size / (float)run_tex.width, WHITE);
 }
+
+void draw_top_bar(void) {
+#ifdef LOGO
+    DrawTexture(logo_tex, 5, conf.font_size * 0.1, WHITE);
+#endif
+
+    int width = MeasureTextEx(font_eb, "Scrap", conf.font_size * 0.8, 0.0).x;
+    DrawTextEx(font_eb, "Scrap", (Vector2){ 10 + conf.font_size, conf.font_size * 0.2 }, conf.font_size * 0.8, 0.0, WHITE);
+
+    Vector2 pos = { 20 + conf.font_size + width, 0 };
+
+    for (vec_size_t i = 0; i < ARRLEN(top_bar_buttons_text); i++) {
+        draw_button(&pos, top_bar_buttons_text[i], 1.2, 0.3, 0, false, COLLISION_AT(TOPBAR_TOP, i));
+    }
+}
+#undef COLLISION_AT
 
 void draw_tooltip(void) {
     if (hover_info.time_at_last_pos < 0.5 || !hover_info.block) return;
@@ -1254,6 +1340,11 @@ void draw_action_bar(void) {
 bool handle_mouse_click(void) {
     hover_info.mouse_click_pos = GetMousePosition();
     camera_click_pos = camera_pos;
+
+    if (hover_info.top_bars.ind != -1) {
+        return true;
+    }
+
     bool mouse_empty = vector_size(mouse_blockchain.blocks) == 0;
 
     if (hover_info.sidebar) {
@@ -1464,7 +1555,7 @@ void dropdown_check_collisions(void) {
     }
 }
 
-void check_collisions(void) {
+void check_block_collisions(void) {
     if (hover_info.sidebar) {
         int pos_y = conf.font_size * 2 + 10;
         for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
@@ -1478,8 +1569,6 @@ void check_collisions(void) {
             blockchain_check_collisions(&sprite_code[i], camera_pos);
         }
     }
-
-    dropdown_check_collisions();
 }
 
 void sanitize_block(Block* block) {
@@ -1520,10 +1609,12 @@ void setup(void) {
     drop_tex = LoadTexture(DATA_PATH "drop.png");
     SetTextureFilter(drop_tex, TEXTURE_FILTER_BILINEAR);
 
-    //Image logo = LoadImageSvg(DATA_PATH "logo.svg", conf.font_size, conf.font_size);
-    //logo_tex = LoadTextureFromImage(logo);
-    //SetTextureFilter(logo_tex, TEXTURE_FILTER_BILINEAR);
-    //UnloadImage(logo);
+#ifdef LOGO
+    Image logo = LoadImageSvg(DATA_PATH "logo.svg", conf.font_size, conf.font_size);
+    logo_tex = LoadTextureFromImage(logo);
+    SetTextureFilter(logo_tex, TEXTURE_FILTER_BILINEAR);
+    UnloadImage(logo);
+#endif
 
     int codepoints_count;
     int *codepoints = LoadCodepoints(conf.font_symbols, &codepoints_count);
@@ -1633,6 +1724,7 @@ int main(void) {
         hover_info.blockchain_index = -1;
         hover_info.blockchain_layer = 0;
         hover_info.dropdown_hover_ind = -1;
+        hover_info.top_bars.ind = -1;
 
         Vector2 mouse_pos = GetMousePosition();
         if ((int)hover_info.last_mouse_pos.x == (int)mouse_pos.x && (int)hover_info.last_mouse_pos.y == (int)mouse_pos.y) {
@@ -1642,7 +1734,9 @@ int main(void) {
             hover_info.time_at_last_pos = 0;
         }
 
-        check_collisions();
+        check_block_collisions();
+        bars_check_collisions();
+        dropdown_check_collisions();
 
         if (GetMouseWheelMove() != 0.0) {
             handle_mouse_wheel();
@@ -1655,7 +1749,6 @@ int main(void) {
             // Ideally all functions should not be broken in the first place. This helps with debugging invalid states
             sanitize_links();
 #endif
-
         } else if (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)) {
             hover_info.mouse_click_pos = GetMousePosition();
             camera_click_pos = camera_pos;
@@ -1694,7 +1787,8 @@ int main(void) {
 
         DrawRectangle(0, 0, sw, conf.font_size * 1.2, (Color){ 0x30, 0x30, 0x30, 0xFF });
         DrawRectangle(0, conf.font_size * 1.2, sw, conf.font_size, (Color){ 0x2B, 0x2B, 0x2B, 0xFF });
-        draw_top_buttons(sw);
+        draw_tab_buttons(sw);
+        draw_top_bar();
 
 #ifdef DEBUG
         DrawTextEx(
@@ -1709,7 +1803,9 @@ int main(void) {
                 "Sidebar: %d\n"
                 "Mouse: %p, Time: %.3f, Pos: (%d, %d), Click: (%d, %d)\n"
                 "Camera: (%.3f, %.3f), Click: (%.3f, %.3f)\n"
-                "Dropdown ind: %d, Scroll: %d",
+                "Dropdown ind: %d, Scroll: %d\n"
+                "Drag cancelled: %d\n"
+                "Bar: %d, Ind: %d",
                 hover_info.blockchain,
                 hover_info.blockchain_index,
                 hover_info.blockchain_layer,
@@ -1725,7 +1821,9 @@ int main(void) {
                 (int)mouse_pos.x, (int)mouse_pos.y,
                 (int)hover_info.mouse_click_pos.x, (int)hover_info.mouse_click_pos.y,
                 camera_pos.x, camera_pos.y, camera_click_pos.x, camera_click_pos.y,
-                hover_info.dropdown_hover_ind, dropdown.scroll_amount
+                hover_info.dropdown_hover_ind, dropdown.scroll_amount,
+                hover_info.drag_cancelled,
+                hover_info.top_bars.type, hover_info.top_bars.ind
             ), 
             (Vector2){ 
                 conf.side_bar_size + 5, 
@@ -1761,9 +1859,6 @@ int main(void) {
         draw_action_bar();
         draw_dropdown_list();
         draw_tooltip();
-
-        //DrawTexture(logo_tex, 5, conf.font_size * 0.1, WHITE);
-        DrawTextEx(font_eb, "Scrap", (Vector2){ 10 + conf.font_size, conf.font_size * 0.2 }, conf.font_size * 0.8, 0.0, WHITE);
 
         EndDrawing();
     }
