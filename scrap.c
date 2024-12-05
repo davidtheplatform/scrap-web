@@ -1,7 +1,7 @@
 // TODO:
 // - Better collision resolution
 // - Swap blocks inside arguments?
-// - Movement around codebase
+// - Codebase scrollbars
 
 #include "raylib.h"
 #include "vec.h"
@@ -10,11 +10,15 @@
 #include <stddef.h>
 #include <assert.h>
 #include <string.h>
+#include <math.h>
 
 #define ARRLEN(x) (sizeof(x)/sizeof(x[0]))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define MOD(x, y) (((x) % (y) + (y)) % (y))
+#define CLAMP(x, min, max) (MIN(MAX(min, x), max))
+#define LERP(min, max, t) (((max) - (min)) * (t) + (min))
+#define UNLERP(min, max, v) (((float)(v) - (float)(min)) / ((float)(max) - (float)(min)))
 
 #define BLOCK_TEXT_SIZE (conf.font_size * 0.6)
 #define DATA_PATH "data/"
@@ -178,6 +182,42 @@ typedef struct {
     char text[ACTION_BAR_MAX_SIZE];
 } ActionBar;
 
+typedef struct {
+    int min;
+    int max;
+    int value;
+    char* label;
+} IGuiSlider;
+
+typedef enum {
+    ELEMENT_SLIDER,
+    ELEMENT_CLOSE_BUTTON,
+} IGuiElementType;
+
+typedef union {
+    IGuiSlider slider;
+} IGuiElementData;
+
+typedef struct {
+    IGuiElementType type;
+    IGuiElementData data;
+} IGuiElement;
+
+typedef enum {
+    IGUI_SETTINGS,
+} IGuiType;
+
+typedef struct {
+    bool shown;
+    float animation_time;
+    bool is_fading;
+    Vector2 size;
+    int hover_element;
+    int select_element;
+    IGuiType type;
+    IGuiElement* elements;
+} IGui;
+
 char* top_bar_buttons_text[] = {
     "File",
     "Settings",
@@ -192,6 +232,7 @@ char* tab_bar_buttons_text[] = {
 struct Config conf;
 Texture2D run_tex;
 Texture2D drop_tex;
+Texture2D close_tex;
 #ifdef LOGO
 Texture2D logo_tex;
 #endif
@@ -199,6 +240,7 @@ Font font;
 Font font_cond;
 Font font_eb;
 Shader line_shader;
+float shader_time = 0.0;
 int shader_time_loc;
 
 Blockdef* registered_blocks;
@@ -208,6 +250,7 @@ BlockChain* sprite_code; // List of block chains
 HoverInfo hover_info = {0};
 Dropdown dropdown = {0};
 ActionBar actionbar;
+IGui igui = {0};
 int end_block_id = -1;
 
 Vector2 camera_pos = {0};
@@ -244,9 +287,9 @@ const char* line_shader_fragment =
     "void main() {\n"
     "    vec2 coord = (fragCoord + 1.0) * 0.5;\n"
     "    coord.y = 1.0 - coord.y;\n"
-    "    float pos = time * 3.0 - 1.0;\n"
-    "    float diff = 1.0 - (coord.x - pos) * (coord.y - pos);\n"
-    "    finalColor = vec4(fragColor.xyz, pow(diff, 12.0));\n"
+    "    float pos = time * 4.0 - 1.0;\n"
+    "    float diff = clamp(1.0 - abs(coord.x + coord.y - pos), 0.0, 1.0);\n"
+    "    finalColor = vec4(fragColor.xyz, pow(diff, 2.0));\n"
     "}";
 
 char** keys_accessor(Block* block, size_t* list_len) {
@@ -256,6 +299,7 @@ char** keys_accessor(Block* block, size_t* list_len) {
 }
 
 void update_measurements(Block* block);
+void load_fonts(bool reload);
 
 void actionbar_show(const char* text) {
     strncpy(actionbar.text, text, ACTION_BAR_MAX_SIZE);
@@ -762,6 +806,11 @@ void block_update_collisions(Vector2 position, Block* block) {
     }
 }
 
+void draw_text_shadow(Font font, const char *text, Vector2 position, float font_size, float spacing, Color tint, Color shadow) {
+    DrawTextEx(font, text, (Vector2) { position.x + 1, position.y + 1 }, font_size, spacing, shadow);
+    DrawTextEx(font, text, position, font_size, spacing, tint);
+}
+
 void draw_block(Vector2 position, Block* block, bool force_outline) {
     if (block->id == -1) return;
 
@@ -792,19 +841,7 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
         switch (cur.type) {
         case INPUT_TEXT_DISPLAY:
             width = cur.data.stext.ms.size.x;
-            DrawTextEx(
-                font_cond, 
-                cur.data.stext.text, 
-                (Vector2) { 
-                    cursor.x + 1, 
-                    cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5 + 1, 
-                },
-                BLOCK_TEXT_SIZE,
-                0.0,
-                (Color) { 0x00, 0x00, 0x00, 0x88 }
-            );
-
-            DrawTextEx(
+            draw_text_shadow(
                 font_cond, 
                 cur.data.stext.text, 
                 (Vector2) { 
@@ -813,7 +850,8 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
                 },
                 BLOCK_TEXT_SIZE,
                 0.0,
-                WHITE
+                WHITE,
+                (Color) { 0x00, 0x00, 0x00, 0x88 }
             );
             break;
         case INPUT_ARGUMENT:
@@ -884,18 +922,7 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
                     DrawRectangleRoundedLines(arg_size, 0.5, 4, BLOCK_OUTLINE_SIZE, ColorBrightness(color, &block_args[arg_id] == hover_info.select_argument ? -0.5 : 0.5));
                 }
                 Vector2 ms = MeasureTextEx(font_cond, block_args[arg_id].data.text, BLOCK_TEXT_SIZE, 0);
-                DrawTextEx(
-                    font_cond, 
-                    block_args[arg_id].data.text,
-                    (Vector2) { 
-                        cursor.x + BLOCK_STRING_PADDING * 0.5 + 1, 
-                        cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5 + 1, 
-                    },
-                    BLOCK_TEXT_SIZE,
-                    0.0,
-                    (Color) { 0x00, 0x00, 0x00, 0x88 }
-                );
-                DrawTextEx(
+                draw_text_shadow(
                     font_cond, 
                     block_args[arg_id].data.text,
                     (Vector2) { 
@@ -904,7 +931,8 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
                     },
                     BLOCK_TEXT_SIZE,
                     0.0,
-                    WHITE
+                    WHITE,
+                    (Color) { 0x00, 0x00, 0x00, 0x88 }
                 );
                 DrawTextureEx(
                     drop_tex,
@@ -968,7 +996,7 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
             width = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0).x;
             DrawTextEx(
                 font_cond, 
-                "NODEF", 
+                "NODEF",
                 (Vector2) { 
                     cursor.x, 
                     cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
@@ -982,13 +1010,6 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
 
         cursor.x += width + BLOCK_PADDING;
     }
-
-//#ifdef DEBUG
-    //DrawTextEx(font_cond, TextFormat("Prev: %p", block->prev), (Vector2) { cursor.x + 10, cursor.y + block_size.height * 0.5 - conf.font_size * 0.5 }, conf.font_size * 0.5, 0.0, WHITE);
-//    if (!block->parent) {
-//        DrawTextEx(font_cond, TextFormat("%p", block), (Vector2) { cursor.x + 10, cursor.y + block_size.height * 0.5 - conf.font_size * 0.25 }, conf.font_size * 0.5, 0.0, WHITE);
-//    }
-//#endif
 }
 
 // Draw order for draw_control_outline() and draw_controlend_outline()
@@ -1297,8 +1318,7 @@ void draw_dropdown_list(void) {
     char** list = block_input.data.drop.list(hover_info.select_block, &list_len);
     for (size_t i = dropdown.scroll_amount; i < list_len; i++) {
         if (pos.y > GetScreenHeight()) break;
-        DrawTextEx(font_cond, list[i], (Vector2) { pos.x + 1, pos.y + 1 }, BLOCK_TEXT_SIZE, 0, BLACK);
-        DrawTextEx(font_cond, list[i], pos, BLOCK_TEXT_SIZE, 0, WHITE);
+        draw_text_shadow(font_cond, list[i], pos, BLOCK_TEXT_SIZE, 0, WHITE, (Color) { 0x00, 0x00, 0x00, 0x88 });
         pos.y += conf.font_size;
     }
 }
@@ -1336,12 +1356,302 @@ void draw_action_bar(void) {
     DrawTextEx(font_eb, actionbar.text, pos, conf.font_size * 0.75, 0.0, color);
 }
 
+// https://easings.net/#easeOutExpo
+float ease_out_expo(float x) {
+    return x == 1.0 ? 1.0 : 1 - powf(2.0, -10.0 * x);
+}
+
+void igui_draw_window(void) {
+    if (!igui.shown) return;
+
+    float animation_ease = ease_out_expo(igui.animation_time);
+
+    Vector2 size = igui.size;
+    size.x *= animation_ease * GetScreenWidth();
+    size.y *= animation_ease * GetScreenHeight();
+
+    Rectangle rect;
+    rect.x = GetScreenWidth() / 2 - size.x / 2;
+    rect.y = GetScreenHeight() / 2 - size.y / 2;
+    rect.width = size.x;
+    rect.height = size.y;
+
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color) { 0x00, 0x00, 0x00, 0x60 * animation_ease });
+    DrawRectangleRec(rect, (Color) { 0x30, 0x30, 0x30, 0xff });
+    DrawRectangleLinesEx(rect, 5.0, (Color) { 0x20, 0x20, 0x20, 0xff });
+    BeginShaderMode(line_shader);
+    DrawRectangleLinesEx(rect, 5.0, (Color) { 0x80, 0x80, 0x80, 0xff });
+    EndShaderMode();
+
+    int width = MeasureTextEx(font_eb, "Settings", conf.font_size * animation_ease, 0.0).x;
+    DrawTextEx(font_eb, "Settings", (Vector2) { rect.x + rect.width / 2 - width / 2, rect.y + 10 }, conf.font_size * animation_ease, 0.0, WHITE);
+
+    Vector2 pos;
+    pos.x = rect.x + 10;
+    pos.y = rect.y + conf.font_size * animation_ease + 20;
+
+    for (vec_size_t i = 0; i < vector_size(igui.elements); i++) {
+        bool hovered = igui.hover_element == (int)i;
+        bool selected = igui.select_element == (int)i;
+
+        switch (igui.elements[i].type) {
+        case ELEMENT_SLIDER:
+            IGuiSlider slider = igui.elements[i].data.slider;
+
+            int label_width = slider.label ? MeasureTextEx(font_cond, slider.label, conf.font_size * 0.8 * animation_ease, 0.0).x : 0;
+            draw_text_shadow(font_cond, slider.label, pos, conf.font_size * 0.8 * animation_ease, 0.0, WHITE, (Color) { 0x00, 0x00, 0x00, 0x88 });
+
+            Rectangle el_size;
+            el_size.x = pos.x + label_width + 10;
+            el_size.y = pos.y;
+            el_size.width = rect.width - 30 - label_width;
+            el_size.height = conf.font_size * animation_ease;
+            DrawRectangleRec(el_size, (Color) { 0x45, 0x45, 0x45, 0xff });
+            DrawRectangleLinesEx(el_size, 2.5 * animation_ease, ColorBrightness((Color) { 0x40, 0x40, 0x40, 0xff }, hovered || selected ? 0.5 : 0.0));
+
+            float knob_size = conf.font_size * animation_ease * 0.75;
+            Rectangle knob;
+            knob.x = LERP(el_size.x + 5, el_size.x + el_size.width - knob_size - 5, UNLERP(slider.min, slider.max, slider.value));
+            knob.y = el_size.y + el_size.height / 2 - knob_size / 2;
+            knob.width = knob_size;
+            knob.height = knob_size;
+
+            DrawRectangleRec(knob, (Color) { 0x80, 0x80, 0x80, 0xff });
+            DrawRectangleLinesEx(knob, 2.5 * animation_ease, hovered || selected ? WHITE : (Color) { 0x70, 0x70, 0x70, 0xff});
+            BeginShaderMode(line_shader);
+            DrawRectangleLinesEx(knob, 2.5 * animation_ease, WHITE);
+            EndShaderMode();
+            
+            if (selected) {
+                const char* select_hint = TextFormat("%d", slider.value);
+                int select_hint_width = MeasureTextEx(font_eb, select_hint, conf.font_size * 0.5, 0.0).x;
+                draw_text_shadow(
+                    font_eb, 
+                    select_hint, 
+                    (Vector2) { knob.x + knob.width / 2 - select_hint_width / 2, knob.y - conf.font_size * 0.5 - 10 }, 
+                    conf.font_size * 0.5, 
+                    0.0, 
+                    YELLOW,
+                    (Color) { 0x00, 0x00, 0x00, 0x88 }
+                );
+            }
+
+            DrawTextEx(
+                font_cond, 
+                TextFormat(
+                    "Lerp: %.3f, Value: %d", 
+                    UNLERP(slider.min, slider.max, slider.value), slider.value
+                ), 
+                (Vector2) { knob.x + knob.width, knob.y + knob.height }, 
+                conf.font_size * 0.5 * animation_ease, 
+                0.0, 
+                GRAY
+            );
+            break;
+        case ELEMENT_CLOSE_BUTTON:
+            float button_size = conf.font_size * animation_ease;
+            Rectangle button;
+            button.x = rect.x + rect.width - button_size - 10;
+            button.y = rect.y + 10;
+            button.width = button_size;
+            button.height = button_size;
+
+            DrawRectangleRec(button, (Color) { 0x45, 0x45, 0x45, 0xff });
+            DrawRectangleLinesEx(button, 2.5 * animation_ease, ColorBrightness((Color) { 0x40, 0x40, 0x40, 0xff }, hovered ? 0.5 : 0.0));
+            BeginShaderMode(line_shader);
+            DrawRectangleLinesEx(button, 2.5 * animation_ease, WHITE);
+            EndShaderMode();
+
+            DrawTextureEx(close_tex, (Vector2) { button.x, button.y }, 0.0, conf.font_size / 32.0 * animation_ease, WHITE);
+
+            pos.y -= conf.font_size * animation_ease + 10;
+            break;
+        default:
+            assert(false && "Unimplemented IGui element draw");
+            break;
+        }
+
+        pos.y += conf.font_size * animation_ease + 10;
+    }
+
+#ifdef DEBUG
+    DrawTextEx(
+        font_cond, 
+        TextFormat(
+            "Animation time: %.3f\n"
+            "Hover: %d, Select: %d",
+            igui.animation_time,
+            igui.hover_element, igui.select_element
+        ), 
+        (Vector2) { rect.x + 5, rect.y + 5 }, 
+        conf.font_size * 0.5 * animation_ease, 
+        0.0, 
+        GRAY
+    );
+#endif
+}
+
+void igui_show(void) {
+    igui.is_fading = false;
+    shader_time = -0.2;
+}
+
+void igui_close(void) {
+    igui.is_fading = true;
+}
+
+void igui_clear_elements(void) {
+    vector_clear(igui.elements);
+}
+
+void igui_add_slider(int min, int max, int value, char* label) {
+    IGuiElement* el = vector_add_dst(&igui.elements);
+    el->type = ELEMENT_SLIDER;
+    el->data.slider = (IGuiSlider) {
+        .min = min,
+        .max = max,
+        .value = value,
+        .label = label,
+    };
+}
+
+void igui_add_close_button(void) {
+    IGuiElement* el = vector_add_dst(&igui.elements);
+    el->type = ELEMENT_CLOSE_BUTTON;
+    el->data = (IGuiElementData){0};
+}
+
+void igui_set_type(IGuiType type) {
+    igui.type = type;
+}
+
+void igui_tick(void) {
+    igui.hover_element = -1;
+
+    if (igui.is_fading) {
+        igui.animation_time = MAX(igui.animation_time - GetFrameTime() * 2.0, 0.0);
+        if (igui.animation_time == 0.0) igui.shown = false;
+    } else {
+        igui.shown = true;
+        igui.animation_time = MIN(igui.animation_time + GetFrameTime() * 2.0, 1.0);
+    }
+
+    if (!igui.shown || igui.animation_time != 1.0) return;
+
+    Rectangle win_size;
+    win_size.x = GetScreenWidth() / 2 - igui.size.x * GetScreenWidth() / 2;
+    win_size.y = GetScreenHeight() / 2 - igui.size.y * GetScreenHeight() / 2;
+    win_size.width = igui.size.x * GetScreenWidth();
+    win_size.height = igui.size.y * GetScreenHeight();
+
+    Vector2 pos;
+    pos.x = win_size.x + 10;
+    pos.y = win_size.y + conf.font_size + 20;
+
+    for (vec_size_t i = 0; i < vector_size(igui.elements); i++) {
+        if (igui.hover_element != -1) break;
+        switch (igui.elements[i].type) {
+        case ELEMENT_SLIDER:
+            IGuiSlider slider = igui.elements[i].data.slider;
+
+            int label_width = slider.label ? MeasureTextEx(font_cond, slider.label, conf.font_size * 0.8, 0.0).x : 0;
+
+            Rectangle el_coll;
+            el_coll.x = pos.x + label_width + 10;
+            el_coll.y = pos.y;
+            el_coll.width = win_size.width - 30 - label_width;
+            el_coll.height = conf.font_size;
+
+            if (CheckCollisionPointRec(GetMousePosition(), el_coll)) {
+                igui.hover_element = i;
+                break;
+            }
+
+            break;
+        case ELEMENT_CLOSE_BUTTON:
+            float button_size = conf.font_size;
+            Rectangle button;
+            button.x = win_size.x + win_size.width - button_size - 10;
+            button.y = win_size.y + 10;
+            button.width = button_size;
+            button.height = button_size;
+
+            if (CheckCollisionPointRec(GetMousePosition(), button)) {
+                igui.hover_element = i;
+                break;
+            }
+
+            pos.y -= conf.font_size + 10;
+            break;
+        default:
+            assert(false && "Unimplemented IGui element collision");
+            break;
+        }
+
+        pos.y += conf.font_size + 10;
+    }
+
+    if (igui.select_element == -1) return;
+
+    switch (igui.elements[igui.select_element].type) {
+    case ELEMENT_SLIDER:
+        IGuiSlider* slider = &igui.elements[igui.select_element].data.slider;
+
+
+        int label_width = slider->label ? MeasureTextEx(font_cond, slider->label, conf.font_size * 0.8, 0.0).x : 0;
+        draw_text_shadow(font_cond, slider->label, pos, conf.font_size * 0.8, 0.0, WHITE, (Color) { 0x00, 0x00, 0x00, 0x88 });
+
+        Rectangle el_size;
+        el_size.x = pos.x + label_width + 10;
+        el_size.y = pos.y;
+        el_size.width = win_size.width - 30 - label_width;
+        el_size.height = conf.font_size;
+
+        float knob_size = conf.font_size * 0.75;
+        float t = CLAMP(UNLERP(el_size.x + 5 + knob_size / 2, el_size.x + el_size.width - knob_size / 2 - 5, GetMouseX()), 0.0, 1.0);
+        slider->value = roundf(LERP(slider->min, slider->max, t));
+        break;
+    default:
+        break;
+    }
+}
+
+void handle_igui_close(void) {
+    if (igui.type == IGUI_SETTINGS && igui.elements[1].data.slider.value != conf.font_size) {
+        printf("Reload fonts\n");
+        conf.font_size = igui.elements[1].data.slider.value;
+        load_fonts(true);
+    }
+}
+
 // Return value indicates if we should cancel dragging
 bool handle_mouse_click(void) {
     hover_info.mouse_click_pos = GetMousePosition();
     camera_click_pos = camera_pos;
 
+    if (igui.shown) {
+        if (igui.hover_element != -1) {
+            igui.select_element = igui.hover_element;
+            if (igui.elements[igui.hover_element].type == ELEMENT_CLOSE_BUTTON) {
+                handle_igui_close();
+                igui_close();
+                return true;
+            }
+        }
+        return true;
+    }
+
     if (hover_info.top_bars.ind != -1) {
+        if (hover_info.top_bars.type == TOPBAR_TOP && hover_info.top_bars.ind == 1) {
+            igui.size.x = 0.8;
+            igui.size.y = 0.8;
+            igui_clear_elements();
+            igui_add_close_button();
+            igui_add_slider(8, 64, conf.font_size, "UI size");
+            igui_add_slider(-300, 300, 0, "Other");
+            igui_set_type(IGUI_SETTINGS);
+            igui_show();
+        }
         return true;
     }
 
@@ -1603,11 +1913,13 @@ void set_default_config(void) {
     conf.font_symbols = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?";
 }
 
-void setup(void) {
-    run_tex = LoadTexture(DATA_PATH "run.png");
-    SetTextureFilter(run_tex, TEXTURE_FILTER_BILINEAR);
-    drop_tex = LoadTexture(DATA_PATH "drop.png");
-    SetTextureFilter(drop_tex, TEXTURE_FILTER_BILINEAR);
+void load_fonts(bool reload) {
+    if (reload) {
+        UnloadTexture(logo_tex);
+        UnloadFont(font);
+        UnloadFont(font_cond);
+        UnloadFont(font_eb);
+    }
 
 #ifdef LOGO
     Image logo = LoadImageSvg(DATA_PATH "logo.svg", conf.font_size, conf.font_size);
@@ -1622,9 +1934,21 @@ void setup(void) {
     font_cond = LoadFontEx(DATA_PATH "nk57-cond.otf", conf.font_size, codepoints, codepoints_count);
     font_eb = LoadFontEx(DATA_PATH "nk57-eb.otf", conf.font_size, codepoints, codepoints_count);
     UnloadCodepoints(codepoints);
+
     SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_cond.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_eb.texture, TEXTURE_FILTER_BILINEAR);
+}
+
+void setup(void) {
+    run_tex = LoadTexture(DATA_PATH "run.png");
+    SetTextureFilter(run_tex, TEXTURE_FILTER_BILINEAR);
+    drop_tex = LoadTexture(DATA_PATH "drop.png");
+    SetTextureFilter(drop_tex, TEXTURE_FILTER_BILINEAR);
+    close_tex = LoadTexture(DATA_PATH "close.png");
+    SetTextureFilter(close_tex, TEXTURE_FILTER_BILINEAR);
+
+    load_fonts(false);
 
     line_shader = LoadShaderFromMemory(line_shader_vertex, line_shader_fragment);
     shader_time_loc = GetShaderLocation(line_shader, "time");
@@ -1691,6 +2015,10 @@ void setup(void) {
         if (registered_blocks[i].hidden) continue;
         vector_add(&sidebar, block_new(i));
     }
+
+    igui.is_fading = true;
+    igui.elements = vector_create();
+    igui.select_element = -1;
 }
 
 void free_registered_blocks(void) {
@@ -1710,8 +2038,6 @@ int main(void) {
     SetWindowState(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
 
     setup();
-
-    float time = 0.0;
 
     while (!WindowShouldClose()) {
         hover_info.sidebar = GetMouseX() < conf.side_bar_size && GetMouseY() > conf.font_size * 2;
@@ -1734,9 +2060,12 @@ int main(void) {
             hover_info.time_at_last_pos = 0;
         }
 
-        check_block_collisions();
-        bars_check_collisions();
         dropdown_check_collisions();
+        if (!igui.shown) {
+            check_block_collisions();
+            bars_check_collisions();
+        }
+        igui_tick();
 
         if (GetMouseWheelMove() != 0.0) {
             handle_mouse_wheel();
@@ -1755,18 +2084,23 @@ int main(void) {
         } else if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) || IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             handle_mouse_drag();
         } else {
+            igui.select_element = -1;
             hover_info.drag_cancelled = false;
             handle_key_press();
         }
+
+        if (IsWindowResized()) {
+            shader_time = 0.0;
+        } 
 
         mouse_blockchain.pos = GetMousePosition();
 
         actionbar.show_time -= GetFrameTime();
         if (actionbar.show_time < 0) actionbar.show_time = 0;
 
-        if (shader_time_loc != -1) SetShaderValue(line_shader, shader_time_loc, &time, SHADER_UNIFORM_FLOAT);
-        time += GetFrameTime() / 8.0;
-        if (time >= 1.0) time -= 1.0;
+        if (shader_time_loc != -1) SetShaderValue(line_shader, shader_time_loc, &shader_time, SHADER_UNIFORM_FLOAT);
+        shader_time += GetFrameTime() / 2.0;
+        if (shader_time >= 1.0) shader_time = 1.0;
 
         // I have no idea why, but this code may occasionally crash X server, so it is turned off for now
         /*if (hover_info.argument || hover_info.select_argument) {
@@ -1789,6 +2123,29 @@ int main(void) {
         DrawRectangle(0, conf.font_size * 1.2, sw, conf.font_size, (Color){ 0x2B, 0x2B, 0x2B, 0xFF });
         draw_tab_buttons(sw);
         draw_top_bar();
+
+        BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
+            for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
+                draw_block_chain(&sprite_code[i], camera_pos);
+            }
+        EndScissorMode();
+
+        BeginScissorMode(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2);
+            DrawRectangle(0, conf.font_size * 2.2, conf.side_bar_size, sh - conf.font_size * 2.2, (Color){ 0, 0, 0, 0x60 });
+
+            int pos_y = conf.font_size * 2.2 + 10;
+            for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
+                draw_block((Vector2){ 10, pos_y }, &sidebar[i], true);
+                pos_y += conf.font_size + 10;
+            }
+
+        EndScissorMode();
+
+        BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
+            draw_block_chain(&mouse_blockchain, (Vector2) {0});
+        EndScissorMode();
+
+        draw_action_bar();
 
 #ifdef DEBUG
         DrawTextEx(
@@ -1835,28 +2192,8 @@ int main(void) {
         );
 #endif
 
-        BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
-            for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
-                draw_block_chain(&sprite_code[i], camera_pos);
-            }
-        EndScissorMode();
+        igui_draw_window();
 
-        BeginScissorMode(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2);
-            DrawRectangle(0, conf.font_size * 2.2, conf.side_bar_size, sh - conf.font_size * 2.2, (Color){ 0, 0, 0, 0x60 });
-
-            int pos_y = conf.font_size * 2.2 + 10;
-            for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
-                draw_block((Vector2){ 10, pos_y }, &sidebar[i], true);
-                pos_y += conf.font_size + 10;
-            }
-
-        EndScissorMode();
-
-        BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
-            draw_block_chain(&mouse_blockchain, (Vector2) {0});
-        EndScissorMode();
-
-        draw_action_bar();
         draw_dropdown_list();
         draw_tooltip();
 
