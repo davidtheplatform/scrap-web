@@ -3,14 +3,16 @@
 // - Swap blocks inside arguments?
 // - Codebase scrollbars
 
-#include "raylib.h"
-#include "vec.h"
-
 #include <stdio.h>
 #include <stddef.h>
 #include <assert.h>
 #include <string.h>
 #include <math.h>
+
+#include "raylib.h"
+#include "external/vec.h"
+#define RAYLIB_NUKLEAR_IMPLEMENTATION
+#include "external/raylib-nuklear.h"
 
 #define ARRLEN(x) (sizeof(x)/sizeof(x[0]))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -182,41 +184,17 @@ typedef struct {
     char text[ACTION_BAR_MAX_SIZE];
 } ActionBar;
 
-typedef struct {
-    int min;
-    int max;
-    int value;
-    char* label;
-} IGuiSlider;
-
 typedef enum {
-    ELEMENT_SLIDER,
-    ELEMENT_CLOSE_BUTTON,
-} IGuiElementType;
-
-typedef union {
-    IGuiSlider slider;
-} IGuiElementData;
-
-typedef struct {
-    IGuiElementType type;
-    IGuiElementData data;
-} IGuiElement;
-
-typedef enum {
-    IGUI_SETTINGS,
-} IGuiType;
+    GUI_TYPE_SETTINGS,
+} NuklearGuiType;
 
 typedef struct {
     bool shown;
     float animation_time;
     bool is_fading;
-    Vector2 size;
-    int hover_element;
-    int select_element;
-    IGuiType type;
-    IGuiElement* elements;
-} IGui;
+    NuklearGuiType type;
+    struct nk_context *ctx;
+} NuklearGui;
 
 char* top_bar_buttons_text[] = {
     "File",
@@ -237,6 +215,9 @@ Texture2D logo_tex;
 Font font;
 Font font_cond;
 Font font_eb;
+struct nk_user_font* font_eb_nuc = NULL;
+struct nk_user_font* font_cond_nuc = NULL;
+
 Shader line_shader;
 float shader_time = 0.0;
 int shader_time_loc;
@@ -248,7 +229,7 @@ BlockChain* sprite_code; // List of block chains
 HoverInfo hover_info = {0};
 Dropdown dropdown = {0};
 ActionBar actionbar;
-IGui igui = {0};
+NuklearGui gui = {0};
 int end_block_id = -1;
 
 Vector2 camera_pos = {0};
@@ -297,7 +278,6 @@ char** keys_accessor(Block* block, size_t* list_len) {
 }
 
 void update_measurements(Block* block);
-void load_fonts(bool reload);
 
 void actionbar_show(const char* text) {
     strncpy(actionbar.text, text, ACTION_BAR_MAX_SIZE);
@@ -1357,266 +1337,89 @@ float ease_out_expo(float x) {
     return x == 1.0 ? 1.0 : 1 - powf(2.0, -10.0 * x);
 }
 
-void igui_draw_window(void) {
-    if (!igui.shown) return;
+void nk_draw_rectangle(struct nk_context *ctx, struct nk_color color)
+{
+    struct nk_command_buffer *canvas;
+    struct nk_input *input = &ctx->input;
+    canvas = nk_window_get_canvas(ctx);
 
-    float animation_ease = ease_out_expo(igui.animation_time);
+    struct nk_rect space;
+    enum nk_widget_layout_states state;
+    state = nk_widget(&space, ctx);
+    if (!state) return;
 
-    Vector2 size = igui.size;
-    size.x *= animation_ease * GetScreenWidth();
-    size.y *= animation_ease * GetScreenHeight();
-
-    Rectangle rect;
-    rect.x = GetScreenWidth() / 2 - size.x / 2;
-    rect.y = GetScreenHeight() / 2 - size.y / 2;
-    rect.width = size.x;
-    rect.height = size.y;
-
-    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color) { 0x00, 0x00, 0x00, 0x60 * animation_ease });
-    DrawRectangleRec(rect, (Color) { 0x30, 0x30, 0x30, 0xff });
-    DrawRectangleLinesEx(rect, 5.0, (Color) { 0x20, 0x20, 0x20, 0xff });
-    BeginShaderMode(line_shader);
-    DrawRectangleLinesEx(rect, 5.0, (Color) { 0x80, 0x80, 0x80, 0xff });
-    EndShaderMode();
-
-    int width = MeasureTextEx(font_eb, "Settings", conf.font_size * animation_ease, 0.0).x;
-    DrawTextEx(font_eb, "Settings", (Vector2) { rect.x + rect.width / 2 - width / 2, rect.y + 10 }, conf.font_size * animation_ease, 0.0, WHITE);
-
-    Vector2 pos;
-    pos.x = rect.x + 10;
-    pos.y = rect.y + conf.font_size * animation_ease + 20;
-
-    for (vec_size_t i = 0; i < vector_size(igui.elements); i++) {
-        bool hovered = igui.hover_element == (int)i;
-        bool selected = igui.select_element == (int)i;
-
-        switch (igui.elements[i].type) {
-        case ELEMENT_SLIDER:
-            IGuiSlider slider = igui.elements[i].data.slider;
-
-            int label_width = slider.label ? MeasureTextEx(font_cond, slider.label, conf.font_size * 0.8 * animation_ease, 0.0).x : 0;
-            draw_text_shadow(font_cond, slider.label, pos, conf.font_size * 0.8 * animation_ease, 0.0, WHITE, (Color) { 0x00, 0x00, 0x00, 0x88 });
-
-            Rectangle el_size;
-            el_size.x = pos.x + label_width + 10;
-            el_size.y = pos.y;
-            el_size.width = rect.width - 30 - label_width;
-            el_size.height = conf.font_size * animation_ease;
-            DrawRectangleRec(el_size, (Color) { 0x45, 0x45, 0x45, 0xff });
-            DrawRectangleLinesEx(el_size, 2.5 * animation_ease, ColorBrightness((Color) { 0x40, 0x40, 0x40, 0xff }, hovered || selected ? 0.5 : 0.0));
-
-            float knob_size = conf.font_size * animation_ease * 0.75;
-            Rectangle knob;
-            knob.x = LERP(el_size.x + 5, el_size.x + el_size.width - knob_size - 5, UNLERP(slider.min, slider.max, slider.value));
-            knob.y = el_size.y + el_size.height / 2 - knob_size / 2;
-            knob.width = knob_size;
-            knob.height = knob_size;
-
-            DrawRectangleRec(knob, (Color) { 0x80, 0x80, 0x80, 0xff });
-            DrawRectangleLinesEx(knob, 2.5 * animation_ease, hovered || selected ? WHITE : (Color) { 0x70, 0x70, 0x70, 0xff});
-            BeginShaderMode(line_shader);
-            DrawRectangleLinesEx(knob, 2.5 * animation_ease, WHITE);
-            EndShaderMode();
-            
-            if (selected) {
-                const char* select_hint = TextFormat("%d", slider.value);
-                int select_hint_width = MeasureTextEx(font_eb, select_hint, conf.font_size * 0.5, 0.0).x;
-                draw_text_shadow(
-                    font_eb, 
-                    select_hint, 
-                    (Vector2) { knob.x + knob.width / 2 - select_hint_width / 2, knob.y - conf.font_size * 0.5 - 10 }, 
-                    conf.font_size * 0.5, 
-                    0.0, 
-                    YELLOW,
-                    (Color) { 0x00, 0x00, 0x00, 0x88 }
-                );
-            }
-
-            DrawTextEx(
-                font_cond, 
-                TextFormat(
-                    "Lerp: %.3f, Value: %d", 
-                    UNLERP(slider.min, slider.max, slider.value), slider.value
-                ), 
-                (Vector2) { knob.x + knob.width, knob.y + knob.height }, 
-                conf.font_size * 0.5 * animation_ease, 
-                0.0, 
-                GRAY
-            );
-            break;
-        case ELEMENT_CLOSE_BUTTON:
-            float button_size = conf.font_size * animation_ease;
-            Rectangle button;
-            button.x = rect.x + rect.width - button_size - 10;
-            button.y = rect.y + 10;
-            button.width = button_size;
-            button.height = button_size;
-
-            DrawRectangleRec(button, (Color) { 0x45, 0x45, 0x45, 0xff });
-            DrawRectangleLinesEx(button, 2.5 * animation_ease, ColorBrightness((Color) { 0x40, 0x40, 0x40, 0xff }, hovered ? 0.5 : 0.0));
-            BeginShaderMode(line_shader);
-            DrawRectangleLinesEx(button, 2.5 * animation_ease, WHITE);
-            EndShaderMode();
-
-            DrawTextureEx(close_tex, (Vector2) { button.x, button.y }, 0.0, conf.font_size / 32.0 * animation_ease, WHITE);
-
-            pos.y -= conf.font_size * animation_ease + 10;
-            break;
-        default:
-            assert(false && "Unimplemented IGui element draw");
-            break;
-        }
-
-        pos.y += conf.font_size * animation_ease + 10;
-    }
-
-#ifdef DEBUG
-    DrawTextEx(
-        font_cond, 
-        TextFormat(
-            "Animation time: %.3f\n"
-            "Hover: %d, Select: %d",
-            igui.animation_time,
-            igui.hover_element, igui.select_element
-        ), 
-        (Vector2) { rect.x + 5, rect.y + 5 }, 
-        conf.font_size * 0.5 * animation_ease, 
-        0.0, 
-        GRAY
-    );
-#endif
+    nk_fill_rect(canvas, space, 0, color);
 }
 
-void igui_show(void) {
-    igui.is_fading = false;
+void gui_show(NuklearGuiType type) {
+    gui.is_fading = false;
+    gui.type = type;
     shader_time = -0.2;
 }
 
-void igui_close(void) {
-    igui.is_fading = true;
+void gui_hide(void) {
+    gui.is_fading = true;
 }
 
-void igui_clear_elements(void) {
-    vector_clear(igui.elements);
-}
-
-void igui_add_slider(int min, int max, int value, char* label) {
-    IGuiElement* el = vector_add_dst(&igui.elements);
-    el->type = ELEMENT_SLIDER;
-    el->data.slider = (IGuiSlider) {
-        .min = min,
-        .max = max,
-        .value = value,
-        .label = label,
-    };
-}
-
-void igui_add_close_button(void) {
-    IGuiElement* el = vector_add_dst(&igui.elements);
-    el->type = ELEMENT_CLOSE_BUTTON;
-    el->data = (IGuiElementData){0};
-}
-
-void igui_set_type(IGuiType type) {
-    igui.type = type;
-}
-
-void igui_tick(void) {
-    igui.hover_element = -1;
-
-    if (igui.is_fading) {
-        igui.animation_time = MAX(igui.animation_time - GetFrameTime() * 2.0, 0.0);
-        if (igui.animation_time == 0.0) igui.shown = false;
+void handle_gui(void) {
+    if (gui.is_fading) {
+        gui.animation_time = MAX(gui.animation_time - GetFrameTime() * 2.0, 0.0);
+        if (gui.animation_time == 0.0) gui.shown = false;
     } else {
-        igui.shown = true;
-        igui.animation_time = MIN(igui.animation_time + GetFrameTime() * 2.0, 1.0);
+        gui.shown = true;
+        gui.animation_time = MIN(gui.animation_time + GetFrameTime() * 2.0, 1.0);
     }
 
-    if (!igui.shown || igui.animation_time != 1.0) return;
+    if (!gui.shown) return;
 
-    Rectangle win_size;
-    win_size.x = GetScreenWidth() / 2 - igui.size.x * GetScreenWidth() / 2;
-    win_size.y = GetScreenHeight() / 2 - igui.size.y * GetScreenHeight() / 2;
-    win_size.width = igui.size.x * GetScreenWidth();
-    win_size.height = igui.size.y * GetScreenHeight();
+    float animation_ease = ease_out_expo(gui.animation_time);
 
-    Vector2 pos;
-    pos.x = win_size.x + 10;
-    pos.y = win_size.y + conf.font_size + 20;
+    switch (gui.type) {
+    case GUI_TYPE_SETTINGS:
+        Vector2 gui_size;
+        gui_size.x = 0.6 * GetScreenWidth() * animation_ease;
+        gui_size.y = 0.8 * GetScreenHeight() * animation_ease;
 
-    for (vec_size_t i = 0; i < vector_size(igui.elements); i++) {
-        if (igui.hover_element != -1) break;
-        switch (igui.elements[i].type) {
-        case ELEMENT_SLIDER:
-            IGuiSlider slider = igui.elements[i].data.slider;
+        if (nk_begin(
+                gui.ctx, 
+                "Settings", 
+                nk_rect(
+                    GetScreenWidth() / 2 - gui_size.x / 2, 
+                    GetScreenHeight() / 2 - gui_size.y / 2, 
+                    gui_size.x, 
+                    gui_size.y
+                ), 
+                NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)
+        ) {
+            nk_layout_space_begin(gui.ctx, NK_DYNAMIC, conf.font_size, 100);
 
-            int label_width = slider.label ? MeasureTextEx(font_cond, slider.label, conf.font_size * 0.8, 0.0).x : 0;
+            struct nk_rect layout_size = nk_layout_space_bounds(gui.ctx);
 
-            Rectangle el_coll;
-            el_coll.x = pos.x + label_width + 10;
-            el_coll.y = pos.y;
-            el_coll.width = win_size.width - 30 - label_width;
-            el_coll.height = conf.font_size;
+            nk_layout_space_push(gui.ctx, nk_rect(0.0, 0.0, 1.0, 1.0));
+            nk_draw_rectangle(gui.ctx, nk_rgb(0x30, 0x30, 0x30));
+            nk_layout_space_push(gui.ctx, nk_rect(0.0, 0.0, 1.0, 1.0));
+            nk_style_set_font(gui.ctx, font_eb_nuc);
+            nk_label(gui.ctx, "Settings", NK_TEXT_CENTERED);
+            nk_style_set_font(gui.ctx, font_cond_nuc);
 
-            if (CheckCollisionPointRec(GetMousePosition(), el_coll)) {
-                igui.hover_element = i;
-                break;
+            nk_layout_space_push(gui.ctx, nk_rect(1.0 - conf.font_size / layout_size.w, 0.0, conf.font_size / layout_size.w, 1.0));
+            if (nk_button_label(gui.ctx, "X")) {
+                gui_hide();
             }
+            nk_layout_space_end(gui.ctx);
 
-            break;
-        case ELEMENT_CLOSE_BUTTON:
-            float button_size = conf.font_size;
-            Rectangle button;
-            button.x = win_size.x + win_size.width - button_size - 10;
-            button.y = win_size.y + 10;
-            button.width = button_size;
-            button.height = button_size;
-
-            if (CheckCollisionPointRec(GetMousePosition(), button)) {
-                igui.hover_element = i;
-                break;
-            }
-
-            pos.y -= conf.font_size + 10;
-            break;
-        default:
-            assert(false && "Unimplemented IGui element collision");
-            break;
+            nk_layout_row_dynamic(gui.ctx, conf.font_size, 1);
+            nk_spacer(gui.ctx);
+            nk_layout_row_dynamic(gui.ctx, conf.font_size, 2);
+            nk_label(gui.ctx, TextFormat("UI Size (%d)", conf.font_size), NK_TEXT_RIGHT);
+            nk_slide_int(gui.ctx, 8, conf.font_size, 64, 1);
+            nk_label(gui.ctx, TextFormat("Side bar size (%d)", conf.side_bar_size), NK_TEXT_RIGHT);
+            nk_slider_int(gui.ctx, 10, &conf.side_bar_size, 500, 1);
         }
-
-        pos.y += conf.font_size + 10;
-    }
-
-    if (igui.select_element == -1) return;
-
-    switch (igui.elements[igui.select_element].type) {
-    case ELEMENT_SLIDER:
-        IGuiSlider* slider = &igui.elements[igui.select_element].data.slider;
-
-
-        int label_width = slider->label ? MeasureTextEx(font_cond, slider->label, conf.font_size * 0.8, 0.0).x : 0;
-        draw_text_shadow(font_cond, slider->label, pos, conf.font_size * 0.8, 0.0, WHITE, (Color) { 0x00, 0x00, 0x00, 0x88 });
-
-        Rectangle el_size;
-        el_size.x = pos.x + label_width + 10;
-        el_size.y = pos.y;
-        el_size.width = win_size.width - 30 - label_width;
-        el_size.height = conf.font_size;
-
-        float knob_size = conf.font_size * 0.75;
-        float t = CLAMP(UNLERP(el_size.x + 5 + knob_size / 2, el_size.x + el_size.width - knob_size / 2 - 5, GetMouseX()), 0.0, 1.0);
-        slider->value = roundf(LERP(slider->min, slider->max, t));
+        nk_end(gui.ctx);
         break;
     default:
         break;
-    }
-}
-
-void handle_igui_close(void) {
-    if (igui.type == IGUI_SETTINGS && igui.elements[1].data.slider.value != conf.font_size) {
-        printf("Reload fonts\n");
-        conf.font_size = igui.elements[1].data.slider.value;
-        load_fonts(true);
     }
 }
 
@@ -1625,28 +1428,13 @@ bool handle_mouse_click(void) {
     hover_info.mouse_click_pos = GetMousePosition();
     camera_click_pos = camera_pos;
 
-    if (igui.shown) {
-        if (igui.hover_element != -1) {
-            igui.select_element = igui.hover_element;
-            if (igui.elements[igui.hover_element].type == ELEMENT_CLOSE_BUTTON) {
-                handle_igui_close();
-                igui_close();
-                return true;
-            }
-        }
+    if (gui.shown) {
         return true;
     }
 
     if (hover_info.top_bars.ind != -1) {
         if (hover_info.top_bars.type == TOPBAR_TOP && hover_info.top_bars.ind == 1) {
-            igui.size.x = 0.8;
-            igui.size.y = 0.8;
-            igui_clear_elements();
-            igui_add_close_button();
-            igui_add_slider(8, 64, conf.font_size, "UI size");
-            igui_add_slider(-300, 300, 0, "Other");
-            igui_set_type(IGUI_SETTINGS);
-            igui_show();
+            gui_show(GUI_TYPE_SETTINGS);
         }
         return true;
     }
@@ -1909,13 +1697,13 @@ void set_default_config(void) {
     conf.font_symbols = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?";
 }
 
-void load_fonts(bool reload) {
-    if (reload) {
-        UnloadTexture(logo_tex);
-        UnloadFont(font);
-        UnloadFont(font_cond);
-        UnloadFont(font_eb);
-    }
+void setup(void) {
+    run_tex = LoadTexture(DATA_PATH "run.png");
+    SetTextureFilter(run_tex, TEXTURE_FILTER_BILINEAR);
+    drop_tex = LoadTexture(DATA_PATH "drop.png");
+    SetTextureFilter(drop_tex, TEXTURE_FILTER_BILINEAR);
+    close_tex = LoadTexture(DATA_PATH "close.png");
+    SetTextureFilter(close_tex, TEXTURE_FILTER_BILINEAR);
 
     Image logo = LoadImageSvg(DATA_PATH "logo.svg", conf.font_size, conf.font_size);
     logo_tex = LoadTextureFromImage(logo);
@@ -1932,17 +1720,6 @@ void load_fonts(bool reload) {
     SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_cond.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_eb.texture, TEXTURE_FILTER_BILINEAR);
-}
-
-void setup(void) {
-    run_tex = LoadTexture(DATA_PATH "run.png");
-    SetTextureFilter(run_tex, TEXTURE_FILTER_BILINEAR);
-    drop_tex = LoadTexture(DATA_PATH "drop.png");
-    SetTextureFilter(drop_tex, TEXTURE_FILTER_BILINEAR);
-    close_tex = LoadTexture(DATA_PATH "close.png");
-    SetTextureFilter(close_tex, TEXTURE_FILTER_BILINEAR);
-
-    load_fonts(false);
 
     line_shader = LoadShaderFromMemory(line_shader_vertex, line_shader_fragment);
     shader_time_loc = GetShaderLocation(line_shader, "time");
@@ -2010,9 +1787,43 @@ void setup(void) {
         vector_add(&sidebar, block_new(i));
     }
 
-    igui.is_fading = true;
-    igui.elements = vector_create();
-    igui.select_element = -1;
+    font_eb_nuc = LoadFontIntoNuklear(font_eb, conf.font_size);
+    font_cond_nuc = LoadFontIntoNuklear(font_cond, conf.font_size * 0.6);
+    gui.is_fading = true;
+    gui.ctx = InitNuklearEx(font_cond_nuc);
+
+    gui.ctx->style.text.color = nk_rgb(0xff, 0xff, 0xff);
+
+    gui.ctx->style.window.fixed_background.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.window.fixed_background.data.color = nk_rgb(0x20, 0x20, 0x20);
+    gui.ctx->style.window.background = nk_rgb(0x20, 0x20, 0x20);
+    gui.ctx->style.window.border_color = nk_rgb(0x40, 0x40, 0x40);
+    gui.ctx->style.window.padding = nk_vec2(0, 0);
+    gui.ctx->style.window.spacing = nk_vec2(10, 10);
+
+    gui.ctx->style.button.text_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.button.text_hover = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.button.text_active = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.button.rounding = 0.0;
+    gui.ctx->style.button.border = 0.0;
+    gui.ctx->style.button.normal.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.button.normal.data.color = nk_rgb(0x30, 0x30, 0x30);
+    gui.ctx->style.button.hover.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.button.hover.data.color = nk_rgb(0x40, 0x40, 0x40);
+    gui.ctx->style.button.active.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.button.active.data.color = nk_rgb(0x20, 0x20, 0x20);
+
+    gui.ctx->style.slider.bar_normal = nk_rgb(0x30, 0x30, 0x30);
+    gui.ctx->style.slider.bar_hover = nk_rgb(0x30, 0x30, 0x30);
+    gui.ctx->style.slider.bar_active = nk_rgb(0x30, 0x30, 0x30);
+    gui.ctx->style.slider.bar_filled = nk_rgb(0xaa, 0xaa, 0xaa);
+
+    gui.ctx->style.slider.cursor_normal.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.slider.cursor_normal.data.color = nk_rgb(0xaa, 0xaa, 0xaa);
+    gui.ctx->style.slider.cursor_hover.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.slider.cursor_hover.data.color = nk_rgb(0xdd, 0xdd, 0xdd);
+    gui.ctx->style.slider.cursor_active.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.slider.cursor_active.data.color = nk_rgb(0xff, 0xff, 0xff);
 }
 
 void free_registered_blocks(void) {
@@ -2055,11 +1866,13 @@ int main(void) {
         }
 
         dropdown_check_collisions();
-        if (!igui.shown) {
+        if (!gui.shown) {
             check_block_collisions();
             bars_check_collisions();
         }
-        igui_tick();
+
+        if (gui.shown) UpdateNuklear(gui.ctx);
+        handle_gui();
 
         if (GetMouseWheelMove() != 0.0) {
             handle_mouse_wheel();
@@ -2078,7 +1891,6 @@ int main(void) {
         } else if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) || IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             handle_mouse_drag();
         } else {
-            igui.select_element = -1;
             hover_info.drag_cancelled = false;
             handle_key_press();
         }
@@ -2186,7 +1998,11 @@ int main(void) {
         );
 #endif
 
-        igui_draw_window();
+        if (gui.shown){
+            float animation_ease = ease_out_expo(gui.animation_time);
+            DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color) { 0x00, 0x00, 0x00, 0x44 * animation_ease });
+            DrawNuklear(gui.ctx);
+        }
 
         draw_dropdown_list();
         draw_tooltip();
@@ -2194,6 +2010,7 @@ int main(void) {
         EndDrawing();
     }
 
+    UnloadNuklear(gui.ctx);
     blockchain_free(&mouse_blockchain);
     for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
         blockchain_free(&sprite_code[i]);

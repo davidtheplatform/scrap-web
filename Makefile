@@ -15,7 +15,7 @@ run: $(EXE_NAME)
 $(EXE_NAME): $(OBJFILES)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-vec.o: vec.c
+vec.o: external/vec.c
 	$(CC) $(CFLAGS) -c -o $@ $^
 
 scrap.o: scrap.c
