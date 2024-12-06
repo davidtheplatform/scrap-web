@@ -233,9 +233,7 @@ struct Config conf;
 Texture2D run_tex;
 Texture2D drop_tex;
 Texture2D close_tex;
-#ifdef LOGO
 Texture2D logo_tex;
-#endif
 Font font;
 Font font_cond;
 Font font_eb;
@@ -1266,9 +1264,7 @@ void draw_tab_buttons(int sw) {
 }
 
 void draw_top_bar(void) {
-#ifdef LOGO
     DrawTexture(logo_tex, 5, conf.font_size * 0.1, WHITE);
-#endif
 
     int width = MeasureTextEx(font_eb, "Scrap", conf.font_size * 0.8, 0.0).x;
     DrawTextEx(font_eb, "Scrap", (Vector2){ 10 + conf.font_size, conf.font_size * 0.2 }, conf.font_size * 0.8, 0.0, WHITE);
@@ -1915,20 +1911,16 @@ void set_default_config(void) {
 
 void load_fonts(bool reload) {
     if (reload) {
-#ifdef LOGO
         UnloadTexture(logo_tex);
-#endif
         UnloadFont(font);
         UnloadFont(font_cond);
         UnloadFont(font_eb);
     }
 
-#ifdef LOGO
     Image logo = LoadImageSvg(DATA_PATH "logo.svg", conf.font_size, conf.font_size);
     logo_tex = LoadTextureFromImage(logo);
     SetTextureFilter(logo_tex, TEXTURE_FILTER_BILINEAR);
     UnloadImage(logo);
-#endif
 
     int codepoints_count;
     int *codepoints = LoadCodepoints(conf.font_symbols, &codepoints_count);
