@@ -208,6 +208,7 @@ char* tab_bar_buttons_text[] = {
 };
 
 struct Config conf;
+struct Config gui_conf;
 Texture2D run_tex;
 Texture2D drop_tex;
 Texture2D close_tex;
@@ -277,6 +278,8 @@ char** keys_accessor(Block* block, size_t* list_len) {
     return keys_list;
 }
 
+void apply_config(struct Config* dst, struct Config* src);
+void set_default_config(struct Config* config);
 void update_measurements(Block* block);
 
 void actionbar_show(const char* text) {
@@ -1340,7 +1343,6 @@ float ease_out_expo(float x) {
 void nk_draw_rectangle(struct nk_context *ctx, struct nk_color color)
 {
     struct nk_command_buffer *canvas;
-    struct nk_input *input = &ctx->input;
     canvas = nk_window_get_canvas(ctx);
 
     struct nk_rect space;
@@ -1410,11 +1412,39 @@ void handle_gui(void) {
 
             nk_layout_row_dynamic(gui.ctx, conf.font_size, 1);
             nk_spacer(gui.ctx);
-            nk_layout_row_dynamic(gui.ctx, conf.font_size, 2);
-            nk_label(gui.ctx, TextFormat("UI Size (%d)", conf.font_size), NK_TEXT_RIGHT);
-            nk_slide_int(gui.ctx, 8, conf.font_size, 64, 1);
-            nk_label(gui.ctx, TextFormat("Side bar size (%d)", conf.side_bar_size), NK_TEXT_RIGHT);
-            nk_slider_int(gui.ctx, 10, &conf.side_bar_size, 500, 1);
+
+            nk_layout_row_template_begin(gui.ctx, conf.font_size);
+            nk_layout_row_template_push_static(gui.ctx, 10);
+            nk_layout_row_template_push_dynamic(gui.ctx);
+            nk_layout_row_template_push_static(gui.ctx, 10);
+            nk_layout_row_template_end(gui.ctx);
+
+            //nk_layout_row_dynamic(gui.ctx, conf.font_size, 2);
+            //nk_label(gui.ctx, TextFormat("UI Size (%d)", gui_conf.font_size), NK_TEXT_RIGHT);
+            //nk_slider_int(gui.ctx, 8, &gui_conf.font_size, 64, 1);
+            nk_spacer(gui.ctx);
+            nk_property_int(gui.ctx, "UI size", 8, &gui_conf.font_size, 64, 1, 1.0);
+            nk_spacer(gui.ctx);
+            //nk_label(gui.ctx, TextFormat("Side bar size (%d)", gui_conf.side_bar_size), NK_TEXT_RIGHT);
+            //nk_slider_int(gui.ctx, 10, &gui_conf.side_bar_size, 500, 1);
+            nk_spacer(gui.ctx);
+            nk_property_int(gui.ctx, "Side bar size", 10, &gui_conf.side_bar_size, 500, 1, 1.0);
+            nk_spacer(gui.ctx);
+
+            nk_layout_row_template_begin(gui.ctx, conf.font_size);
+            nk_layout_row_template_push_dynamic(gui.ctx);
+            nk_layout_row_template_push_static(gui.ctx, conf.font_size * 3);
+            nk_layout_row_template_push_static(gui.ctx, conf.font_size * 3);
+            nk_layout_row_template_push_static(gui.ctx, 10);
+            nk_layout_row_template_end(gui.ctx);
+            nk_spacer(gui.ctx);
+            if (nk_button_label(gui.ctx, "Reset")) {
+                set_default_config(&gui_conf);
+            }
+            if (nk_button_label(gui.ctx, "Apply")) {
+                apply_config(&conf, &gui_conf);
+            }
+            nk_spacer(gui.ctx);
         }
         nk_end(gui.ctx);
         break;
@@ -1434,6 +1464,7 @@ bool handle_mouse_click(void) {
 
     if (hover_info.top_bars.ind != -1) {
         if (hover_info.top_bars.type == TOPBAR_TOP && hover_info.top_bars.ind == 1) {
+            gui_conf = conf;
             gui_show(GUI_TYPE_SETTINGS);
         }
         return true;
@@ -1691,10 +1722,14 @@ void sanitize_links(void) {
     }
 }
 
-void set_default_config(void) {
-    conf.font_size = 32;
-    conf.side_bar_size = 300;
-    conf.font_symbols = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?";
+void set_default_config(struct Config* config) {
+    config->font_size = 32;
+    config->side_bar_size = 300;
+    config->font_symbols = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?";
+}
+
+void apply_config(struct Config* dst, struct Config* src) {
+    dst->side_bar_size = src->side_bar_size;
 }
 
 void setup(void) {
@@ -1790,14 +1825,14 @@ void setup(void) {
     font_eb_nuc = LoadFontIntoNuklear(font_eb, conf.font_size);
     font_cond_nuc = LoadFontIntoNuklear(font_cond, conf.font_size * 0.6);
     gui.is_fading = true;
-    gui.ctx = InitNuklearEx(font_cond_nuc);
+    gui.ctx = InitNuklearEx(font_cond_nuc, &line_shader);
 
     gui.ctx->style.text.color = nk_rgb(0xff, 0xff, 0xff);
 
     gui.ctx->style.window.fixed_background.type = NK_STYLE_ITEM_COLOR;
     gui.ctx->style.window.fixed_background.data.color = nk_rgb(0x20, 0x20, 0x20);
     gui.ctx->style.window.background = nk_rgb(0x20, 0x20, 0x20);
-    gui.ctx->style.window.border_color = nk_rgb(0x40, 0x40, 0x40);
+    gui.ctx->style.window.border_color = nk_rgb(0x60, 0x60, 0x60);
     gui.ctx->style.window.padding = nk_vec2(0, 0);
     gui.ctx->style.window.spacing = nk_vec2(10, 10);
 
@@ -1805,7 +1840,8 @@ void setup(void) {
     gui.ctx->style.button.text_hover = nk_rgb(0xff, 0xff, 0xff);
     gui.ctx->style.button.text_active = nk_rgb(0xff, 0xff, 0xff);
     gui.ctx->style.button.rounding = 0.0;
-    gui.ctx->style.button.border = 0.0;
+    gui.ctx->style.button.border = 1.0;
+    gui.ctx->style.button.border_color = nk_rgb(0x60, 0x60, 0x60);
     gui.ctx->style.button.normal.type = NK_STYLE_ITEM_COLOR;
     gui.ctx->style.button.normal.data.color = nk_rgb(0x30, 0x30, 0x30);
     gui.ctx->style.button.hover.type = NK_STYLE_ITEM_COLOR;
@@ -1824,6 +1860,50 @@ void setup(void) {
     gui.ctx->style.slider.cursor_hover.data.color = nk_rgb(0xdd, 0xdd, 0xdd);
     gui.ctx->style.slider.cursor_active.type = NK_STYLE_ITEM_COLOR;
     gui.ctx->style.slider.cursor_active.data.color = nk_rgb(0xff, 0xff, 0xff);
+
+    gui.ctx->style.property.normal.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.property.normal.data.color = nk_rgb(0x30, 0x30, 0x30);
+    gui.ctx->style.property.hover.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.property.hover.data.color = nk_rgb(0x40, 0x40, 0x40);
+    gui.ctx->style.property.active.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.property.active.data.color = nk_rgb(0x40, 0x40, 0x40);
+    gui.ctx->style.property.label_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.label_hover = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.label_active = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.rounding = 0.0;
+    gui.ctx->style.property.border = 1.0;
+    gui.ctx->style.property.border_color = nk_rgb(0x60, 0x60, 0x60);
+
+    gui.ctx->style.property.inc_button.normal.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.property.inc_button.normal.data.color = nk_rgba(0x00, 0x00, 0x00, 0x00);
+    gui.ctx->style.property.inc_button.text_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.inc_button.text_hover = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.inc_button.text_active = nk_rgb(0xff, 0xff, 0xff);
+
+    gui.ctx->style.property.dec_button.normal.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.property.dec_button.normal.data.color = nk_rgba(0x00, 0x00, 0x00, 0x00);
+    gui.ctx->style.property.dec_button.text_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.dec_button.text_hover = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.dec_button.text_active = nk_rgb(0xff, 0xff, 0xff);
+
+    gui.ctx->style.property.edit.rounding = 0.0;
+    gui.ctx->style.property.edit.normal.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.property.edit.normal.data.color = nk_rgba(0x00, 0x00, 0x00, 0x00);
+    gui.ctx->style.property.edit.hover.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.property.edit.hover.data.color = nk_rgba(0x00, 0x00, 0x00, 0x00);
+    gui.ctx->style.property.edit.active.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.property.edit.active.data.color = nk_rgba(0x00, 0x00, 0x00, 0x00);
+    gui.ctx->style.property.edit.text_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.edit.text_hover = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.edit.text_active = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.edit.selected_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.edit.selected_hover = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.edit.selected_text_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.edit.selected_text_hover = nk_rgb(0x20, 0x20, 0x20);
+    gui.ctx->style.property.edit.cursor_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.edit.cursor_hover = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.edit.cursor_text_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.property.edit.cursor_text_hover = nk_rgb(0x20, 0x20, 0x20);
 }
 
 void free_registered_blocks(void) {
@@ -1834,7 +1914,7 @@ void free_registered_blocks(void) {
 }
 
 int main(void) {
-    set_default_config();
+    set_default_config(&conf);
 
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(800, 600, "Scrap");

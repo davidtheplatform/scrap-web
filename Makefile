@@ -18,5 +18,5 @@ $(EXE_NAME): $(OBJFILES)
 vec.o: external/vec.c
 	$(CC) $(CFLAGS) -c -o $@ $^
 
-scrap.o: scrap.c
-	$(CC) $(CFLAGS) -c -o $@ $^
+scrap.o: scrap.c external/raylib-nuklear.h
+	$(CC) $(CFLAGS) -c -o $@ scrap.c
