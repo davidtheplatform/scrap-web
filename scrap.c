@@ -206,6 +206,12 @@ typedef struct {
     struct nk_context *ctx;
 } NuklearGui;
 
+typedef struct {
+    Vector2 min_pos;
+    Vector2 max_pos;
+    BlockChain* code;
+} BlockCode;
+
 char* top_bar_buttons_text[] = {
     "File",
     "Settings",
@@ -235,7 +241,7 @@ int shader_time_loc;
 Blockdef* registered_blocks;
 Block* sidebar; // Vector that contains block prototypes
 BlockChain mouse_blockchain = {0};
-BlockChain* sprite_code; // List of block chains
+BlockCode block_code;
 HoverInfo hover_info = {0};
 Dropdown dropdown = {0};
 ActionBar actionbar;
@@ -295,6 +301,36 @@ void update_measurements(Block* block);
 void actionbar_show(const char* text) {
     strncpy(actionbar.text, text, ACTION_BAR_MAX_SIZE);
     actionbar.show_time = 3.0;
+}
+
+BlockCode blockcode_new() {
+    return (BlockCode) {
+        .min_pos = (Vector2) {0},
+        .max_pos = (Vector2) {0},
+        .code = vector_create(),
+    };
+}
+
+void blockcode_update_measurments(BlockCode* blockcode) {
+    blockcode->max_pos = (Vector2) { -1.0 / 0.0, -1.0 / 0.0 };
+    blockcode->min_pos = (Vector2) { 1.0 / 0.0, 1.0 / 0.0 };
+
+    for (vec_size_t i = 0; i < vector_size(blockcode->code); i++) {
+        blockcode->max_pos.x = MAX(blockcode->max_pos.x, blockcode->code[i].pos.x);
+        blockcode->max_pos.y = MAX(blockcode->max_pos.y, blockcode->code[i].pos.y);
+        blockcode->min_pos.x = MIN(blockcode->min_pos.x, blockcode->code[i].pos.x);
+        blockcode->min_pos.y = MIN(blockcode->min_pos.y, blockcode->code[i].pos.y);
+    }
+}
+
+void blockcode_add_blockchain(BlockCode* blockcode, BlockChain chain) {
+    vector_add(&blockcode->code, chain);
+    blockcode_update_measurments(blockcode);
+}
+
+void blockcode_remove_blockchain(BlockCode* blockcode, int ind) {
+    vector_remove(blockcode->code, ind);
+    blockcode_update_measurments(blockcode);
 }
 
 void block_update_parent_links(Block* block) {
@@ -1345,6 +1381,40 @@ void draw_action_bar(void) {
     DrawTextEx(font_eb, actionbar.text, pos, conf.font_size * 0.75, 0.0, color);
 }
 
+void draw_scrollbars(void) {
+    float size = GetScreenWidth() / (block_code.max_pos.x - block_code.min_pos.x);
+    if (size < 1) {
+        size *= GetScreenWidth() - conf.side_bar_size;
+        float t = UNLERP(block_code.min_pos.x, block_code.max_pos.x, camera_pos.x + GetScreenWidth() / 2);
+
+        BeginScissorMode(conf.side_bar_size, GetScreenHeight() - conf.font_size / 6, GetScreenWidth() - conf.side_bar_size, conf.font_size / 6);
+        DrawRectangle(
+            LERP(conf.side_bar_size, GetScreenWidth() - size, t), 
+            GetScreenHeight() - conf.font_size / 6, 
+            size, 
+            conf.font_size / 6, 
+            (Color) { 0xff, 0xff, 0xff, 0x80 }
+        );
+        EndScissorMode();
+    }
+
+    size = GetScreenHeight() / (block_code.max_pos.y - block_code.min_pos.y);
+    if (size < 1) {
+        size *= GetScreenHeight() - conf.font_size * 2.2;
+        float t = UNLERP(block_code.min_pos.y, block_code.max_pos.y, camera_pos.y + GetScreenHeight() / 2);
+
+        BeginScissorMode(GetScreenWidth() - conf.font_size / 6, conf.font_size * 2.2, conf.font_size / 6, GetScreenHeight() - conf.font_size * 2.2);
+        DrawRectangle(
+            GetScreenWidth() - conf.font_size / 6, 
+            LERP(conf.font_size * 2.2, GetScreenHeight() - size, t), 
+            conf.font_size / 6, 
+            size, 
+            (Color) { 0xff, 0xff, 0xff, 0x80 }
+        );
+        EndScissorMode();
+    }
+}
+
 // https://easings.net/#easeOutExpo
 float ease_out_expo(float x) {
     return x == 1.0 ? 1.0 : 1 - powf(2.0, -10.0 * x);
@@ -1566,7 +1636,7 @@ bool handle_mouse_click(void) {
             printf("Put block\n");
             mouse_blockchain.pos.x += camera_pos.x;
             mouse_blockchain.pos.y += camera_pos.y;
-            vector_add(&sprite_code, mouse_blockchain);
+            blockcode_add_blockchain(&block_code, mouse_blockchain);
             mouse_blockchain = blockchain_new();
         }
         return true;
@@ -1585,7 +1655,7 @@ bool handle_mouse_click(void) {
             blockchain_detach(&mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
             if (hover_info.blockchain_index == 0) {
                 blockchain_free(hover_info.blockchain);
-                vector_remove(sprite_code, hover_info.blockchain - sprite_code);
+                blockcode_remove_blockchain(&block_code, hover_info.blockchain - block_code.code);
                 hover_info.block = NULL;
             }
         }
@@ -1596,13 +1666,13 @@ bool handle_mouse_click(void) {
 
 void handle_key_press(void) {
     if (!hover_info.select_argument) {
-        if (IsKeyPressed(KEY_SPACE) && vector_size(sprite_code) > 0) {
+        if (IsKeyPressed(KEY_SPACE) && vector_size(block_code.code) > 0) {
             blockchain_select_counter++;
-            if ((vec_size_t)blockchain_select_counter >= vector_size(sprite_code)) blockchain_select_counter = 0;
+            if ((vec_size_t)blockchain_select_counter >= vector_size(block_code.code)) blockchain_select_counter = 0;
 
-            camera_pos.x = sprite_code[blockchain_select_counter].pos.x - GetScreenWidth() / 2;
-            camera_pos.y = sprite_code[blockchain_select_counter].pos.y - GetScreenHeight() / 2;
-            actionbar_show(TextFormat("Jump to chain (%d/%d)", blockchain_select_counter + 1, vector_size(sprite_code)));
+            camera_pos.x = block_code.code[blockchain_select_counter].pos.x - GetScreenWidth() / 2;
+            camera_pos.y = block_code.code[blockchain_select_counter].pos.y - GetScreenHeight() / 2;
+            actionbar_show(TextFormat("Jump to chain (%d/%d)", blockchain_select_counter + 1, vector_size(block_code.code)));
         }
         return;
     };
@@ -1706,9 +1776,9 @@ void check_block_collisions(void) {
             pos_y += conf.font_size + 10;
         }
     } else {
-        for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
+        for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
             if (hover_info.block) break;
-            blockchain_check_collisions(&sprite_code[i], camera_pos);
+            blockchain_check_collisions(&block_code.code[i], camera_pos);
         }
     }
 }
@@ -1727,8 +1797,8 @@ void sanitize_block(Block* block) {
 }
 
 void sanitize_links(void) {
-    for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
-        Block* blocks = sprite_code[i].blocks;
+    for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
+        Block* blocks = block_code.code[i].blocks;
         for (vec_size_t j = 0; j < vector_size(blocks); j++) {
             sanitize_block(&blocks[j]);
         }
@@ -1900,7 +1970,7 @@ void setup(void) {
     block_add_argument(sc_get_var, "my variable", BLOCKCONSTR_STRING);
 
     mouse_blockchain = blockchain_new();
-    sprite_code = vector_create();
+    block_code = blockcode_new();
 
     sidebar = vector_create();
     for (vec_size_t i = 0; i < vector_size(registered_blocks); i++) {
@@ -2119,10 +2189,12 @@ int main(void) {
         draw_top_bar();
 
         BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
-            for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
-                draw_block_chain(&sprite_code[i], camera_pos);
+            for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
+                draw_block_chain(&block_code.code[i], camera_pos);
             }
         EndScissorMode();
+
+        draw_scrollbars();
 
         BeginScissorMode(0, conf.font_size * 2.2, conf.side_bar_size, sh - conf.font_size * 2.2);
             DrawRectangle(0, conf.font_size * 2.2, conf.side_bar_size, sh - conf.font_size * 2.2, (Color){ 0, 0, 0, 0x60 });
@@ -2134,7 +2206,7 @@ int main(void) {
             }
         EndScissorMode();
 
-        BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
+        BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
             draw_block_chain(&mouse_blockchain, (Vector2) {0});
         EndScissorMode();
 
@@ -2155,7 +2227,8 @@ int main(void) {
                 "Camera: (%.3f, %.3f), Click: (%.3f, %.3f)\n"
                 "Dropdown ind: %d, Scroll: %d\n"
                 "Drag cancelled: %d\n"
-                "Bar: %d, Ind: %d",
+                "Bar: %d, Ind: %d\n"
+                "Min: (%.3f, %.3f), Max: (%.3f, %.3f)",
                 hover_info.blockchain,
                 hover_info.blockchain_index,
                 hover_info.blockchain_layer,
@@ -2173,7 +2246,8 @@ int main(void) {
                 camera_pos.x, camera_pos.y, camera_click_pos.x, camera_click_pos.y,
                 hover_info.dropdown_hover_ind, dropdown.scroll_amount,
                 hover_info.drag_cancelled,
-                hover_info.top_bars.type, hover_info.top_bars.ind
+                hover_info.top_bars.type, hover_info.top_bars.ind,
+                block_code.min_pos.x, block_code.min_pos.y, block_code.max_pos.x, block_code.max_pos.y
             ), 
             (Vector2){ 
                 conf.side_bar_size + 5, 
@@ -2185,7 +2259,7 @@ int main(void) {
         );
 #endif
 
-        if (gui.shown){
+        if (gui.shown) {
             float animation_ease = ease_out_expo(gui.animation_time);
             DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color) { 0x00, 0x00, 0x00, 0x44 * animation_ease });
             DrawNuklear(gui.ctx);
@@ -2199,10 +2273,10 @@ int main(void) {
 
     UnloadNuklear(gui.ctx);
     blockchain_free(&mouse_blockchain);
-    for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
-        blockchain_free(&sprite_code[i]);
+    for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
+        blockchain_free(&block_code.code[i]);
     }
-    vector_free(sprite_code);
+    vector_free(block_code.code);
     for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
         block_free(&sidebar[i]);
     }
