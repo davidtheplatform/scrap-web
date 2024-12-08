@@ -2,6 +2,9 @@
 // - Better collision resolution
 // - Swap blocks inside arguments?
 // - Codebase scrollbars
+// - Sidebar scrollbars
+// - About page
+// - Output tab
 
 #include <stdio.h>
 #include <stddef.h>
@@ -22,20 +25,27 @@
 #define LERP(min, max, t) (((max) - (min)) * (t) + (min))
 #define UNLERP(min, max, v) (((float)(v) - (float)(min)) / ((float)(max) - (float)(min)))
 
+#define ACTION_BAR_MAX_SIZE 128
+#define FONT_PATH_MAX_SIZE 256
+#define FONT_SYMBOLS_MAX_SIZE 1024
+#define CONFIG_PATH "config.txt"
+
 #define BLOCK_TEXT_SIZE (conf.font_size * 0.6)
 #define DATA_PATH "data/"
 #define BLOCK_PADDING (5.0 * (float)conf.font_size / 32.0)
 #define BLOCK_OUTLINE_SIZE (2.0 * (float)conf.font_size / 32.0)
 #define BLOCK_STRING_PADDING (10.0 * (float)conf.font_size / 32.0)
 #define BLOCK_CONTROL_INDENT (16.0 * (float)conf.font_size / 32.0)
+#define SIDE_BAR_PADDING (10.0 * (float)conf.font_size / 32.0)
 #define DROP_TEX_WIDTH ((float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)drop_tex.height * (float)drop_tex.width)
-#define ACTION_BAR_MAX_SIZE 128
 
-struct Config {
+typedef struct {
     int font_size;
     int side_bar_size;
-    char *font_symbols;
-};
+    char font_symbols[FONT_SYMBOLS_MAX_SIZE];
+    char font_path[FONT_PATH_MAX_SIZE];
+    char font_bold_path[FONT_PATH_MAX_SIZE];
+} Config;
 
 typedef struct Measurement {
     Vector2 size;
@@ -207,13 +217,12 @@ char* tab_bar_buttons_text[] = {
     "Output",
 };
 
-struct Config conf;
-struct Config gui_conf;
+Config conf;
+Config gui_conf;
 Texture2D run_tex;
 Texture2D drop_tex;
 Texture2D close_tex;
 Texture2D logo_tex;
-Font font;
 Font font_cond;
 Font font_eb;
 struct nk_user_font* font_eb_nuc = NULL;
@@ -278,8 +287,9 @@ char** keys_accessor(Block* block, size_t* list_len) {
     return keys_list;
 }
 
-void apply_config(struct Config* dst, struct Config* src);
-void set_default_config(struct Config* config);
+void save_config(Config* config);
+void apply_config(Config* dst, Config* src);
+void set_default_config(Config* config);
 void update_measurements(Block* block);
 
 void actionbar_show(const char* text) {
@@ -1410,25 +1420,31 @@ void handle_gui(void) {
             }
             nk_layout_space_end(gui.ctx);
 
-            nk_layout_row_dynamic(gui.ctx, conf.font_size, 1);
+            nk_layout_row_dynamic(gui.ctx, 10, 1);
             nk_spacer(gui.ctx);
 
             nk_layout_row_template_begin(gui.ctx, conf.font_size);
             nk_layout_row_template_push_static(gui.ctx, 10);
             nk_layout_row_template_push_dynamic(gui.ctx);
+            nk_layout_row_template_push_dynamic(gui.ctx);
             nk_layout_row_template_push_static(gui.ctx, 10);
             nk_layout_row_template_end(gui.ctx);
 
-            //nk_layout_row_dynamic(gui.ctx, conf.font_size, 2);
-            //nk_label(gui.ctx, TextFormat("UI Size (%d)", gui_conf.font_size), NK_TEXT_RIGHT);
-            //nk_slider_int(gui.ctx, 8, &gui_conf.font_size, 64, 1);
             nk_spacer(gui.ctx);
-            nk_property_int(gui.ctx, "UI size", 8, &gui_conf.font_size, 64, 1, 1.0);
+            nk_label(gui.ctx, "UI Size", NK_TEXT_RIGHT);
+            nk_property_int(gui.ctx, "#", 8, &gui_conf.font_size, 64, 1, 1.0);
             nk_spacer(gui.ctx);
-            //nk_label(gui.ctx, TextFormat("Side bar size (%d)", gui_conf.side_bar_size), NK_TEXT_RIGHT);
-            //nk_slider_int(gui.ctx, 10, &gui_conf.side_bar_size, 500, 1);
             nk_spacer(gui.ctx);
-            nk_property_int(gui.ctx, "Side bar size", 10, &gui_conf.side_bar_size, 500, 1, 1.0);
+            nk_label(gui.ctx, "Side bar size", NK_TEXT_RIGHT);
+            nk_property_int(gui.ctx, "#", 10, &gui_conf.side_bar_size, 500, 1, 1.0);
+            nk_spacer(gui.ctx);
+            nk_spacer(gui.ctx);
+            nk_label(gui.ctx, "Font path", NK_TEXT_RIGHT);
+            nk_edit_string_zero_terminated(gui.ctx, NK_EDIT_FIELD, gui_conf.font_path, FONT_PATH_MAX_SIZE, nk_filter_default);
+            nk_spacer(gui.ctx);
+            nk_spacer(gui.ctx);
+            nk_label(gui.ctx, "Bold font path", NK_TEXT_RIGHT);
+            nk_edit_string_zero_terminated(gui.ctx, NK_EDIT_FIELD, gui_conf.font_bold_path, FONT_PATH_MAX_SIZE, nk_filter_default);
             nk_spacer(gui.ctx);
 
             nk_layout_row_template_begin(gui.ctx, conf.font_size);
@@ -1443,6 +1459,7 @@ void handle_gui(void) {
             }
             if (nk_button_label(gui.ctx, "Apply")) {
                 apply_config(&conf, &gui_conf);
+                save_config(&gui_conf);
             }
             nk_spacer(gui.ctx);
         }
@@ -1722,14 +1739,85 @@ void sanitize_links(void) {
     }
 }
 
-void set_default_config(struct Config* config) {
+void set_default_config(Config* config) {
     config->font_size = 32;
     config->side_bar_size = 300;
-    config->font_symbols = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?";
+    strncpy(config->font_symbols, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?", FONT_SYMBOLS_MAX_SIZE);
+    strncpy(config->font_path, DATA_PATH "nk57-cond.otf", FONT_PATH_MAX_SIZE);
+    strncpy(config->font_bold_path, DATA_PATH "nk57-eb.otf", FONT_PATH_MAX_SIZE);
 }
 
-void apply_config(struct Config* dst, struct Config* src) {
+void apply_config(Config* dst, Config* src) {
     dst->side_bar_size = src->side_bar_size;
+}
+
+void save_config(Config* config) {
+    int file_size = 1;
+    // ARRLEN also includes \0 into size, but we are using this size to put = sign instead
+    file_size += ARRLEN("UI_SIZE") + 10 + 1;
+    file_size += ARRLEN("SIDE_BAR_SIZE") + 10 + 1;
+    file_size += ARRLEN("FONT_SYMBOLS") + strlen(config->font_symbols) + 1;
+    file_size += ARRLEN("FONT_PATH") + strlen(config->font_path) + 1;
+    file_size += ARRLEN("FONT_BOLD_PATH") + strlen(config->font_bold_path) + 1;
+    
+    char* file_str = malloc(sizeof(char) * file_size);
+    int cursor = 0;
+
+    cursor += sprintf(file_str + cursor, "UI_SIZE=%u\n", config->font_size);
+    cursor += sprintf(file_str + cursor, "SIDE_BAR_SIZE=%u\n", config->side_bar_size);
+    cursor += sprintf(file_str + cursor, "FONT_SYMBOLS=%s\n", config->font_symbols);
+    cursor += sprintf(file_str + cursor, "FONT_PATH=%s\n", config->font_path);
+    cursor += sprintf(file_str + cursor, "FONT_BOLD_PATH=%s\n", config->font_bold_path);
+
+    SaveFileText(CONFIG_PATH, file_str);
+
+    free(file_str);
+}
+
+void load_config(Config* config) {
+    char* file = LoadFileText(CONFIG_PATH);
+    if (!file) return;
+    int cursor = 0;
+
+    bool has_lines = true;
+    while (has_lines) {
+        char* field = &file[cursor];
+        while(file[cursor] != '=' && file[cursor] != '\n' && file[cursor] != '\0') cursor++;
+        if (file[cursor] == '\n') {
+            cursor++; 
+            continue;
+        };
+        if (file[cursor] == '\0') break;
+        file[cursor++] = '\0';
+
+        char* value = &file[cursor];
+        int value_size = 0;
+        while(file[cursor] != '\n' && file[cursor] != '\0') {
+            cursor++;
+            value_size++;
+        }
+        if (file[cursor] == '\0') has_lines = false;
+        file[cursor++] = '\0';
+
+        printf("Field = \"%s\" Value = \"%s\"\n", field, value);
+        if (!strcmp(field, "UI_SIZE")) {
+            int val = atoi(value);
+            config->font_size = val ? val : config->font_size;
+        } else if (!strcmp(field, "SIDE_BAR_SIZE")) {
+            int val = atoi(value);
+            config->side_bar_size = val ? val : config->side_bar_size;
+        } else if (!strcmp(field, "FONT_SYMBOLS")) {
+            strncpy(config->font_symbols, value, FONT_SYMBOLS_MAX_SIZE);
+        } else if (!strcmp(field, "FONT_PATH")) {
+            strncpy(config->font_path, value, FONT_PATH_MAX_SIZE);
+        } else if (!strcmp(field, "FONT_BOLD_PATH")) {
+            strncpy(config->font_bold_path, value, FONT_PATH_MAX_SIZE);
+        } else {
+            printf("Unknown key: %s\n", field);
+        }
+    }
+
+    UnloadFileText(file);
 }
 
 void setup(void) {
@@ -1747,12 +1835,10 @@ void setup(void) {
 
     int codepoints_count;
     int *codepoints = LoadCodepoints(conf.font_symbols, &codepoints_count);
-    font = LoadFontEx(DATA_PATH "nk57.otf", conf.font_size, codepoints, codepoints_count);
-    font_cond = LoadFontEx(DATA_PATH "nk57-cond.otf", conf.font_size, codepoints, codepoints_count);
-    font_eb = LoadFontEx(DATA_PATH "nk57-eb.otf", conf.font_size, codepoints, codepoints_count);
+    font_cond = LoadFontEx(conf.font_path, conf.font_size, codepoints, codepoints_count);
+    font_eb = LoadFontEx(conf.font_bold_path, conf.font_size, codepoints, codepoints_count);
     UnloadCodepoints(codepoints);
 
-    SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_cond.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_eb.texture, TEXTURE_FILTER_BILINEAR);
 
@@ -1861,6 +1947,27 @@ void setup(void) {
     gui.ctx->style.slider.cursor_active.type = NK_STYLE_ITEM_COLOR;
     gui.ctx->style.slider.cursor_active.data.color = nk_rgb(0xff, 0xff, 0xff);
 
+    gui.ctx->style.edit.normal.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.edit.normal.data.color = nk_rgb(0x30, 0x30, 0x30);
+    gui.ctx->style.edit.hover.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.edit.hover.data.color = nk_rgb(0x40, 0x40, 0x40);
+    gui.ctx->style.edit.active.type = NK_STYLE_ITEM_COLOR;
+    gui.ctx->style.edit.active.data.color = nk_rgb(0x28, 0x28, 0x28);
+    gui.ctx->style.edit.rounding = 0.0;
+    gui.ctx->style.edit.border = 1.0;
+    gui.ctx->style.edit.border_color = nk_rgb(0x60, 0x60, 0x60);
+    gui.ctx->style.edit.text_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.edit.text_hover = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.edit.text_active = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.edit.selected_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.edit.selected_hover = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.edit.selected_text_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.edit.selected_text_hover = nk_rgb(0x20, 0x20, 0x20);
+    gui.ctx->style.edit.cursor_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.edit.cursor_hover = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.edit.cursor_text_normal = nk_rgb(0xff, 0xff, 0xff);
+    gui.ctx->style.edit.cursor_text_hover = nk_rgb(0x20, 0x20, 0x20);
+
     gui.ctx->style.property.normal.type = NK_STYLE_ITEM_COLOR;
     gui.ctx->style.property.normal.data.color = nk_rgb(0x30, 0x30, 0x30);
     gui.ctx->style.property.hover.type = NK_STYLE_ITEM_COLOR;
@@ -1915,6 +2022,7 @@ void free_registered_blocks(void) {
 
 int main(void) {
     set_default_config(&conf);
+    load_config(&conf);
 
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(800, 600, "Scrap");
@@ -2010,21 +2118,20 @@ int main(void) {
         draw_tab_buttons(sw);
         draw_top_bar();
 
-        BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
+        BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
             for (vec_size_t i = 0; i < vector_size(sprite_code); i++) {
                 draw_block_chain(&sprite_code[i], camera_pos);
             }
         EndScissorMode();
 
-        BeginScissorMode(0, conf.font_size * 2, conf.side_bar_size, sh - conf.font_size * 2);
+        BeginScissorMode(0, conf.font_size * 2.2, conf.side_bar_size, sh - conf.font_size * 2.2);
             DrawRectangle(0, conf.font_size * 2.2, conf.side_bar_size, sh - conf.font_size * 2.2, (Color){ 0, 0, 0, 0x60 });
 
-            int pos_y = conf.font_size * 2.2 + 10;
+            int pos_y = conf.font_size * 2.2 + SIDE_BAR_PADDING;
             for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
-                draw_block((Vector2){ 10, pos_y }, &sidebar[i], true);
-                pos_y += conf.font_size + 10;
+                draw_block((Vector2){ SIDE_BAR_PADDING, pos_y }, &sidebar[i], true);
+                pos_y += conf.font_size + SIDE_BAR_PADDING;
             }
-
         EndScissorMode();
 
         BeginScissorMode(0, conf.font_size * 2, sw, sh - conf.font_size * 2);
