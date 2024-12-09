@@ -241,7 +241,9 @@ Texture2D run_tex;
 Texture2D drop_tex;
 Texture2D close_tex;
 Texture2D logo_tex;
+Texture2D warn_tex;
 struct nk_image logo_tex_nuc;
+struct nk_image warn_tex_nuc;
 
 Font font_cond;
 Font font_eb;
@@ -1525,6 +1527,14 @@ void gui_show_title(char* name) {
     nk_layout_space_end(gui.ctx);
 }
 
+void gui_restart_warning(void) {
+    struct nk_rect bounds = nk_widget_bounds(gui.ctx);
+    nk_image(gui.ctx, warn_tex_nuc);
+    if (nk_input_is_mouse_hovering_rect(&gui.ctx->input, bounds))
+        // For some reason tooltip crops last char so we add additional char at the end
+        nk_tooltip(gui.ctx, "Needs restart for changes to take effect ");
+}
+
 void handle_gui(void) {
     if (gui.is_fading) {
         gui.animation_time = MAX(gui.animation_time - GetFrameTime() * 2.0, 0.0);
@@ -1560,27 +1570,40 @@ void handle_gui(void) {
             nk_layout_row_dynamic(gui.ctx, 10, 1);
             nk_spacer(gui.ctx);
 
+            nk_layout_row_dynamic(gui.ctx, conf.font_size, 1);
+            nk_style_set_font(gui.ctx, font_eb_nuc);
+            nk_label(gui.ctx, "Interface", NK_TEXT_CENTERED);
+            nk_style_set_font(gui.ctx, font_cond_nuc);
+
             nk_layout_row_template_begin(gui.ctx, conf.font_size);
             nk_layout_row_template_push_static(gui.ctx, 10);
             nk_layout_row_template_push_dynamic(gui.ctx);
+            nk_layout_row_template_push_static(gui.ctx, conf.font_size);
             nk_layout_row_template_push_dynamic(gui.ctx);
             nk_layout_row_template_push_static(gui.ctx, 10);
             nk_layout_row_template_end(gui.ctx);
 
             nk_spacer(gui.ctx);
             nk_label(gui.ctx, "UI Size", NK_TEXT_RIGHT);
+            gui_restart_warning();
             nk_property_int(gui.ctx, "#", 8, &gui_conf.font_size, 64, 1, 1.0);
             nk_spacer(gui.ctx);
+
             nk_spacer(gui.ctx);
             nk_label(gui.ctx, "Side bar size", NK_TEXT_RIGHT);
+            nk_spacer(gui.ctx);
             nk_property_int(gui.ctx, "#", 10, &gui_conf.side_bar_size, 500, 1, 1.0);
             nk_spacer(gui.ctx);
+
             nk_spacer(gui.ctx);
             nk_label(gui.ctx, "Font path", NK_TEXT_RIGHT);
+            gui_restart_warning();
             nk_edit_string_zero_terminated(gui.ctx, NK_EDIT_FIELD, gui_conf.font_path, FONT_PATH_MAX_SIZE, nk_filter_default);
             nk_spacer(gui.ctx);
+
             nk_spacer(gui.ctx);
             nk_label(gui.ctx, "Bold font path", NK_TEXT_RIGHT);
+            gui_restart_warning();
             nk_edit_string_zero_terminated(gui.ctx, NK_EDIT_FIELD, gui_conf.font_bold_path, FONT_PATH_MAX_SIZE, nk_filter_default);
             nk_spacer(gui.ctx);
 
@@ -2047,6 +2070,12 @@ void setup(void) {
     SetTextureFilter(logo_tex, TEXTURE_FILTER_BILINEAR);
     logo_tex_nuc = TextureToNuklear(logo_tex);
     UnloadImage(logo);
+
+    Image warn = LoadImageSvg(DATA_PATH "warning.svg", conf.font_size, conf.font_size);
+    warn_tex = LoadTextureFromImage(warn);
+    SetTextureFilter(warn_tex, TEXTURE_FILTER_BILINEAR);
+    warn_tex_nuc = TextureToNuklear(warn_tex);
+    UnloadImage(warn);
 
     int codepoints_count;
     int *codepoints = LoadCodepoints(conf.font_symbols, &codepoints_count);
