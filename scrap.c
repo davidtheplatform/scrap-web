@@ -1,8 +1,7 @@
 // TODO:
 // - Better collision resolution
 // - Swap blocks inside arguments?
-// - About page
-// - Output tab
+// - Settings warnings
 
 #define LICENSE_URL "https://www.gnu.org/licenses/gpl-3.0.html"
 
@@ -219,6 +218,11 @@ typedef struct {
     Block* blocks;
 } Sidebar;
 
+typedef enum {
+    TAB_CODE,
+    TAB_OUTPUT,
+} TabType;
+
 char* top_bar_buttons_text[] = {
     "File",
     "Settings",
@@ -232,6 +236,7 @@ char* tab_bar_buttons_text[] = {
 
 Config conf;
 Config gui_conf;
+
 Texture2D run_tex;
 Texture2D drop_tex;
 Texture2D close_tex;
@@ -247,11 +252,13 @@ Shader line_shader;
 float shader_time = 0.0;
 int shader_time_loc;
 
+TabType current_tab = TAB_CODE;
+
+HoverInfo hover_info = {0};
 Blockdef* registered_blocks;
 Sidebar sidebar = {0};
 BlockChain mouse_blockchain = {0};
 BlockCode block_code = {0};
-HoverInfo hover_info = {0};
 Dropdown dropdown = {0};
 ActionBar actionbar;
 NuklearGui gui = {0};
@@ -1292,7 +1299,7 @@ void bars_check_collisions(void) {
 void draw_tab_buttons(int sw) {
     Vector2 pos = (Vector2){ 0.0, conf.font_size * 1.2 };
     for (vec_size_t i = 0; i < ARRLEN(tab_bar_buttons_text); i++) {
-        draw_button(&pos, tab_bar_buttons_text[i], 1.0, 0.3, 0, i == 0, COLLISION_AT(TOPBAR_TABS, i));
+        draw_button(&pos, tab_bar_buttons_text[i], 1.0, 0.3, 0, i == current_tab, COLLISION_AT(TOPBAR_TABS, i));
     }
 
     Vector2 run_pos = (Vector2){ sw - conf.font_size, conf.font_size * 1.2 };
@@ -1448,6 +1455,27 @@ void draw_sidebar(void) {
         );
     }
     EndScissorMode();
+}
+
+void draw_output_box(void) {
+    Vector2 screen_size = (Vector2) { GetScreenWidth() - 20, GetScreenHeight() - conf.font_size * 2.2 - 20 };
+    Rectangle rect = (Rectangle) { 0, 0, 16, 9 };
+    if (rect.width / rect.height > screen_size.x / screen_size.y) {
+        rect.height *= screen_size.x / rect.width;
+        rect.width  *= screen_size.x / rect.width;
+        rect.y = screen_size.y / 2 - rect.height / 2;
+    } else {
+        rect.width  *= screen_size.y / rect.height;
+        rect.height *= screen_size.y / rect.height;
+        rect.x = screen_size.x / 2 - rect.width / 2;
+    }
+    rect.x += 10;
+    rect.y += conf.font_size * 2.2 + 10;
+
+    DrawRectangleRec(rect, BLACK);
+    BeginShaderMode(line_shader);
+    DrawRectangleLinesEx(rect, 2.0, (Color) { 0x60, 0x60, 0x60, 0xff });
+    EndShaderMode();
 }
 
 // https://easings.net/#easeOutExpo
@@ -1656,7 +1684,16 @@ bool handle_mouse_click(void) {
             default:
                 break;
             }
+        } else if (hover_info.top_bars.type == TOPBAR_TABS) {
+            if (current_tab != hover_info.top_bars.ind) {
+                shader_time = 0.0;
+                current_tab = hover_info.top_bars.ind;
+            }
         }
+        return true;
+    }
+
+    if (current_tab != TAB_CODE) {
         return true;
     }
 
@@ -1874,6 +1911,7 @@ void dropdown_check_collisions(void) {
 }
 
 void check_block_collisions(void) {
+    if (current_tab != TAB_CODE) return;
     if (hover_info.sidebar) {
         int pos_y = conf.font_size * 2.2 + SIDE_BAR_PADDING - sidebar.scroll_amount;
         for (vec_size_t i = 0; i < vector_size(sidebar.blocks); i++) {
@@ -2210,7 +2248,7 @@ int main(void) {
     setup();
 
     while (!WindowShouldClose()) {
-        hover_info.sidebar = GetMouseX() < conf.side_bar_size && GetMouseY() > conf.font_size * 2;
+        hover_info.sidebar = GetMouseX() < conf.side_bar_size && GetMouseY() > conf.font_size * 2.2;
         hover_info.block = NULL;
         hover_info.argument = NULL;
         hover_info.argument_pos.x = 0;
@@ -2293,77 +2331,80 @@ int main(void) {
         int sw = GetScreenWidth();
         int sh = GetScreenHeight();
 
-        draw_dots();
-
         DrawRectangle(0, 0, sw, conf.font_size * 1.2, (Color){ 0x30, 0x30, 0x30, 0xFF });
         DrawRectangle(0, conf.font_size * 1.2, sw, conf.font_size, (Color){ 0x2B, 0x2B, 0x2B, 0xFF });
         draw_tab_buttons(sw);
         draw_top_bar();
 
-        BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
-            for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
-                draw_block_chain(&block_code.code[i], camera_pos);
-            }
-        EndScissorMode();
+        if (current_tab == TAB_CODE) {
+            BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
+                draw_dots();
+                for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
+                    draw_block_chain(&block_code.code[i], camera_pos);
+                }
+            EndScissorMode();
 
-        draw_scrollbars();
+            draw_scrollbars();
 
-        draw_sidebar();
+            draw_sidebar();
 
-        BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
-            draw_block_chain(&mouse_blockchain, (Vector2) {0});
-        EndScissorMode();
+            BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
+                draw_block_chain(&mouse_blockchain, (Vector2) {0});
+            EndScissorMode();
 
-        draw_action_bar();
+            draw_action_bar();
 
 #ifdef DEBUG
-        DrawTextEx(
-            font_cond, 
-            TextFormat(
-                "BlockChain: %p, Ind: %d, Layer: %d\n"
-                "Block: %p, Parent: %p\n"
-                "Argument: %p, Pos: (%.3f, %.3f)\n"
-                "Prev argument: %p\n"
-                "Select block: %p\n"
-                "Select arg: %p, Pos: (%.3f, %.3f)\n"
-                "Sidebar: %d\n"
-                "Mouse: %p, Time: %.3f, Pos: (%d, %d), Click: (%d, %d)\n"
-                "Camera: (%.3f, %.3f), Click: (%.3f, %.3f)\n"
-                "Dropdown ind: %d, Scroll: %d\n"
-                "Drag cancelled: %d\n"
-                "Bar: %d, Ind: %d\n"
-                "Min: (%.3f, %.3f), Max: (%.3f, %.3f)\n"
-                "Sidebar scroll: %d, Max: %d",
-                hover_info.blockchain,
-                hover_info.blockchain_index,
-                hover_info.blockchain_layer,
-                hover_info.block,
-                hover_info.block ? hover_info.block->parent : NULL,
-                hover_info.argument, hover_info.argument_pos.x, hover_info.argument_pos.y, 
-                hover_info.prev_argument,
-                hover_info.select_block,
-                hover_info.select_argument, hover_info.select_argument_pos.x, hover_info.select_argument_pos.y, 
-                hover_info.sidebar,
-                mouse_blockchain.blocks,
-                hover_info.time_at_last_pos,
-                (int)mouse_pos.x, (int)mouse_pos.y,
-                (int)hover_info.mouse_click_pos.x, (int)hover_info.mouse_click_pos.y,
-                camera_pos.x, camera_pos.y, camera_click_pos.x, camera_click_pos.y,
-                hover_info.dropdown_hover_ind, dropdown.scroll_amount,
-                hover_info.drag_cancelled,
-                hover_info.top_bars.type, hover_info.top_bars.ind,
-                block_code.min_pos.x, block_code.min_pos.y, block_code.max_pos.x, block_code.max_pos.y,
-                sidebar.scroll_amount, sidebar.max_y
-            ), 
-            (Vector2){ 
-                conf.side_bar_size + 5, 
-                conf.font_size * 2.2 + 5
-            }, 
-            conf.font_size * 0.5,
-            0.0, 
-            GRAY
-        );
+            DrawTextEx(
+                font_cond, 
+                TextFormat(
+                    "BlockChain: %p, Ind: %d, Layer: %d\n"
+                    "Block: %p, Parent: %p\n"
+                    "Argument: %p, Pos: (%.3f, %.3f)\n"
+                    "Prev argument: %p\n"
+                    "Select block: %p\n"
+                    "Select arg: %p, Pos: (%.3f, %.3f)\n"
+                    "Sidebar: %d\n"
+                    "Mouse: %p, Time: %.3f, Pos: (%d, %d), Click: (%d, %d)\n"
+                    "Camera: (%.3f, %.3f), Click: (%.3f, %.3f)\n"
+                    "Dropdown ind: %d, Scroll: %d\n"
+                    "Drag cancelled: %d\n"
+                    "Bar: %d, Ind: %d\n"
+                    "Min: (%.3f, %.3f), Max: (%.3f, %.3f)\n"
+                    "Sidebar scroll: %d, Max: %d",
+                    hover_info.blockchain,
+                    hover_info.blockchain_index,
+                    hover_info.blockchain_layer,
+                    hover_info.block,
+                    hover_info.block ? hover_info.block->parent : NULL,
+                    hover_info.argument, hover_info.argument_pos.x, hover_info.argument_pos.y, 
+                    hover_info.prev_argument,
+                    hover_info.select_block,
+                    hover_info.select_argument, hover_info.select_argument_pos.x, hover_info.select_argument_pos.y, 
+                    hover_info.sidebar,
+                    mouse_blockchain.blocks,
+                    hover_info.time_at_last_pos,
+                    (int)mouse_pos.x, (int)mouse_pos.y,
+                    (int)hover_info.mouse_click_pos.x, (int)hover_info.mouse_click_pos.y,
+                    camera_pos.x, camera_pos.y, camera_click_pos.x, camera_click_pos.y,
+                    hover_info.dropdown_hover_ind, dropdown.scroll_amount,
+                    hover_info.drag_cancelled,
+                    hover_info.top_bars.type, hover_info.top_bars.ind,
+                    block_code.min_pos.x, block_code.min_pos.y, block_code.max_pos.x, block_code.max_pos.y,
+                    sidebar.scroll_amount, sidebar.max_y
+                ), 
+                (Vector2){ 
+                    conf.side_bar_size + 5, 
+                    conf.font_size * 2.2 + 5
+                }, 
+                conf.font_size * 0.5,
+                0.0, 
+                GRAY
+            );
 #endif
+        } else if (current_tab == TAB_OUTPUT) {
+            draw_output_box();
+        }
 
         if (gui.shown) {
             float animation_ease = ease_out_expo(gui.animation_time);
