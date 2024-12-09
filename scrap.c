@@ -1,8 +1,6 @@
 // TODO:
 // - Better collision resolution
 // - Swap blocks inside arguments?
-// - Codebase scrollbars
-// - Sidebar scrollbars
 // - About page
 // - Output tab
 
@@ -212,6 +210,12 @@ typedef struct {
     BlockChain* code;
 } BlockCode;
 
+typedef struct {
+    int scroll_amount;
+    int max_y;
+    Block* blocks;
+} Sidebar;
+
 char* top_bar_buttons_text[] = {
     "File",
     "Settings",
@@ -239,9 +243,9 @@ float shader_time = 0.0;
 int shader_time_loc;
 
 Blockdef* registered_blocks;
-Block* sidebar; // Vector that contains block prototypes
+Sidebar sidebar = {0};
 BlockChain mouse_blockchain = {0};
-BlockCode block_code;
+BlockCode block_code = {0};
 HoverInfo hover_info = {0};
 Dropdown dropdown = {0};
 ActionBar actionbar;
@@ -1374,7 +1378,7 @@ void draw_action_bar(void) {
     int width = MeasureTextEx(font_eb, actionbar.text, conf.font_size * 0.75, 0.0).x;
     Vector2 pos;
     pos.x = (GetScreenWidth() - conf.side_bar_size) / 2 - width / 2 + conf.side_bar_size;
-    pos.y = GetScreenHeight() * 0.15;
+    pos.y = (GetScreenHeight() - conf.font_size * 2.2) * 0.15 + conf.font_size * 2.2;
     Color color = YELLOW;
     color.a = actionbar.show_time / 3.0 * 255.0;
 
@@ -1413,6 +1417,32 @@ void draw_scrollbars(void) {
         );
         EndScissorMode();
     }
+}
+
+void draw_sidebar(void) {
+    BeginScissorMode(0, conf.font_size * 2.2, conf.side_bar_size, GetScreenHeight() - conf.font_size * 2.2);
+    DrawRectangle(0, conf.font_size * 2.2, conf.side_bar_size, GetScreenHeight() - conf.font_size * 2.2, (Color){ 0, 0, 0, 0x60 });
+
+    int pos_y = conf.font_size * 2.2 + SIDE_BAR_PADDING - sidebar.scroll_amount;
+    for (vec_size_t i = 0; i < vector_size(sidebar.blocks); i++) {
+        draw_block((Vector2){ SIDE_BAR_PADDING, pos_y }, &sidebar.blocks[i], true);
+        pos_y += conf.font_size + SIDE_BAR_PADDING;
+    }
+
+    if (sidebar.max_y > GetScreenHeight()) {
+        float size = (GetScreenHeight() - conf.font_size * 2.2) / (sidebar.max_y - conf.font_size * 2.2);
+        size *= GetScreenHeight() - conf.font_size * 2.2;
+        float t = UNLERP(0, sidebar.max_y - GetScreenHeight(), sidebar.scroll_amount);
+
+        DrawRectangle(
+            conf.side_bar_size - conf.font_size / 6, 
+            LERP(conf.font_size * 2.2, GetScreenHeight() - size, t), 
+            conf.font_size / 6,
+            size,
+            (Color) { 0xff, 0xff, 0xff, 0x80 }
+        );
+    }
+    EndScissorMode();
 }
 
 // https://easings.net/#easeOutExpo
@@ -1670,8 +1700,8 @@ void handle_key_press(void) {
             blockchain_select_counter++;
             if ((vec_size_t)blockchain_select_counter >= vector_size(block_code.code)) blockchain_select_counter = 0;
 
-            camera_pos.x = block_code.code[blockchain_select_counter].pos.x - GetScreenWidth() / 2;
-            camera_pos.y = block_code.code[blockchain_select_counter].pos.y - GetScreenHeight() / 2;
+            camera_pos.x = block_code.code[blockchain_select_counter].pos.x - ((GetScreenWidth() - conf.side_bar_size) / 2 + conf.side_bar_size);
+            camera_pos.y = block_code.code[blockchain_select_counter].pos.y - ((GetScreenHeight() - conf.font_size * 2.2) / 2 + conf.font_size * 2.2);
             actionbar_show(TextFormat("Jump to chain (%d/%d)", blockchain_select_counter + 1, vector_size(block_code.code)));
         }
         return;
@@ -1713,6 +1743,9 @@ void handle_mouse_wheel(void) {
     int wheel = (int)GetMouseWheelMove();
 
     dropdown.scroll_amount = MAX(dropdown.scroll_amount - wheel, 0);
+    if (hover_info.sidebar) {
+        sidebar.scroll_amount = MAX(sidebar.scroll_amount - wheel * (conf.font_size + SIDE_BAR_PADDING) * 2, 0);
+    }
 }
 
 void handle_mouse_drag(void) {
@@ -1769,11 +1802,11 @@ void dropdown_check_collisions(void) {
 
 void check_block_collisions(void) {
     if (hover_info.sidebar) {
-        int pos_y = conf.font_size * 2 + 10;
-        for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
+        int pos_y = conf.font_size * 2.2 + SIDE_BAR_PADDING - sidebar.scroll_amount;
+        for (vec_size_t i = 0; i < vector_size(sidebar.blocks); i++) {
             if (hover_info.block) break;
-            block_update_collisions((Vector2){ 10, pos_y }, &sidebar[i]);
-            pos_y += conf.font_size + 10;
+            block_update_collisions((Vector2){ SIDE_BAR_PADDING, pos_y }, &sidebar.blocks[i]);
+            pos_y += conf.font_size + SIDE_BAR_PADDING;
         }
     } else {
         for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
@@ -1972,10 +2005,10 @@ void setup(void) {
     mouse_blockchain = blockchain_new();
     block_code = blockcode_new();
 
-    sidebar = vector_create();
+    sidebar.blocks = vector_create();
     for (vec_size_t i = 0; i < vector_size(registered_blocks); i++) {
         if (registered_blocks[i].hidden) continue;
-        vector_add(&sidebar, block_new(i));
+        vector_add(&sidebar.blocks, block_new(i));
     }
 
     font_eb_nuc = LoadFontIntoNuklear(font_eb, conf.font_size);
@@ -2153,9 +2186,14 @@ int main(void) {
             handle_key_press();
         }
 
-        if (IsWindowResized()) {
-            shader_time = 0.0;
-        } 
+        if (IsWindowResized()) shader_time = 0.0;
+
+        sidebar.max_y = conf.font_size * 2.2 + SIDE_BAR_PADDING + (conf.font_size + SIDE_BAR_PADDING) * vector_size(sidebar.blocks);
+        if (sidebar.max_y > GetScreenHeight()) {
+            sidebar.scroll_amount = MIN(sidebar.scroll_amount, sidebar.max_y - GetScreenHeight());
+        } else {
+            sidebar.scroll_amount = 0;
+        }
 
         mouse_blockchain.pos = GetMousePosition();
 
@@ -2196,15 +2234,7 @@ int main(void) {
 
         draw_scrollbars();
 
-        BeginScissorMode(0, conf.font_size * 2.2, conf.side_bar_size, sh - conf.font_size * 2.2);
-            DrawRectangle(0, conf.font_size * 2.2, conf.side_bar_size, sh - conf.font_size * 2.2, (Color){ 0, 0, 0, 0x60 });
-
-            int pos_y = conf.font_size * 2.2 + SIDE_BAR_PADDING;
-            for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
-                draw_block((Vector2){ SIDE_BAR_PADDING, pos_y }, &sidebar[i], true);
-                pos_y += conf.font_size + SIDE_BAR_PADDING;
-            }
-        EndScissorMode();
+        draw_sidebar();
 
         BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
             draw_block_chain(&mouse_blockchain, (Vector2) {0});
@@ -2228,7 +2258,8 @@ int main(void) {
                 "Dropdown ind: %d, Scroll: %d\n"
                 "Drag cancelled: %d\n"
                 "Bar: %d, Ind: %d\n"
-                "Min: (%.3f, %.3f), Max: (%.3f, %.3f)",
+                "Min: (%.3f, %.3f), Max: (%.3f, %.3f)\n"
+                "Sidebar scroll: %d, Max: %d",
                 hover_info.blockchain,
                 hover_info.blockchain_index,
                 hover_info.blockchain_layer,
@@ -2247,7 +2278,8 @@ int main(void) {
                 hover_info.dropdown_hover_ind, dropdown.scroll_amount,
                 hover_info.drag_cancelled,
                 hover_info.top_bars.type, hover_info.top_bars.ind,
-                block_code.min_pos.x, block_code.min_pos.y, block_code.max_pos.x, block_code.max_pos.y
+                block_code.min_pos.x, block_code.min_pos.y, block_code.max_pos.x, block_code.max_pos.y,
+                sidebar.scroll_amount, sidebar.max_y
             ), 
             (Vector2){ 
                 conf.side_bar_size + 5, 
@@ -2277,10 +2309,10 @@ int main(void) {
         blockchain_free(&block_code.code[i]);
     }
     vector_free(block_code.code);
-    for (vec_size_t i = 0; i < vector_size(sidebar); i++) {
-        block_free(&sidebar[i]);
+    for (vec_size_t i = 0; i < vector_size(sidebar.blocks); i++) {
+        block_free(&sidebar.blocks[i]);
     }
-    vector_free(sidebar);
+    vector_free(sidebar.blocks);
     free_registered_blocks();
     CloseWindow();
 
