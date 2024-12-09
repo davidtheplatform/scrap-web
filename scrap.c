@@ -4,6 +4,8 @@
 // - About page
 // - Output tab
 
+#define LICENSE_URL "https://www.gnu.org/licenses/gpl-3.0.html"
+
 #include <stdio.h>
 #include <stddef.h>
 #include <assert.h>
@@ -194,6 +196,7 @@ typedef struct {
 
 typedef enum {
     GUI_TYPE_SETTINGS,
+    GUI_TYPE_ABOUT,
 } NuklearGuiType;
 
 typedef struct {
@@ -233,6 +236,8 @@ Texture2D run_tex;
 Texture2D drop_tex;
 Texture2D close_tex;
 Texture2D logo_tex;
+struct nk_image logo_tex_nuc;
+
 Font font_cond;
 Font font_eb;
 struct nk_user_font* font_eb_nuc = NULL;
@@ -1473,6 +1478,25 @@ void gui_hide(void) {
     gui.is_fading = true;
 }
 
+void gui_show_title(char* name) {
+    nk_layout_space_begin(gui.ctx, NK_DYNAMIC, conf.font_size, 100);
+
+    struct nk_rect layout_size = nk_layout_space_bounds(gui.ctx);
+
+    nk_layout_space_push(gui.ctx, nk_rect(0.0, 0.0, 1.0, 1.0));
+    nk_draw_rectangle(gui.ctx, nk_rgb(0x30, 0x30, 0x30));
+    nk_layout_space_push(gui.ctx, nk_rect(0.0, 0.0, 1.0, 1.0));
+    nk_style_set_font(gui.ctx, font_eb_nuc);
+    nk_label(gui.ctx, name, NK_TEXT_CENTERED);
+    nk_style_set_font(gui.ctx, font_cond_nuc);
+
+    nk_layout_space_push(gui.ctx, nk_rect(1.0 - conf.font_size / layout_size.w, 0.0, conf.font_size / layout_size.w, 1.0));
+    if (nk_button_label(gui.ctx, "X")) {
+        gui_hide();
+    }
+    nk_layout_space_end(gui.ctx);
+}
+
 void handle_gui(void) {
     if (gui.is_fading) {
         gui.animation_time = MAX(gui.animation_time - GetFrameTime() * 2.0, 0.0);
@@ -1486,9 +1510,9 @@ void handle_gui(void) {
 
     float animation_ease = ease_out_expo(gui.animation_time);
 
+    Vector2 gui_size;
     switch (gui.type) {
     case GUI_TYPE_SETTINGS:
-        Vector2 gui_size;
         gui_size.x = 0.6 * GetScreenWidth() * animation_ease;
         gui_size.y = 0.8 * GetScreenHeight() * animation_ease;
 
@@ -1503,22 +1527,7 @@ void handle_gui(void) {
                 ), 
                 NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)
         ) {
-            nk_layout_space_begin(gui.ctx, NK_DYNAMIC, conf.font_size, 100);
-
-            struct nk_rect layout_size = nk_layout_space_bounds(gui.ctx);
-
-            nk_layout_space_push(gui.ctx, nk_rect(0.0, 0.0, 1.0, 1.0));
-            nk_draw_rectangle(gui.ctx, nk_rgb(0x30, 0x30, 0x30));
-            nk_layout_space_push(gui.ctx, nk_rect(0.0, 0.0, 1.0, 1.0));
-            nk_style_set_font(gui.ctx, font_eb_nuc);
-            nk_label(gui.ctx, "Settings", NK_TEXT_CENTERED);
-            nk_style_set_font(gui.ctx, font_cond_nuc);
-
-            nk_layout_space_push(gui.ctx, nk_rect(1.0 - conf.font_size / layout_size.w, 0.0, conf.font_size / layout_size.w, 1.0));
-            if (nk_button_label(gui.ctx, "X")) {
-                gui_hide();
-            }
-            nk_layout_space_end(gui.ctx);
+            gui_show_title("Settings");
 
             nk_layout_row_dynamic(gui.ctx, 10, 1);
             nk_spacer(gui.ctx);
@@ -1565,6 +1574,61 @@ void handle_gui(void) {
         }
         nk_end(gui.ctx);
         break;
+    case GUI_TYPE_ABOUT:
+        gui_size.x = 500 * conf.font_size / 32.0 * animation_ease;
+        gui_size.y = 250 * conf.font_size / 32.0 * animation_ease;
+
+        if (nk_begin(
+                gui.ctx, 
+                "About", 
+                nk_rect(
+                    GetScreenWidth() / 2 - gui_size.x / 2, 
+                    GetScreenHeight() / 2 - gui_size.y / 2, 
+                    gui_size.x, 
+                    gui_size.y
+                ), 
+                NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)
+        ) {
+            gui_show_title("About");
+
+            nk_layout_row_dynamic(gui.ctx, 10 * conf.font_size / 32.0, 1);
+            nk_spacer(gui.ctx);
+
+            nk_layout_row_template_begin(gui.ctx, conf.font_size);
+            nk_layout_row_template_push_static(gui.ctx, 10 * conf.font_size / 32.0);
+            nk_layout_row_template_push_static(gui.ctx, conf.font_size);
+            nk_layout_row_template_push_dynamic(gui.ctx);
+            nk_layout_row_template_push_static(gui.ctx, 10 * conf.font_size / 32.0);
+            nk_layout_row_template_end(gui.ctx);
+
+            nk_spacer(gui.ctx);
+            nk_image(gui.ctx, logo_tex_nuc);
+            nk_style_set_font(gui.ctx, font_eb_nuc);
+            nk_label(gui.ctx, "Scrap v0.1", NK_TEXT_LEFT);
+            nk_style_set_font(gui.ctx, font_cond_nuc);
+            nk_spacer(gui.ctx);
+
+            nk_layout_row_template_begin(gui.ctx, conf.font_size * 1.9);
+            nk_layout_row_template_push_static(gui.ctx, 10 * conf.font_size / 32.0);
+            nk_layout_row_template_push_dynamic(gui.ctx);
+            nk_layout_row_template_push_static(gui.ctx, 10 * conf.font_size / 32.0);
+            nk_layout_row_template_end(gui.ctx);
+
+            nk_spacer(gui.ctx);
+            nk_label_wrap(gui.ctx, "Scrap is a project that allows anyone to build software using simple, block based interface.");
+            nk_spacer(gui.ctx);
+
+            nk_layout_row_template_begin(gui.ctx, conf.font_size);
+            nk_layout_row_template_push_static(gui.ctx, 10 * conf.font_size / 32.0);
+            nk_layout_row_template_push_static(gui.ctx, conf.font_size * 3);
+            nk_layout_row_template_end(gui.ctx);
+            nk_spacer(gui.ctx);
+            if (nk_button_label(gui.ctx, "License")) {
+                OpenURL(LICENSE_URL);
+            }
+        }
+        nk_end(gui.ctx);
+        break;
     default:
         break;
     }
@@ -1580,9 +1644,18 @@ bool handle_mouse_click(void) {
     }
 
     if (hover_info.top_bars.ind != -1) {
-        if (hover_info.top_bars.type == TOPBAR_TOP && hover_info.top_bars.ind == 1) {
-            gui_conf = conf;
-            gui_show(GUI_TYPE_SETTINGS);
+        if (hover_info.top_bars.type == TOPBAR_TOP) {
+            switch (hover_info.top_bars.ind) {
+            case 1:
+                gui_conf = conf;
+                gui_show(GUI_TYPE_SETTINGS);
+                break;
+            case 2:
+                gui_show(GUI_TYPE_ABOUT);
+                break;
+            default:
+                break;
+            }
         }
         return true;
     }
@@ -1934,6 +2007,7 @@ void setup(void) {
     Image logo = LoadImageSvg(DATA_PATH "logo.svg", conf.font_size, conf.font_size);
     logo_tex = LoadTextureFromImage(logo);
     SetTextureFilter(logo_tex, TEXTURE_FILTER_BILINEAR);
+    logo_tex_nuc = TextureToNuklear(logo_tex);
     UnloadImage(logo);
 
     int codepoints_count;
