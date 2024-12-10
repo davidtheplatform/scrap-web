@@ -1,9 +1,12 @@
 // TODO:
 // - Better collision resolution
 // - Swap blocks inside arguments?
-// - Settings warnings
 
 #define LICENSE_URL "https://www.gnu.org/licenses/gpl-3.0.html"
+
+#define SCRVM_IMPLEMENTATION
+#define SCRVM_VEC_C
+#include "vm.h"
 
 #include <stdio.h>
 #include <stddef.h>
@@ -12,7 +15,6 @@
 #include <math.h>
 
 #include "raylib.h"
-#include "external/vec.h"
 #define RAYLIB_NUKLEAR_IMPLEMENTATION
 #include "external/raylib-nuklear.h"
 
@@ -46,112 +48,6 @@ typedef struct {
     char font_bold_path[FONT_PATH_MAX_SIZE];
 } Config;
 
-typedef struct Measurement {
-    Vector2 size;
-} Measurement;
-
-typedef enum {
-    BLOCKCONSTR_UNLIMITED, // Can put anything as argument
-    BLOCKCONSTR_STRING, // Can only put strings as argument
-} BlockArgumentConstraint;
-
-typedef enum {
-    DROPDOWN_SOURCE_LISTREF,
-} BlockDropdownSource;
-
-typedef struct {
-    Measurement ms;
-    char* text;
-} InputStaticText;
-
-typedef struct {
-    BlockArgumentConstraint constr;
-    Measurement ms;
-    char* text;
-} InputArgument;
-
-typedef struct {
-    Measurement ms;
-    Texture2D image;
-} InputStaticImage;
-
-typedef enum {
-    INPUT_TEXT_DISPLAY,
-    INPUT_ARGUMENT,
-    INPUT_DROPDOWN,
-    INPUT_IMAGE_DISPLAY,
-} BlockInputType;
-
-typedef enum {
-    BLOCKTYPE_NORMAL,
-    BLOCKTYPE_CONTROL,
-    BLOCKTYPE_CONTROLEND,
-    BLOCKTYPE_END,
-} BlockType;
-
-typedef struct Block {
-    int id;
-    void* arguments; // arguments are of void type because of C. That makes the whole codebase a bit garbled, though :P
-    Measurement ms;
-    struct Block* parent;
-} Block;
-
-typedef char** (*ListAccessor)(Block* block, size_t* list_len);
-
-typedef struct {
-    BlockDropdownSource source;
-    ListAccessor list;
-} InputDropdown;
-
-typedef union {
-    InputStaticText stext;
-    InputStaticImage simage;
-    InputArgument arg;
-    InputDropdown drop;
-} BlockInputData;
-
-typedef struct {
-    BlockInputType type;
-    BlockInputData data;
-} BlockInput;
-
-typedef struct {
-    char* id;
-    Color color;
-    BlockType type;
-    bool hidden;
-    BlockInput* inputs;
-} Blockdef;
-
-typedef enum {
-    ARGUMENT_TEXT,
-    ARGUMENT_BLOCK,
-    ARGUMENT_CONST_STRING,
-} BlockArgumentType;
-
-typedef union {
-    char* text;
-    Block block;
-} BlockArgumentData;
-
-typedef struct {
-    Measurement ms;
-    vec_size_t input_id;
-    BlockArgumentType type;
-    BlockArgumentData data;
-} BlockArgument;
-
-typedef struct {
-    Vector2 pos;
-    Block* block;
-} DrawStack;
-
-typedef struct {
-    Vector2 pos;
-    DrawStack* draw_stack;
-    Block* blocks;
-} BlockChain;
-
 typedef enum {
     TOPBAR_TOP,
     TOPBAR_TABS,
@@ -165,15 +61,15 @@ typedef struct {
 
 typedef struct {
     bool sidebar;
-    BlockChain* blockchain;
+    ScrBlockChain* blockchain;
     vec_size_t blockchain_index;
     int blockchain_layer;
-    Block* block;
-    BlockArgument* argument;
+    ScrBlock* block;
+    ScrBlockArgument* argument;
     Vector2 argument_pos;
-    BlockArgument* prev_argument;
-    Block* select_block;
-    BlockArgument* select_argument;
+    ScrBlockArgument* prev_argument;
+    ScrBlock* select_block;
+    ScrBlockArgument* select_argument;
     Vector2 select_argument_pos;
     Vector2 last_mouse_pos;
     Vector2 mouse_click_pos;
@@ -184,7 +80,7 @@ typedef struct {
 } HoverInfo;
 
 typedef struct {
-    Measurement ms;
+    ScrMeasurement ms;
     int scroll_amount;
 } Dropdown;
 
@@ -209,19 +105,24 @@ typedef struct {
 typedef struct {
     Vector2 min_pos;
     Vector2 max_pos;
-    BlockChain* code;
+    ScrBlockChain* code;
 } BlockCode;
 
 typedef struct {
     int scroll_amount;
     int max_y;
-    Block* blocks;
+    ScrBlock* blocks;
 } Sidebar;
 
 typedef enum {
     TAB_CODE,
     TAB_OUTPUT,
 } TabType;
+
+typedef struct {
+    ScrVec pos;
+    ScrBlock* block;
+} DrawStack;
 
 char* top_bar_buttons_text[] = {
     "File",
@@ -256,15 +157,15 @@ int shader_time_loc;
 
 TabType current_tab = TAB_CODE;
 
+ScrVm vm;
+ScrBlockChain mouse_blockchain = {0};
+DrawStack* draw_stack = NULL;
 HoverInfo hover_info = {0};
-Blockdef* registered_blocks;
 Sidebar sidebar = {0};
-BlockChain mouse_blockchain = {0};
 BlockCode block_code = {0};
 Dropdown dropdown = {0};
 ActionBar actionbar;
 NuklearGui gui = {0};
-int end_block_id = -1;
 
 Vector2 camera_pos = {0};
 Vector2 camera_click_pos = {0};
@@ -305,7 +206,7 @@ const char* line_shader_fragment =
     "    finalColor = vec4(fragColor.xyz, pow(diff, 2.0));\n"
     "}";
 
-char** keys_accessor(Block* block, size_t* list_len) {
+char** keys_accessor(ScrBlock* block, size_t* list_len) {
     (void)block;
     *list_len = ARRLEN(keys_list);
     return keys_list;
@@ -314,10 +215,22 @@ char** keys_accessor(Block* block, size_t* list_len) {
 void save_config(Config* config);
 void apply_config(Config* dst, Config* src);
 void set_default_config(Config* config);
-void update_measurements(Block* block);
+void update_measurements(ScrVm* vm, ScrBlock* block);
+
+ScrVec as_scr_vec(Vector2 vec) {
+    return (ScrVec) { vec.x, vec.y };
+}
+
+Vector2 as_rl_vec(ScrVec vec) {
+    return (Vector2) { vec.x, vec.y };
+}
+
+Color as_rl_color(ScrColor color) {
+    return (Color) { color.r, color.g, color.b, color.a };
+}
 
 void actionbar_show(const char* text) {
-    strncpy(actionbar.text, text, ACTION_BAR_MAX_SIZE);
+    strncpy(actionbar.text, text, sizeof(actionbar.text) - 1);
     actionbar.show_time = 3.0;
 }
 
@@ -341,7 +254,7 @@ void blockcode_update_measurments(BlockCode* blockcode) {
     }
 }
 
-void blockcode_add_blockchain(BlockCode* blockcode, BlockChain chain) {
+void blockcode_add_blockchain(BlockCode* blockcode, ScrBlockChain chain) {
     vector_add(&blockcode->code, chain);
     blockcode_update_measurments(blockcode);
 }
@@ -351,354 +264,42 @@ void blockcode_remove_blockchain(BlockCode* blockcode, int ind) {
     blockcode_update_measurments(blockcode);
 }
 
-void block_update_parent_links(Block* block) {
-    BlockArgument* block_args = block->arguments;
-    for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
-        if (block_args[i].type != ARGUMENT_BLOCK) continue;
-        block_args[i].data.block.parent = block;
-    }
-}
-
-Block block_new(int id) {
-    Block block;
-    block.id = id;
-    block.ms = (Measurement) {0};
-    block.arguments = id == -1 ? NULL : vector_create();
-    block.parent = NULL;
-
-    if (id != -1) {
-        printf("New block\n\tId: %d\n", id);
-        Blockdef blockdef = registered_blocks[block.id];
-        for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
-            if (blockdef.inputs[i].type != INPUT_ARGUMENT && blockdef.inputs[i].type != INPUT_DROPDOWN) continue;
-            BlockArgument* arg = vector_add_dst((BlockArgument**)&block.arguments);
-            arg->data.text = vector_create();
-            arg->input_id = i;
-
-            switch (blockdef.inputs[i].type) {
-            case INPUT_ARGUMENT:
-                arg->ms = blockdef.inputs[i].data.arg.ms;
-                switch (blockdef.inputs[i].data.arg.constr) {
-                case BLOCKCONSTR_UNLIMITED:
-                    arg->type = ARGUMENT_TEXT;
-                    break;
-                case BLOCKCONSTR_STRING:
-                    arg->type = ARGUMENT_CONST_STRING;
-                    break;
-                default:
-                    assert(false && "Unimplemented argument constraint");
-                    break;
-                }
-
-                for (char* pos = blockdef.inputs[i].data.arg.text; *pos; pos++) {
-                    vector_add(&arg->data.text, *pos);
-                }
-                break;
-            case INPUT_DROPDOWN:
-                arg->type = ARGUMENT_CONST_STRING;
-                arg->ms = (Measurement) {0};
-
-                size_t list_len = 0;
-                char** list = blockdef.inputs[i].data.drop.list(&block, &list_len);
-                if (!list || list_len == 0) break;
-
-                for (char* pos = list[0]; *pos; pos++) {
-                    vector_add(&arg->data.text, *pos);
-                }
-                break;
-            default:
-                assert(false && "Unreachable");
-                break;
-            }
-            vector_add(&arg->data.text, 0);
-        }
-    }
-
-    update_measurements(&block);
+ScrBlock block_new_ms(ScrVm* vm, int id) {
+    ScrBlock block = block_new(vm, id);
+    update_measurements(vm, &block);
     return block;
 }
 
-// Broken at the moment, not sure why
-Block block_copy(Block* block) {
-    printf("Copy block id: %d\n", block->id);
-    if (!block->arguments) return *block;
-
-    Block new = *block;
-    new.arguments = vector_create();
-    for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
-        BlockArgument* block_args = block->arguments;
-        BlockArgument* arg = vector_add_dst((BlockArgument**)&new.arguments);
-        arg->ms = block_args[i].ms;
-        arg->type = block_args[i].type;
-        switch (block_args[i].type) {
-        case ARGUMENT_TEXT:
-            arg->data.text = vector_copy(block_args[i].data.text);
-            break;
-        case ARGUMENT_BLOCK:
-            arg->data.block = block_copy(&block_args[i].data.block);
-            break;
-        default:
-            assert(false && "Unimplemented argument copy");
-            break;
-        }
-    }
-
-    return new;
-}
-
-void block_free(Block* block) {
-    printf("Free block id: %d\n", block->id);
-
-    if (block->arguments) {
-        for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
-            BlockArgument* block_args = block->arguments;
-            switch (block_args[i].type) {
-            case ARGUMENT_CONST_STRING:
-            case ARGUMENT_TEXT:
-                vector_free(block_args[i].data.text);
-                break;
-            case ARGUMENT_BLOCK:
-                block_free(&block_args[i].data.block);
-                break;
-            default:
-                assert(false && "Unimplemented argument free");
-                break;
-            }
-        }
-        vector_free((BlockArgument*)block->arguments);
-    }
-}
-
-BlockChain blockchain_new() {
-    printf("New blockchain\n");
-    BlockChain chain;
-    chain.pos = (Vector2) {0};
-    chain.blocks = vector_create();
-    chain.draw_stack = vector_create();
-
-    return chain;
-}
-
-void blockchain_update_parent_links(BlockChain* chain) {
-    for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
-        block_update_parent_links(&chain->blocks[i]);
-    }
-}
-
-void blockchain_add_block(BlockChain* chain, Block block) {
-    vector_add(&chain->blocks, block);
-    blockchain_update_parent_links(chain);
-}
-
-void blockchain_clear_blocks(BlockChain* chain) {
-    for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
-        block_free(&chain->blocks[i]);
-    }
-    vector_clear(chain->blocks);
-}
-
-void blockchain_insert(BlockChain* dst, BlockChain* src, vec_size_t pos) {
-    assert(pos < vector_size(dst->blocks));
-
-    vector_reserve(&dst->blocks, vector_size(dst->blocks) + vector_size(src->blocks));
-    for (ssize_t i = (ssize_t)vector_size(src->blocks) - 1; i >= 0; i--) {
-        vector_insert(&dst->blocks, pos + 1, src->blocks[i]);
-    }
-    blockchain_update_parent_links(dst);
-    vector_clear(src->blocks);
-}
-
-void blockchain_detach(BlockChain* dst, BlockChain* src, vec_size_t pos) {
-    assert(pos < vector_size(src->blocks));
-
-    int current_layer = hover_info.blockchain_layer;
-    int layer_size = 0;
-
-    vector_reserve(&dst->blocks, vector_size(dst->blocks) + vector_size(src->blocks) - pos);
-    for (vec_size_t i = pos; i < vector_size(src->blocks); i++) {
-        BlockType block_type = registered_blocks[src->blocks[i].id].type;
-        if ((block_type == BLOCKTYPE_END || (block_type == BLOCKTYPE_CONTROLEND && i != pos)) && hover_info.blockchain_layer == current_layer && current_layer != 0) break;
-        vector_add(&dst->blocks, src->blocks[i]);
-        if (block_type == BLOCKTYPE_CONTROL) {
-            current_layer++;
-        } else if (block_type == BLOCKTYPE_END) {
-            current_layer--;
-        }
-        layer_size++;
-    }
-    blockchain_update_parent_links(dst);
-    vector_erase(src->blocks, pos, layer_size);
-    blockchain_update_parent_links(src);
-}
-
-void blockchain_free(BlockChain* chain) {
-    printf("Free blockchain\n");
-    blockchain_clear_blocks(chain);
-    vector_free(chain->blocks);
-    vector_free(chain->draw_stack);
-}
-
-void argument_set_block(BlockArgument* block_arg, Block block) {
-    assert(block_arg->type == ARGUMENT_TEXT);
-
-    vector_free(block_arg->data.text);
-    block_arg->type = ARGUMENT_BLOCK;
-    block_arg->data.block = block;
-
-    block_update_parent_links(&block_arg->data.block);
-    update_measurements(&block_arg->data.block);
-}
-
-void argument_set_const_string(BlockArgument* block_arg, Block* block, char* text) {
-    assert(block_arg->type == ARGUMENT_CONST_STRING);
-
-    block_arg->type = ARGUMENT_CONST_STRING;
-    vector_clear(block_arg->data.text);
-
-    for (char* pos = text; *pos; pos++) {
-        vector_add(&block_arg->data.text, *pos);
-    }
-    vector_add(&block_arg->data.text, 0);
-
-    Measurement ms = {0};
-    ms.size = MeasureTextEx(font_cond, text, BLOCK_TEXT_SIZE, 0.0);
-    block_arg->ms = ms;
-
-    update_measurements(block);
-}
-
-void argument_set_text(BlockArgument* block_arg, char* text) {
-    assert(block_arg->type == ARGUMENT_BLOCK);
-    assert(block_arg->data.block.parent != NULL);
-
-    Block* parent = block_arg->data.block.parent;
-
-    block_arg->type = ARGUMENT_TEXT;
-    block_arg->data.text = vector_create();
-
-    for (char* pos = text; *pos; pos++) {
-        vector_add(&block_arg->data.text, *pos);
-    }
-    vector_add(&block_arg->data.text, 0);
-
-    Measurement ms = {0};
-    ms.size = MeasureTextEx(font_cond, text, BLOCK_TEXT_SIZE, 0.0);
-    block_arg->ms = ms;
-
-    update_measurements(parent);
-}
-
-// registered_blocks should be initialized before calling this
-int block_register(char* id, BlockType type, Color color) {
-    Blockdef* blockdef = vector_add_dst(&registered_blocks);
-    blockdef->id = id;
-    blockdef->color = color;
-    blockdef->type = type;
-    blockdef->hidden = false;
-    blockdef->inputs = vector_create();
-
-    if (type == BLOCKTYPE_END && end_block_id == -1) {
-        end_block_id = vector_size(registered_blocks) - 1;
-        blockdef->hidden = true;
-    }
-
-    return vector_size(registered_blocks) - 1;
-}
-
-void block_add_text(int block_id, char* text) {
-    Measurement ms = {0};
-    ms.size = MeasureTextEx(font_cond, text, BLOCK_TEXT_SIZE, 0.0);
-
-    BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
-    input->type = INPUT_TEXT_DISPLAY;
-    input->data = (BlockInputData) {
-        .stext = {
-            .text = text,
-            .ms = ms,
-        },
-    };
-}
-
-void block_add_argument(int block_id, char* defualt_data, BlockArgumentConstraint constraint) {
-    Measurement ms = {0};
-    ms.size = MeasureTextEx(font_cond, defualt_data, BLOCK_TEXT_SIZE, 0.0);
-    ms.size.x += BLOCK_STRING_PADDING;
-    ms.size.x = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, ms.size.x);
-
-    BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
-    input->type = INPUT_ARGUMENT;
-    input->data = (BlockInputData) {
-        .arg = {
-            .text = defualt_data,
-            .constr = constraint,
-            .ms = ms,
-        },
-    };
-}
-
-void block_add_dropdown(int block_id, BlockDropdownSource dropdown_source, ListAccessor accessor) {
-    BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
-    input->type = INPUT_DROPDOWN;
-    input->data = (BlockInputData) {
-        .drop = {
-            .source = dropdown_source,
-            .list = accessor,
-        },
-    };
-}
-
-void block_add_image(int block_id, Texture2D texture) {
-    Measurement ms = {0};
-    ms.size.x = (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)texture.height * (float)texture.width;
-    ms.size.y = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
-
-    BlockInput* input = vector_add_dst(&registered_blocks[block_id].inputs);
-    input->type = INPUT_IMAGE_DISPLAY;
-    input->data = (BlockInputData) {
-        .simage = {
-            .image = texture,
-            .ms = ms,
-        }
-    };
-}
-
-void block_unregister(int block_id) {
-    vector_free(registered_blocks[block_id].inputs);
-    vector_remove(registered_blocks, block_id);
-}
-
-void update_measurements(Block* block) {
-    if (block->id == -1) return;
-    Blockdef blockdef = registered_blocks[block->id];
+void update_measurements(ScrVm* vm, ScrBlock* block) {
+    ScrBlockdef blockdef = vm->blockdefs[block->id];
 
     block->ms.size.x = BLOCK_PADDING;
     block->ms.size.y = conf.font_size;
 
     int arg_id = 0;
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
-        Measurement ms;
-        BlockArgument* block_args = block->arguments;
+        ScrMeasurement ms;
 
         switch (blockdef.inputs[i].type) {
         case INPUT_TEXT_DISPLAY:
             ms = blockdef.inputs[i].data.stext.ms;
             break;
         case INPUT_ARGUMENT:
-            switch (block_args[arg_id].type) {
+            switch (block->arguments[arg_id].type) {
             case ARGUMENT_CONST_STRING:
             case ARGUMENT_TEXT:
-                Measurement string_ms;
-                string_ms.size = MeasureTextEx(font_cond, block_args[arg_id].data.text, BLOCK_TEXT_SIZE, 0.0);
+                ScrMeasurement string_ms;
+                string_ms.size = as_scr_vec(MeasureTextEx(font_cond, block->arguments[arg_id].data.text, BLOCK_TEXT_SIZE, 0.0));
                 string_ms.size.x += BLOCK_STRING_PADDING;
                 string_ms.size.x = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, string_ms.size.x);
 
-                block_args[arg_id].ms = string_ms;
+                block->arguments[arg_id].ms = string_ms;
                 ms = string_ms;
                 ms.size.y = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, ms.size.y);
                 break;
             case ARGUMENT_BLOCK:
-                block_args[arg_id].ms = block_args[arg_id].data.block.ms;
-                ms = block_args[arg_id].ms;
+                block->arguments[arg_id].ms = block->arguments[arg_id].data.block.ms;
+                ms = block->arguments[arg_id].ms;
                 break;
             default:
                 assert(false && "Unimplemented argument measure");
@@ -707,14 +308,14 @@ void update_measurements(Block* block) {
             arg_id++;
             break;
         case INPUT_DROPDOWN:
-            switch (block_args[arg_id].type) {
+            switch (block->arguments[arg_id].type) {
             case ARGUMENT_CONST_STRING:
-                Measurement string_ms;
-                string_ms.size = MeasureTextEx(font_cond, block_args[arg_id].data.text, BLOCK_TEXT_SIZE, 0.0);
+                ScrMeasurement string_ms;
+                string_ms.size = as_scr_vec(MeasureTextEx(font_cond, block->arguments[arg_id].data.text, BLOCK_TEXT_SIZE, 0.0));
                 string_ms.size.x += BLOCK_STRING_PADDING + DROP_TEX_WIDTH;
                 string_ms.size.x = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, string_ms.size.x);
 
-                block_args[arg_id].ms = string_ms;
+                block->arguments[arg_id].ms = string_ms;
                 ms = string_ms;
                 ms.size.y = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, ms.size.y);
                 break;
@@ -732,7 +333,7 @@ void update_measurements(Block* block) {
             ms = blockdef.inputs[i].data.simage.ms;
             break;
         default:
-            ms.size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
+            ms.size = as_scr_vec(MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0));
             break;
         }
         ms.size.x += BLOCK_PADDING;
@@ -741,10 +342,10 @@ void update_measurements(Block* block) {
         block->ms.size.y = MAX(block->ms.size.y, ms.size.y + BLOCK_OUTLINE_SIZE * 4);
     }
 
-    if (block->parent) update_measurements(block->parent);
+    if (block->parent) update_measurements(vm, block->parent);
 }
 
-void block_update_collisions(Vector2 position, Block* block) {
+void block_update_collisions(Vector2 position, ScrBlock* block) {
     if (hover_info.block && !block->parent) return;
 
     Rectangle block_size;
@@ -759,14 +360,13 @@ void block_update_collisions(Vector2 position, Block* block) {
     Vector2 cursor = position;
     cursor.x += BLOCK_PADDING;
 
-    Blockdef blockdef = registered_blocks[block->id];
+    ScrBlockdef blockdef = vm.blockdefs[block->id];
     int arg_id = 0;
 
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
         if (hover_info.argument) return;
         int width = 0;
-        BlockInput cur = blockdef.inputs[i];
-        BlockArgument* block_args = block->arguments;
+        ScrBlockInput cur = blockdef.inputs[i];
         Rectangle arg_size;
 
         switch (cur.type) {
@@ -774,18 +374,18 @@ void block_update_collisions(Vector2 position, Block* block) {
             width = cur.data.stext.ms.size.x;
             break;
         case INPUT_ARGUMENT:
-            width = block_args[arg_id].ms.size.x;
+            width = block->arguments[arg_id].ms.size.x;
 
-            switch (block_args[arg_id].type) {
+            switch (block->arguments[arg_id].type) {
             case ARGUMENT_CONST_STRING:
             case ARGUMENT_TEXT:
                 arg_size.x = cursor.x;
                 arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
-                arg_size.width = block_args[arg_id].ms.size.x;
+                arg_size.width = block->arguments[arg_id].ms.size.x;
                 arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
 
                 if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
-                    hover_info.argument = &block_args[arg_id];
+                    hover_info.argument = &block->arguments[arg_id];
                     hover_info.argument_pos = cursor;
                     break;
                 }
@@ -793,18 +393,18 @@ void block_update_collisions(Vector2 position, Block* block) {
             case ARGUMENT_BLOCK:
                 Vector2 block_pos;
                 block_pos.x = cursor.x;
-                block_pos.y = cursor.y + block_size.height / 2 - block_args[arg_id].ms.size.y / 2; 
+                block_pos.y = cursor.y + block_size.height / 2 - block->arguments[arg_id].ms.size.y / 2; 
 
                 arg_size.x = block_pos.x;
                 arg_size.y = block_pos.y;
-                arg_size.width = block_args[arg_id].ms.size.x;
-                arg_size.height = block_args[arg_id].ms.size.y;
+                arg_size.width = block->arguments[arg_id].ms.size.x;
+                arg_size.height = block->arguments[arg_id].ms.size.y;
 
                 if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
-                    hover_info.prev_argument = &block_args[arg_id];
+                    hover_info.prev_argument = &block->arguments[arg_id];
                 }
                 
-                block_update_collisions(block_pos, &block_args[arg_id].data.block);
+                block_update_collisions(block_pos, &block->arguments[arg_id].data.block);
                 break;
             default:
                 assert(false && "Unimplemented argument collision");
@@ -813,17 +413,17 @@ void block_update_collisions(Vector2 position, Block* block) {
             arg_id++;
             break;
         case INPUT_DROPDOWN:
-            width = block_args[arg_id].ms.size.x;
+            width = block->arguments[arg_id].ms.size.x;
 
-            switch (block_args[arg_id].type) {
+            switch (block->arguments[arg_id].type) {
             case ARGUMENT_CONST_STRING:
                 arg_size.x = cursor.x;
                 arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
-                arg_size.width = block_args[arg_id].ms.size.x;
+                arg_size.width = block->arguments[arg_id].ms.size.x;
                 arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
 
                 if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
-                    hover_info.argument = &block_args[arg_id];
+                    hover_info.argument = &block->arguments[arg_id];
                     hover_info.argument_pos = cursor;
                     break;
                 }
@@ -856,12 +456,10 @@ void draw_text_shadow(Font font, const char *text, Vector2 position, float font_
     DrawTextEx(font, text, position, font_size, spacing, tint);
 }
 
-void draw_block(Vector2 position, Block* block, bool force_outline) {
-    if (block->id == -1) return;
-
+void draw_block(Vector2 position, ScrBlock* block, bool force_outline) {
     bool collision = hover_info.block == block;
-    Blockdef blockdef = registered_blocks[block->id];
-    Color color = blockdef.color;
+    ScrBlockdef blockdef = vm.blockdefs[block->id];
+    Color color = as_rl_color(blockdef.color);
 
     Vector2 cursor = position;
 
@@ -880,8 +478,7 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
     int arg_id = 0;
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
         int width = 0;
-        BlockInput cur = blockdef.inputs[i];
-        BlockArgument* block_args = block->arguments;
+        ScrBlockInput cur = blockdef.inputs[i];
 
         switch (cur.type) {
         case INPUT_TEXT_DISPLAY:
@@ -900,9 +497,9 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
             );
             break;
         case INPUT_ARGUMENT:
-            width = block_args[arg_id].ms.size.x;
+            width = block->arguments[arg_id].ms.size.x;
 
-            switch (block_args[arg_id].type) {
+            switch (block->arguments[arg_id].type) {
             case ARGUMENT_CONST_STRING:
             case ARGUMENT_TEXT:
                 Rectangle arg_size;
@@ -911,15 +508,15 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
                 arg_size.width = width;
                 arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
 
-                bool hovered = &block_args[arg_id] == hover_info.argument;
-                bool selected = &block_args[arg_id] == hover_info.select_argument;
+                bool hovered = &block->arguments[arg_id] == hover_info.argument;
+                bool selected = &block->arguments[arg_id] == hover_info.select_argument;
 
-                if (block_args[arg_id].type == ARGUMENT_CONST_STRING) {
+                if (block->arguments[arg_id].type == ARGUMENT_CONST_STRING) {
                     DrawRectangleRounded(arg_size, 0.5, 5, WHITE);
                     if (hovered || selected) {
                         DrawRectangleRoundedLines(arg_size, 0.5, 5, BLOCK_OUTLINE_SIZE, ColorBrightness(color, selected ? -0.5 : 0.5));
                     }
-                } else if (block_args[arg_id].type == ARGUMENT_TEXT) {
+                } else if (block->arguments[arg_id].type == ARGUMENT_TEXT) {
                     DrawRectangleRec(arg_size, WHITE);
                     if (hovered || selected) {
                         DrawRectangleLinesEx(arg_size, BLOCK_OUTLINE_SIZE, ColorBrightness(color, selected ? -0.5 : 0.2));
@@ -927,7 +524,7 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
                 } 
                 DrawTextEx(
                     font_cond, 
-                    block_args[arg_id].data.text,
+                    block->arguments[arg_id].data.text,
                     (Vector2) { 
                         cursor.x + BLOCK_STRING_PADDING * 0.5, 
                         cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
@@ -940,9 +537,9 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
             case ARGUMENT_BLOCK:
                 Vector2 block_pos;
                 block_pos.x = cursor.x;
-                block_pos.y = cursor.y + block_size.height * 0.5 - block_args[arg_id].ms.size.y * 0.5;
+                block_pos.y = cursor.y + block_size.height * 0.5 - block->arguments[arg_id].ms.size.y * 0.5;
 
-                draw_block(block_pos, &block_args[arg_id].data.block, true);
+                draw_block(block_pos, &block->arguments[arg_id].data.block, true);
                 break;
             default:
                 assert(false && "Unimplemented argument draw");
@@ -951,9 +548,9 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
             arg_id++;
             break;
         case INPUT_DROPDOWN:
-            width = block_args[arg_id].ms.size.x;
+            width = block->arguments[arg_id].ms.size.x;
 
-            switch (block_args[arg_id].type) {
+            switch (block->arguments[arg_id].type) {
             case ARGUMENT_CONST_STRING:
                 Rectangle arg_size;
                 arg_size.x = cursor.x;
@@ -963,13 +560,13 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
 
                 DrawRectangleRounded(arg_size, 0.5, 4, ColorBrightness(color, collision ? 0.0 : -0.3));
 
-                if (&block_args[arg_id] == hover_info.argument || &block_args[arg_id] == hover_info.select_argument) {
-                    DrawRectangleRoundedLines(arg_size, 0.5, 4, BLOCK_OUTLINE_SIZE, ColorBrightness(color, &block_args[arg_id] == hover_info.select_argument ? -0.5 : 0.5));
+                if (&block->arguments[arg_id] == hover_info.argument || &block->arguments[arg_id] == hover_info.select_argument) {
+                    DrawRectangleRoundedLines(arg_size, 0.5, 4, BLOCK_OUTLINE_SIZE, ColorBrightness(color, &block->arguments[arg_id] == hover_info.select_argument ? -0.5 : 0.5));
                 }
-                Vector2 ms = MeasureTextEx(font_cond, block_args[arg_id].data.text, BLOCK_TEXT_SIZE, 0);
+                Vector2 ms = MeasureTextEx(font_cond, block->arguments[arg_id].data.text, BLOCK_TEXT_SIZE, 0);
                 draw_text_shadow(
                     font_cond, 
-                    block_args[arg_id].data.text,
+                    block->arguments[arg_id].data.text,
                     (Vector2) { 
                         cursor.x + BLOCK_STRING_PADDING * 0.5, 
                         cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
@@ -1015,25 +612,26 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
             arg_id++;
             break;
         case INPUT_IMAGE_DISPLAY:
+            Texture2D* image = cur.data.simage.image.image_ptr;
             width = cur.data.simage.ms.size.x;
             DrawTextureEx(
-                cur.data.simage.image, 
+                *image, 
                 (Vector2) { 
                     cursor.x + 1, 
                     cursor.y + BLOCK_OUTLINE_SIZE * 2 + 1,
                 }, 
                 0.0, 
-                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)cur.data.simage.image.height, 
+                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)image->height, 
                 (Color) { 0x00, 0x00, 0x00, 0x88 }
             );
             DrawTextureEx(
-                cur.data.simage.image, 
+                *image, 
                 (Vector2) { 
                     cursor.x, 
                     cursor.y + BLOCK_OUTLINE_SIZE * 2,
                 }, 
                 0.0, 
-                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)cur.data.simage.image.height, 
+                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)image->height, 
                 WHITE
             );
             break;
@@ -1072,8 +670,8 @@ void draw_block(Vector2 position, Block* block, bool force_outline) {
 //         5
 
 void draw_controlend_outline(DrawStack* block, Vector2 end_pos, Color color) {
-    BlockType blocktype = registered_blocks[block->block->id].type;
-    Vector2 block_size = block->block->ms.size;
+    ScrBlockType blocktype = vm.blockdefs[block->block->id].type;
+    Vector2 block_size = as_rl_vec(block->block->ms.size);
     
     if (blocktype == BLOCKTYPE_CONTROL) {
         /* 1 */ DrawRectangle(block->pos.x, block->pos.y, block_size.x, BLOCK_OUTLINE_SIZE, color);
@@ -1087,8 +685,8 @@ void draw_controlend_outline(DrawStack* block, Vector2 end_pos, Color color) {
 }
 
 void draw_control_outline(DrawStack* block, Vector2 end_pos, Color color, bool draw_end) {
-    BlockType blocktype = registered_blocks[block->block->id].type;
-    Vector2 block_size = block->block->ms.size;
+    ScrBlockType blocktype = vm.blockdefs[block->block->id].type;
+    Vector2 block_size = as_rl_vec(block->block->ms.size);
 
     if (blocktype == BLOCKTYPE_CONTROL) {
         /* 1 */ DrawRectangle(block->pos.x, block->pos.y, block_size.x, BLOCK_OUTLINE_SIZE, color);
@@ -1109,25 +707,25 @@ void draw_control_outline(DrawStack* block, Vector2 end_pos, Color color, bool d
     /* 8 */ DrawRectangle(block->pos.x + BLOCK_CONTROL_INDENT - BLOCK_OUTLINE_SIZE, block->pos.y + block_size.y, BLOCK_OUTLINE_SIZE, end_pos.y - (block->pos.y + block_size.y), color);
 }
 
-void blockchain_check_collisions(BlockChain* chain, Vector2 camera_pos) {
-    vector_clear(chain->draw_stack);
+void blockchain_check_collisions(ScrBlockChain* chain, Vector2 camera_pos) {
+    vector_clear(draw_stack);
 
     hover_info.blockchain = chain;
     hover_info.blockchain_layer = 0;
-    Vector2 pos = hover_info.blockchain->pos;
+    Vector2 pos = as_rl_vec(hover_info.blockchain->pos);
     pos.x -= camera_pos.x;
     pos.y -= camera_pos.y;
     for (vec_size_t i = 0; i < vector_size(hover_info.blockchain->blocks); i++) {
         if (hover_info.block) break;
-        hover_info.blockchain_layer = vector_size(chain->draw_stack);
+        hover_info.blockchain_layer = vector_size(draw_stack);
         hover_info.blockchain_index = i;
 
-        Blockdef blockdef = registered_blocks[chain->blocks[i].id];
-        if ((blockdef.type == BLOCKTYPE_END || blockdef.type == BLOCKTYPE_CONTROLEND) && vector_size(chain->draw_stack) > 0) {
+        ScrBlockdef blockdef = vm.blockdefs[chain->blocks[i].id];
+        if ((blockdef.type == BLOCKTYPE_END || blockdef.type == BLOCKTYPE_CONTROLEND) && vector_size(draw_stack) > 0) {
             pos.x -= BLOCK_CONTROL_INDENT;
 
             if (blockdef.type == BLOCKTYPE_END) {
-                DrawStack prev_block = chain->draw_stack[vector_size(chain->draw_stack) - 1];
+                DrawStack prev_block = draw_stack[vector_size(draw_stack) - 1];
                 Rectangle rect;
                 rect.x = pos.x;
                 rect.y = pos.y;
@@ -1140,48 +738,48 @@ void blockchain_check_collisions(BlockChain* chain, Vector2 camera_pos) {
             } else if (blockdef.type == BLOCKTYPE_CONTROLEND) {
                 block_update_collisions(pos, &hover_info.blockchain->blocks[i]);
             }
-            vector_pop(chain->draw_stack);
+            vector_pop(draw_stack);
         } else {
             block_update_collisions(pos, &hover_info.blockchain->blocks[i]);
         }
 
         if (blockdef.type == BLOCKTYPE_CONTROL || blockdef.type == BLOCKTYPE_CONTROLEND) {
             DrawStack stack_item;
-            stack_item.pos = pos;
+            stack_item.pos = as_scr_vec(pos);
             stack_item.block = &chain->blocks[i];
-            vector_add(&chain->draw_stack, stack_item);
+            vector_add(&draw_stack, stack_item);
             pos.x += BLOCK_CONTROL_INDENT;
         }
         pos.y += hover_info.blockchain->blocks[i].ms.size.y;
     }
 }
 
-void draw_block_chain(BlockChain* chain, Vector2 camera_pos) {
-    vector_clear(chain->draw_stack);
+void draw_block_chain(ScrBlockChain* chain, Vector2 camera_pos) {
+    vector_clear(draw_stack);
 
-    Vector2 pos = chain->pos;
+    Vector2 pos = as_rl_vec(chain->pos);
     pos.x -= camera_pos.x;
     pos.y -= camera_pos.y;
     for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
-        Blockdef blockdef = registered_blocks[chain->blocks[i].id];
-        if ((blockdef.type == BLOCKTYPE_END || blockdef.type == BLOCKTYPE_CONTROLEND) && vector_size(chain->draw_stack) > 0) {
+        ScrBlockdef blockdef = vm.blockdefs[chain->blocks[i].id];
+        if ((blockdef.type == BLOCKTYPE_END || blockdef.type == BLOCKTYPE_CONTROLEND) && vector_size(draw_stack) > 0) {
             pos.x -= BLOCK_CONTROL_INDENT;
-            DrawStack prev_block = chain->draw_stack[vector_size(chain->draw_stack) - 1];
-            Blockdef prev_blockdef = registered_blocks[prev_block.block->id];
+            DrawStack prev_block = draw_stack[vector_size(draw_stack) - 1];
+            ScrBlockdef prev_blockdef = vm.blockdefs[prev_block.block->id];
 
             Rectangle rect;
             rect.x = prev_block.pos.x;
             rect.y = prev_block.pos.y + prev_block.block->ms.size.y;
             rect.width = BLOCK_CONTROL_INDENT;
             rect.height = pos.y - (prev_block.pos.y + prev_block.block->ms.size.y);
-            DrawRectangleRec(rect, prev_blockdef.color);
+            DrawRectangleRec(rect, as_rl_color(prev_blockdef.color));
 
             if (blockdef.type == BLOCKTYPE_END) {
-                DrawRectangle(pos.x, pos.y, prev_block.block->ms.size.x, conf.font_size, ColorBrightness(prev_blockdef.color, hover_info.block == &chain->blocks[i] ? 0.3 : 0.0));
+                DrawRectangle(pos.x, pos.y, prev_block.block->ms.size.x, conf.font_size, ColorBrightness(as_rl_color(prev_blockdef.color), hover_info.block == &chain->blocks[i] ? 0.3 : 0.0));
                 draw_control_outline(
                     &prev_block, 
                     pos, 
-                    ColorBrightness(prev_blockdef.color, hover_info.block == prev_block.block || hover_info.block == &chain->blocks[i] ? 0.5 : -0.2),
+                    ColorBrightness(as_rl_color(prev_blockdef.color), hover_info.block == prev_block.block || hover_info.block == &chain->blocks[i] ? 0.5 : -0.2),
                     true
                 );
             } else if (blockdef.type == BLOCKTYPE_CONTROLEND) {
@@ -1189,19 +787,19 @@ void draw_block_chain(BlockChain* chain, Vector2 camera_pos) {
                 draw_controlend_outline(
                     &prev_block, 
                     pos, 
-                    ColorBrightness(prev_blockdef.color, hover_info.block == prev_block.block || hover_info.block == &chain->blocks[i] ? 0.5 : -0.2)
+                    ColorBrightness(as_rl_color(prev_blockdef.color), hover_info.block == prev_block.block || hover_info.block == &chain->blocks[i] ? 0.5 : -0.2)
                 );
             }
 
-            vector_pop(chain->draw_stack);
+            vector_pop(draw_stack);
         } else {
             draw_block(pos, &chain->blocks[i], false);
         }
         if (blockdef.type == BLOCKTYPE_CONTROL || blockdef.type == BLOCKTYPE_CONTROLEND) {
             DrawStack stack_item;
-            stack_item.pos = pos;
+            stack_item.pos = as_scr_vec(pos);
             stack_item.block = &chain->blocks[i];
-            vector_add(&chain->draw_stack, stack_item);
+            vector_add(&draw_stack, stack_item);
             pos.x += BLOCK_CONTROL_INDENT;
         }
         pos.y += chain->blocks[i].ms.size.y;
@@ -1209,9 +807,9 @@ void draw_block_chain(BlockChain* chain, Vector2 camera_pos) {
 
     pos.y += conf.font_size;
     Rectangle rect;
-    for (vec_size_t i = 0; i < vector_size(chain->draw_stack); i++) {
-        DrawStack prev_block = chain->draw_stack[i];
-        Blockdef prev_blockdef = registered_blocks[prev_block.block->id];
+    for (vec_size_t i = 0; i < vector_size(draw_stack); i++) {
+        DrawStack prev_block = draw_stack[i];
+        ScrBlockdef prev_blockdef = vm.blockdefs[prev_block.block->id];
 
         pos.x = prev_block.pos.x;
 
@@ -1220,8 +818,8 @@ void draw_block_chain(BlockChain* chain, Vector2 camera_pos) {
         rect.width = BLOCK_CONTROL_INDENT;
         rect.height = pos.y - (prev_block.pos.y + prev_block.block->ms.size.y);
 
-        DrawRectangleRec(rect, prev_blockdef.color);
-        draw_control_outline(&prev_block, pos, ColorBrightness(prev_blockdef.color, hover_info.block == prev_block.block ? 0.5 : -0.2), false);
+        DrawRectangleRec(rect, as_rl_color(prev_blockdef.color));
+        draw_control_outline(&prev_block, pos, ColorBrightness(as_rl_color(prev_blockdef.color), hover_info.block == prev_block.block ? 0.5 : -0.2), false);
     }
 }
 
@@ -1340,8 +938,8 @@ void draw_tooltip(void) {
 void draw_dropdown_list(void) {
     if (!hover_info.select_argument) return;
 
-    Blockdef blockdef = registered_blocks[hover_info.select_block->id];
-    BlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
+    ScrBlockdef blockdef = vm.blockdefs[hover_info.select_block->id];
+    ScrBlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
 
     if (block_input.type != INPUT_DROPDOWN) return;
     
@@ -1349,9 +947,9 @@ void draw_dropdown_list(void) {
     pos = hover_info.select_argument_pos;
     pos.y += hover_info.select_block->ms.size.y;
 
-    DrawRectangle(pos.x, pos.y, dropdown.ms.size.x, dropdown.ms.size.y, ColorBrightness(blockdef.color, -0.3));
+    DrawRectangle(pos.x, pos.y, dropdown.ms.size.x, dropdown.ms.size.y, ColorBrightness(as_rl_color(blockdef.color), -0.3));
     if (hover_info.dropdown_hover_ind != -1) {
-        DrawRectangle(pos.x, pos.y + (hover_info.dropdown_hover_ind - dropdown.scroll_amount) * conf.font_size, dropdown.ms.size.x, conf.font_size, blockdef.color);
+        DrawRectangle(pos.x, pos.y + (hover_info.dropdown_hover_ind - dropdown.scroll_amount) * conf.font_size, dropdown.ms.size.x, conf.font_size, as_rl_color(blockdef.color));
     }
 
     pos.x += 5.0;
@@ -1708,7 +1306,7 @@ bool handle_mouse_click(void) {
                 break;
             }
         } else if (hover_info.top_bars.type == TOPBAR_TABS) {
-            if (current_tab != hover_info.top_bars.ind) {
+            if (current_tab != (TabType)hover_info.top_bars.ind) {
                 shader_time = 0.0;
                 current_tab = hover_info.top_bars.ind;
             }
@@ -1732,9 +1330,9 @@ bool handle_mouse_click(void) {
         }
         if (mouse_empty && hover_info.block) {
             // Pickup block
-            blockchain_add_block(&mouse_blockchain, block_new(hover_info.block->id));
-            if (registered_blocks[hover_info.block->id].type == BLOCKTYPE_CONTROL && end_block_id != -1) {
-                blockchain_add_block(&mouse_blockchain, block_new(end_block_id));
+            blockchain_add_block(&mouse_blockchain, block_new_ms(&vm, hover_info.block->id));
+            if (vm.blockdefs[hover_info.block->id].type == BLOCKTYPE_CONTROL && vm.end_block_id != -1) {
+                blockchain_add_block(&mouse_blockchain, block_new_ms(&vm, vm.end_block_id));
             }
             return true;
         } else if (!mouse_empty) {
@@ -1747,15 +1345,17 @@ bool handle_mouse_click(void) {
 
     if (mouse_empty) {
         if (hover_info.dropdown_hover_ind != -1) {
-            Blockdef blockdef = registered_blocks[hover_info.select_block->id];
-            BlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
+            ScrBlockdef blockdef = vm.blockdefs[hover_info.select_block->id];
+            ScrBlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
             assert(block_input.type == INPUT_DROPDOWN);
             
             size_t list_len = 0;
             char** list = block_input.data.drop.list(hover_info.select_block, &list_len);
             assert((size_t)hover_info.dropdown_hover_ind < list_len);
 
-            argument_set_const_string(hover_info.select_argument, hover_info.select_block, list[hover_info.dropdown_hover_ind]);
+            argument_set_const_string(hover_info.select_argument, list[hover_info.dropdown_hover_ind]);
+            hover_info.select_argument->ms.size = as_scr_vec(MeasureTextEx(font_cond, list[hover_info.dropdown_hover_ind], BLOCK_TEXT_SIZE, 0.0));
+            update_measurements(&vm, hover_info.select_block);
         }
 
         if (hover_info.block != hover_info.select_block) {
@@ -1775,7 +1375,7 @@ bool handle_mouse_click(void) {
     }
 
     if (!mouse_empty) {
-        mouse_blockchain.pos = GetMousePosition();
+        mouse_blockchain.pos = as_scr_vec(GetMousePosition());
         if (hover_info.argument) {
             // Attach to argument
             printf("Attach to argument\n");
@@ -1783,6 +1383,7 @@ bool handle_mouse_click(void) {
             if (hover_info.argument->type != ARGUMENT_TEXT) return true;
             mouse_blockchain.blocks[0].parent = hover_info.block;
             argument_set_block(hover_info.argument, mouse_blockchain.blocks[0]);
+            update_measurements(&vm, &hover_info.argument->data.block);
             vector_clear(mouse_blockchain.blocks);
         } else if (
             hover_info.block && 
@@ -1811,11 +1412,15 @@ bool handle_mouse_click(void) {
 
             blockchain_add_block(&mouse_blockchain, *hover_info.block);
             mouse_blockchain.blocks[0].parent = NULL;
+
+            ScrBlock* parent = hover_info.prev_argument->data.block.parent;
             argument_set_text(hover_info.prev_argument, "");
+            hover_info.prev_argument->ms.size = as_scr_vec(MeasureTextEx(font_cond, "", BLOCK_TEXT_SIZE, 0.0));
+            update_measurements(&vm, parent);
         } else if (hover_info.blockchain) {
             // Detach block
             printf("Detach block\n");
-            blockchain_detach(&mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
+            blockchain_detach(&vm, &mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
             if (hover_info.blockchain_index == 0) {
                 blockchain_free(hover_info.blockchain);
                 blockcode_remove_blockchain(&block_code, hover_info.blockchain - block_code.code);
@@ -1840,7 +1445,7 @@ void handle_key_press(void) {
         return;
     };
     assert(hover_info.select_argument->type == ARGUMENT_TEXT || hover_info.select_argument->type == ARGUMENT_CONST_STRING);
-    if (registered_blocks[hover_info.select_block->id].inputs[hover_info.select_argument->input_id].type == INPUT_DROPDOWN) return;
+    if (vm.blockdefs[hover_info.select_block->id].inputs[hover_info.select_argument->input_id].type == INPUT_DROPDOWN) return;
 
     if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
         char* arg_text = hover_info.select_argument->data.text;
@@ -1855,7 +1460,7 @@ void handle_key_press(void) {
         }
 
         vector_erase(arg_text, remove_pos, remove_size);
-        update_measurements(hover_info.select_block);
+        update_measurements(&vm, hover_info.select_block);
         return;
     }
 
@@ -1868,7 +1473,7 @@ void handle_key_press(void) {
         for (int i = 0; i < utf_size; i++) {
             vector_insert(arg_text, vector_size(*arg_text) - 1, utf_char[i]);
         }
-        update_measurements(hover_info.select_block);
+        update_measurements(&vm, hover_info.select_block);
     }
 }
 
@@ -1893,8 +1498,8 @@ void handle_mouse_drag(void) {
 void dropdown_check_collisions(void) {
     if (!hover_info.select_argument) return;
 
-    Blockdef blockdef = registered_blocks[hover_info.select_block->id];
-    BlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
+    ScrBlockdef blockdef = vm.blockdefs[hover_info.select_block->id];
+    ScrBlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
 
     if (block_input.type != INPUT_DROPDOWN) return;
 
@@ -1950,22 +1555,21 @@ void check_block_collisions(void) {
     }
 }
 
-void sanitize_block(Block* block) {
-    BlockArgument* block_args = block->arguments;
-    for (vec_size_t i = 0; i < vector_size(block_args); i++) {
-        if (block_args[i].type != ARGUMENT_BLOCK) continue;
-        if (block_args[i].data.block.parent != block) {
-            printf("ERROR: Block %p detached from parent %p! (Got %p)\n", &block_args[i].data.block, block, block_args[i].data.block.parent);
+void sanitize_block(ScrBlock* block) {
+    for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
+        if (block->arguments[i].type != ARGUMENT_BLOCK) continue;
+        if (block->arguments[i].data.block.parent != block) {
+            printf("ERROR: Block %p detached from parent %p! (Got %p)\n", &block->arguments[i].data.block, block, block->arguments[i].data.block.parent);
             assert(false);
             return;
         }
-        sanitize_block(&block_args[i].data.block);
+        sanitize_block(&block->arguments[i].data.block);
     }
 }
 
 void sanitize_links(void) {
     for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
-        Block* blocks = block_code.code[i].blocks;
+        ScrBlock* blocks = block_code.code[i].blocks;
         for (vec_size_t j = 0; j < vector_size(blocks); j++) {
             sanitize_block(&blocks[j]);
         }
@@ -1979,9 +1583,9 @@ void sanitize_links(void) {
 void set_default_config(Config* config) {
     config->font_size = 32;
     config->side_bar_size = 300;
-    strncpy(config->font_symbols, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?", FONT_SYMBOLS_MAX_SIZE);
-    strncpy(config->font_path, DATA_PATH "nk57-cond.otf", FONT_PATH_MAX_SIZE);
-    strncpy(config->font_bold_path, DATA_PATH "nk57-eb.otf", FONT_PATH_MAX_SIZE);
+    strncpy(config->font_symbols, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?", sizeof(config->font_symbols) - 1);
+    strncpy(config->font_path, DATA_PATH "nk57-cond.otf", sizeof(config->font_path) - 1);
+    strncpy(config->font_bold_path, DATA_PATH "nk57-eb.otf", sizeof(config->font_bold_path) - 1);
 }
 
 void apply_config(Config* dst, Config* src) {
@@ -2044,17 +1648,39 @@ void load_config(Config* config) {
             int val = atoi(value);
             config->side_bar_size = val ? val : config->side_bar_size;
         } else if (!strcmp(field, "FONT_SYMBOLS")) {
-            strncpy(config->font_symbols, value, FONT_SYMBOLS_MAX_SIZE);
+            strncpy(config->font_symbols, value, sizeof(config->font_symbols) - 1);
         } else if (!strcmp(field, "FONT_PATH")) {
-            strncpy(config->font_path, value, FONT_PATH_MAX_SIZE);
+            strncpy(config->font_path, value, sizeof(config->font_path) - 1);
         } else if (!strcmp(field, "FONT_BOLD_PATH")) {
-            strncpy(config->font_bold_path, value, FONT_PATH_MAX_SIZE);
+            strncpy(config->font_bold_path, value, sizeof(config->font_bold_path) - 1);
         } else {
             printf("Unknown key: %s\n", field);
         }
     }
 
     UnloadFileText(file);
+}
+
+ScrMeasurement measure_text(char* text) {
+    ScrMeasurement ms = {0};
+    ms.size = as_scr_vec(MeasureTextEx(font_cond, text, BLOCK_TEXT_SIZE, 0.0));
+    return ms;
+}
+
+ScrMeasurement measure_argument(char* text) {
+    ScrMeasurement ms = {0};
+    ms.size = as_scr_vec(MeasureTextEx(font_cond, text, BLOCK_TEXT_SIZE, 0.0));
+    ms.size.x += BLOCK_STRING_PADDING;
+    ms.size.x = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, ms.size.x);
+    return ms;
+}
+
+ScrMeasurement measure_image(ScrImage image) {
+    Texture2D* texture = image.image_ptr;
+    ScrMeasurement ms = {0};
+    ms.size.x = (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)texture->height * (float)texture->width;
+    ms.size.y = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
+    return ms;
 }
 
 void setup(void) {
@@ -2089,67 +1715,68 @@ void setup(void) {
     line_shader = LoadShaderFromMemory(line_shader_vertex, line_shader_fragment);
     shader_time_loc = GetShaderLocation(line_shader, "time");
 
-    registered_blocks = vector_create();
+    vm = instance_new(measure_text, measure_argument, measure_image);
 
-    int on_start = block_register("on_start", BLOCKTYPE_NORMAL, (Color) { 0xff, 0x77, 0x00, 0xFF });
-    block_add_text(on_start, "When");
-    block_add_image(on_start, run_tex);
-    block_add_text(on_start, "clicked");
+    int on_start = block_register(&vm, "on_start", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xFF });
+    block_add_text(&vm, on_start, "When");
+    block_add_image(&vm, on_start, (ScrImage) { .image_ptr = &run_tex });
+    block_add_text(&vm, on_start, "clicked");
 
-    int on_key_press = block_register("on_key_press", BLOCKTYPE_NORMAL, (Color) { 0xff, 0x77, 0x00, 0xFF });
-    block_add_text(on_key_press, "When");
-    block_add_dropdown(on_key_press, DROPDOWN_SOURCE_LISTREF, &keys_accessor);
-    block_add_text(on_key_press, "pressed");
+    int on_key_press = block_register(&vm, "on_key_press", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xFF });
+    block_add_text(&vm, on_key_press, "When");
+    block_add_dropdown(&vm, on_key_press, DROPDOWN_SOURCE_LISTREF, &keys_accessor);
+    block_add_text(&vm, on_key_press, "pressed");
 
-    int sc_print = block_register("print", BLOCKTYPE_NORMAL, (Color) { 0x00, 0xaa, 0x44, 0xFF });
-    block_add_text(sc_print, "Print");
-    block_add_argument(sc_print, "Привет, мусороид!", BLOCKCONSTR_UNLIMITED);
+    int sc_print = block_register(&vm, "print", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF });
+    block_add_text(&vm, sc_print, "Print");
+    block_add_argument(&vm, sc_print, "Привет, мусороид!", BLOCKCONSTR_UNLIMITED);
 
-    int sc_loop = block_register("loop", BLOCKTYPE_CONTROL, (Color) { 0xff, 0x99, 0x00, 0xff });
-    block_add_text(sc_loop, "Loop");
+    int sc_loop = block_register(&vm, "loop", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff });
+    block_add_text(&vm, sc_loop, "Loop");
 
-    int sc_if = block_register("if", BLOCKTYPE_CONTROL, (Color) { 0xff, 0x99, 0x00, 0xff });
-    block_add_text(sc_if, "If");
-    block_add_argument(sc_if, "", BLOCKCONSTR_UNLIMITED);
-    block_add_text(sc_if, ", then");
+    int sc_if = block_register(&vm, "if", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff });
+    block_add_text(&vm, sc_if, "If");
+    block_add_argument(&vm, sc_if, "", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_if, ", then");
 
-    int sc_else_if = block_register("else_if", BLOCKTYPE_CONTROLEND, (Color) { 0xff, 0x99, 0x00, 0xff });
-    block_add_text(sc_else_if, "Else if");
-    block_add_argument(sc_else_if, "", BLOCKCONSTR_UNLIMITED);
-    block_add_text(sc_else_if, ", then");
+    int sc_else_if = block_register(&vm, "else_if", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff });
+    block_add_text(&vm, sc_else_if, "Else if");
+    block_add_argument(&vm, sc_else_if, "", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_else_if, ", then");
 
-    int sc_else = block_register("else", BLOCKTYPE_CONTROLEND, (Color) { 0xff, 0x99, 0x00, 0xff });
-    block_add_text(sc_else, "Else");
+    int sc_else = block_register(&vm, "else", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff });
+    block_add_text(&vm, sc_else, "Else");
 
-    int sc_end = block_register("end", BLOCKTYPE_END, (Color) { 0x77, 0x77, 0x77, 0xff });
-    block_add_text(sc_end, "End");
+    int sc_end = block_register(&vm, "end", BLOCKTYPE_END, (ScrColor) { 0x77, 0x77, 0x77, 0xff });
+    block_add_text(&vm, sc_end, "End");
 
-    int sc_plus = block_register("plus", BLOCKTYPE_NORMAL, (Color) { 0x00, 0xcc, 0x77, 0xFF });
-    block_add_argument(sc_plus, "9", BLOCKCONSTR_UNLIMITED);
-    block_add_text(sc_plus, "+");
-    block_add_argument(sc_plus, "10", BLOCKCONSTR_UNLIMITED);
+    int sc_plus = block_register(&vm, "plus", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF });
+    block_add_argument(&vm, sc_plus, "9", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_plus, "+");
+    block_add_argument(&vm, sc_plus, "10", BLOCKCONSTR_UNLIMITED);
 
-    int sc_less = block_register("less", BLOCKTYPE_NORMAL, (Color) { 0x00, 0xcc, 0x77, 0xFF });
-    block_add_argument(sc_less, "9", BLOCKCONSTR_UNLIMITED);
-    block_add_text(sc_less, "<");
-    block_add_argument(sc_less, "11", BLOCKCONSTR_UNLIMITED);
+    int sc_less = block_register(&vm, "less", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF });
+    block_add_argument(&vm, sc_less, "9", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_less, "<");
+    block_add_argument(&vm, sc_less, "11", BLOCKCONSTR_UNLIMITED);
 
-    int sc_decl_var = block_register("decl_var", BLOCKTYPE_NORMAL, (Color) { 0xff, 0x66, 0x00, 0xff });
-    block_add_text(sc_decl_var, "Declare");
-    block_add_argument(sc_decl_var, "my variable", BLOCKCONSTR_STRING);
-    block_add_text(sc_decl_var, "=");
-    block_add_argument(sc_decl_var, "", BLOCKCONSTR_UNLIMITED);
+    int sc_decl_var = block_register(&vm, "decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff });
+    block_add_text(&vm, sc_decl_var, "Declare");
+    block_add_argument(&vm, sc_decl_var, "my variable", BLOCKCONSTR_STRING);
+    block_add_text(&vm, sc_decl_var, "=");
+    block_add_argument(&vm, sc_decl_var, "", BLOCKCONSTR_UNLIMITED);
 
-    int sc_get_var = block_register("get_var", BLOCKTYPE_NORMAL, (Color) { 0xff, 0x66, 0x00, 0xff });
-    block_add_argument(sc_get_var, "my variable", BLOCKCONSTR_STRING);
+    int sc_get_var = block_register(&vm, "get_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff });
+    block_add_argument(&vm, sc_get_var, "my variable", BLOCKCONSTR_STRING);
 
     mouse_blockchain = blockchain_new();
     block_code = blockcode_new();
+    draw_stack = vector_create();
 
     sidebar.blocks = vector_create();
-    for (vec_size_t i = 0; i < vector_size(registered_blocks); i++) {
-        if (registered_blocks[i].hidden) continue;
-        vector_add(&sidebar.blocks, block_new(i));
+    for (vec_size_t i = 0; i < vector_size(vm.blockdefs); i++) {
+        if (vm.blockdefs[i].hidden) continue;
+        vector_add(&sidebar.blocks, block_new_ms(&vm, i));
     }
 
     font_eb_nuc = LoadFontIntoNuklear(font_eb, conf.font_size);
@@ -2257,13 +1884,6 @@ void setup(void) {
     gui.ctx->style.property.edit.cursor_text_hover = nk_rgb(0x20, 0x20, 0x20);
 }
 
-void free_registered_blocks(void) {
-    for (ssize_t i = (ssize_t)vector_size(registered_blocks) - 1; i >= 0 ; i--) {
-        block_unregister(i);
-    }
-    vector_free(registered_blocks);
-}
-
 int main(void) {
     set_default_config(&conf);
     load_config(&conf);
@@ -2336,7 +1956,7 @@ int main(void) {
             sidebar.scroll_amount = 0;
         }
 
-        mouse_blockchain.pos = GetMousePosition();
+        mouse_blockchain.pos = as_scr_vec(GetMousePosition());
 
         actionbar.show_time -= GetFrameTime();
         if (actionbar.show_time < 0) actionbar.show_time = 0;
@@ -2457,7 +2077,7 @@ int main(void) {
         block_free(&sidebar.blocks[i]);
     }
     vector_free(sidebar.blocks);
-    free_registered_blocks();
+    instance_free(&vm);
     CloseWindow();
 
     return 0;
