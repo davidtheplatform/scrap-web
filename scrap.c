@@ -105,7 +105,6 @@ typedef struct {
 typedef struct {
     Vector2 min_pos;
     Vector2 max_pos;
-    ScrBlockChain* code;
 } BlockCode;
 
 typedef struct {
@@ -234,33 +233,25 @@ void actionbar_show(const char* text) {
     actionbar.show_time = 3.0;
 }
 
-BlockCode blockcode_new() {
-    return (BlockCode) {
-        .min_pos = (Vector2) {0},
-        .max_pos = (Vector2) {0},
-        .code = vector_create(),
-    };
-}
-
 void blockcode_update_measurments(BlockCode* blockcode) {
     blockcode->max_pos = (Vector2) { -1.0 / 0.0, -1.0 / 0.0 };
     blockcode->min_pos = (Vector2) { 1.0 / 0.0, 1.0 / 0.0 };
 
-    for (vec_size_t i = 0; i < vector_size(blockcode->code); i++) {
-        blockcode->max_pos.x = MAX(blockcode->max_pos.x, blockcode->code[i].pos.x);
-        blockcode->max_pos.y = MAX(blockcode->max_pos.y, blockcode->code[i].pos.y);
-        blockcode->min_pos.x = MIN(blockcode->min_pos.x, blockcode->code[i].pos.x);
-        blockcode->min_pos.y = MIN(blockcode->min_pos.y, blockcode->code[i].pos.y);
+    for (vec_size_t i = 0; i < vector_size(vm.code); i++) {
+        blockcode->max_pos.x = MAX(blockcode->max_pos.x, vm.code[i].pos.x);
+        blockcode->max_pos.y = MAX(blockcode->max_pos.y, vm.code[i].pos.y);
+        blockcode->min_pos.x = MIN(blockcode->min_pos.x, vm.code[i].pos.x);
+        blockcode->min_pos.y = MIN(blockcode->min_pos.y, vm.code[i].pos.y);
     }
 }
 
 void blockcode_add_blockchain(BlockCode* blockcode, ScrBlockChain chain) {
-    vector_add(&blockcode->code, chain);
+    vm_add_chain(&vm, chain);
     blockcode_update_measurments(blockcode);
 }
 
-void blockcode_remove_blockchain(BlockCode* blockcode, int ind) {
-    vector_remove(blockcode->code, ind);
+void blockcode_remove_blockchain(BlockCode* blockcode, size_t ind) {
+    vm_remove_chain(&vm, ind);
     blockcode_update_measurments(blockcode);
 }
 
@@ -1331,7 +1322,7 @@ bool handle_mouse_click(void) {
         if (mouse_empty && hover_info.block) {
             // Pickup block
             blockchain_add_block(&mouse_blockchain, block_new_ms(&vm, hover_info.block->id));
-            if (vm.blockdefs[hover_info.block->id].type == BLOCKTYPE_CONTROL && vm.end_block_id != -1) {
+            if (vm.blockdefs[hover_info.block->id].type == BLOCKTYPE_CONTROL && vm.end_block_id != (size_t)-1) {
                 blockchain_add_block(&mouse_blockchain, block_new_ms(&vm, vm.end_block_id));
             }
             return true;
@@ -1423,7 +1414,7 @@ bool handle_mouse_click(void) {
             blockchain_detach(&vm, &mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
             if (hover_info.blockchain_index == 0) {
                 blockchain_free(hover_info.blockchain);
-                blockcode_remove_blockchain(&block_code, hover_info.blockchain - block_code.code);
+                blockcode_remove_blockchain(&block_code, hover_info.blockchain - vm.code);
                 hover_info.block = NULL;
             }
         }
@@ -1434,13 +1425,13 @@ bool handle_mouse_click(void) {
 
 void handle_key_press(void) {
     if (!hover_info.select_argument) {
-        if (IsKeyPressed(KEY_SPACE) && vector_size(block_code.code) > 0) {
+        if (IsKeyPressed(KEY_SPACE) && vector_size(vm.code) > 0) {
             blockchain_select_counter++;
-            if ((vec_size_t)blockchain_select_counter >= vector_size(block_code.code)) blockchain_select_counter = 0;
+            if ((vec_size_t)blockchain_select_counter >= vector_size(vm.code)) blockchain_select_counter = 0;
 
-            camera_pos.x = block_code.code[blockchain_select_counter].pos.x - ((GetScreenWidth() - conf.side_bar_size) / 2 + conf.side_bar_size);
-            camera_pos.y = block_code.code[blockchain_select_counter].pos.y - ((GetScreenHeight() - conf.font_size * 2.2) / 2 + conf.font_size * 2.2);
-            actionbar_show(TextFormat("Jump to chain (%d/%d)", blockchain_select_counter + 1, vector_size(block_code.code)));
+            camera_pos.x = vm.code[blockchain_select_counter].pos.x - ((GetScreenWidth() - conf.side_bar_size) / 2 + conf.side_bar_size);
+            camera_pos.y = vm.code[blockchain_select_counter].pos.y - ((GetScreenHeight() - conf.font_size * 2.2) / 2 + conf.font_size * 2.2);
+            actionbar_show(TextFormat("Jump to chain (%d/%d)", blockchain_select_counter + 1, vector_size(vm.code)));
         }
         return;
     };
@@ -1548,9 +1539,9 @@ void check_block_collisions(void) {
             pos_y += conf.font_size + SIDE_BAR_PADDING;
         }
     } else {
-        for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
+        for (vec_size_t i = 0; i < vector_size(vm.code); i++) {
             if (hover_info.block) break;
-            blockchain_check_collisions(&block_code.code[i], camera_pos);
+            blockchain_check_collisions(&vm.code[i], camera_pos);
         }
     }
 }
@@ -1568,8 +1559,8 @@ void sanitize_block(ScrBlock* block) {
 }
 
 void sanitize_links(void) {
-    for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
-        ScrBlock* blocks = block_code.code[i].blocks;
+    for (vec_size_t i = 0; i < vector_size(vm.code); i++) {
+        ScrBlock* blocks = vm.code[i].blocks;
         for (vec_size_t j = 0; j < vector_size(blocks); j++) {
             sanitize_block(&blocks[j]);
         }
@@ -1715,7 +1706,7 @@ void setup(void) {
     line_shader = LoadShaderFromMemory(line_shader_vertex, line_shader_fragment);
     shader_time_loc = GetShaderLocation(line_shader, "time");
 
-    vm = instance_new(measure_text, measure_argument, measure_image);
+    vm = vm_new(measure_text, measure_argument, measure_image);
 
     int on_start = block_register(&vm, "on_start", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xFF });
     block_add_text(&vm, on_start, "When");
@@ -1770,7 +1761,6 @@ void setup(void) {
     block_add_argument(&vm, sc_get_var, "my variable", BLOCKCONSTR_STRING);
 
     mouse_blockchain = blockchain_new();
-    block_code = blockcode_new();
     draw_stack = vector_create();
 
     sidebar.blocks = vector_create();
@@ -1988,8 +1978,8 @@ int main(void) {
         if (current_tab == TAB_CODE) {
             BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
                 draw_dots();
-                for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
-                    draw_block_chain(&block_code.code[i], camera_pos);
+                for (vec_size_t i = 0; i < vector_size(vm.code); i++) {
+                    draw_block_chain(&vm.code[i], camera_pos);
                 }
             EndScissorMode();
 
@@ -2069,15 +2059,11 @@ int main(void) {
 
     UnloadNuklear(gui.ctx);
     blockchain_free(&mouse_blockchain);
-    for (vec_size_t i = 0; i < vector_size(block_code.code); i++) {
-        blockchain_free(&block_code.code[i]);
-    }
-    vector_free(block_code.code);
     for (vec_size_t i = 0; i < vector_size(sidebar.blocks); i++) {
         block_free(&sidebar.blocks[i]);
     }
     vector_free(sidebar.blocks);
-    instance_free(&vm);
+    vm_free(&vm);
     CloseWindow();
 
     return 0;

@@ -59,7 +59,7 @@ typedef enum {
 struct ScrBlockArgument;
 
 typedef struct ScrBlock {
-    int id;
+    size_t id;
     struct ScrBlockArgument* arguments;
     ScrMeasurement ms;
     struct ScrBlock* parent;
@@ -92,17 +92,6 @@ typedef struct {
     ScrBlockInput* inputs;
 } ScrBlockdef;
 
-typedef ScrMeasurement (*ScrTextMeasureFunc)(char* text);
-typedef ScrMeasurement (*ScrTextArgMeasureFunc)(char* text);
-typedef ScrMeasurement (*ScrImageMeasureFunc)(ScrImage image);
-typedef struct {
-    ScrBlockdef* blockdefs;
-    int end_block_id;
-    ScrTextMeasureFunc text_measure;
-    ScrTextArgMeasureFunc arg_measure;
-    ScrImageMeasureFunc img_measure;
-} ScrVm;
-
 typedef enum {
     ARGUMENT_TEXT,
     ARGUMENT_BLOCK,
@@ -126,16 +115,30 @@ typedef struct {
     ScrBlock* blocks;
 } ScrBlockChain;
 
-// Public functions
-ScrVm instance_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure);
-void instance_free(ScrVm* vm);
+typedef ScrMeasurement (*ScrTextMeasureFunc)(char* text);
+typedef ScrMeasurement (*ScrTextArgMeasureFunc)(char* text);
+typedef ScrMeasurement (*ScrImageMeasureFunc)(ScrImage image);
+typedef struct {
+    ScrBlockdef* blockdefs;
+    ScrBlockChain* code;
+    size_t end_block_id;
+    ScrTextMeasureFunc text_measure;
+    ScrTextArgMeasureFunc arg_measure;
+    ScrImageMeasureFunc img_measure;
+} ScrVm;
 
-int block_register(ScrVm* vm, char* id, ScrBlockType type, ScrColor color);
-void block_add_text(ScrVm* vm, int block_id, char* text);
-void block_add_argument(ScrVm* vm, int block_id, char* defualt_data, ScrBlockArgumentConstraint constraint);
-void block_add_dropdown(ScrVm* vm, int block_id, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor);
-void block_add_image(ScrVm* vm, int block_id, ScrImage image);
-void block_unregister(ScrVm* vm, int block_id);
+// Public functions
+ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure);
+void vm_add_chain(ScrVm* vm, ScrBlockChain chain);
+void vm_remove_chain(ScrVm* vm, size_t ind);
+void vm_free(ScrVm* vm);
+
+size_t block_register(ScrVm* vm, char* id, ScrBlockType type, ScrColor color);
+void block_add_text(ScrVm* vm, size_t block_id, char* text);
+void block_add_argument(ScrVm* vm, size_t block_id, char* defualt_data, ScrBlockArgumentConstraint constraint);
+void block_add_dropdown(ScrVm* vm, size_t block_id, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor);
+void block_add_image(ScrVm* vm, size_t block_id, ScrImage image);
+void block_unregister(ScrVm* vm, size_t block_id);
 
 ScrBlockChain blockchain_new();
 void blockchain_add_block(ScrBlockChain* chain, ScrBlock block);
@@ -145,7 +148,7 @@ void blockchain_insert(ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
 void blockchain_detach(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
 void blockchain_free(ScrBlockChain* chain);
 
-ScrBlock block_new(ScrVm* vm, int id);
+ScrBlock block_new(ScrVm* vm, size_t id);
 ScrBlock block_copy(ScrBlock* block);
 void block_free(ScrBlock* block);
 
@@ -457,17 +460,31 @@ vector _vector_copy(vector vec, vec_type_t type_size)
 void block_update_parent_links(ScrBlock* block);
 void blockchain_update_parent_links(ScrBlockChain* chain);
 
-ScrVm instance_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure) {
+ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure) {
     return (ScrVm) {
         .blockdefs = vector_create(),
-        .end_block_id = -1,
+        .code = vector_create(),
+        .end_block_id = (size_t)-1,
         .text_measure = text_measure,
         .arg_measure = arg_measure,
         .img_measure = img_measure,
     };
 }
 
-void instance_free(ScrVm* vm) {
+void vm_add_chain(ScrVm* vm, ScrBlockChain chain) {
+    vector_add(&vm->code, chain);
+}
+
+void vm_remove_chain(ScrVm* vm, size_t ind) {
+    vector_remove(vm->code, ind);
+}
+
+void vm_free(ScrVm* vm) {
+    for (vec_size_t i = 0; i < vector_size(vm->code); i++) {
+        blockchain_free(&vm->code[i]);
+    }
+    vector_free(vm->code);
+
     for (ssize_t i = (ssize_t)vector_size(vm->blockdefs) - 1; i >= 0 ; i--) {
         block_unregister(vm, i);
     }
@@ -481,58 +498,56 @@ void block_update_parent_links(ScrBlock* block) {
     }
 }
 
-ScrBlock block_new(ScrVm* vm, int id) {
+ScrBlock block_new(ScrVm* vm, size_t id) {
     ScrBlock block;
     block.id = id;
     block.ms = (ScrMeasurement) {0};
-    block.arguments = id == -1 ? NULL : vector_create();
+    block.arguments = vector_create();
     block.parent = NULL;
 
-    if (id != -1) {
-        ScrBlockdef blockdef = vm->blockdefs[block.id];
-        for (size_t i = 0; i < vector_size(blockdef.inputs); i++) {
-            if (blockdef.inputs[i].type != INPUT_ARGUMENT && blockdef.inputs[i].type != INPUT_DROPDOWN) continue;
-            ScrBlockArgument* arg = vector_add_dst((ScrBlockArgument**)&block.arguments);
-            arg->data.text = vector_create();
-            arg->input_id = i;
+    ScrBlockdef blockdef = vm->blockdefs[block.id];
+    for (size_t i = 0; i < vector_size(blockdef.inputs); i++) {
+        if (blockdef.inputs[i].type != INPUT_ARGUMENT && blockdef.inputs[i].type != INPUT_DROPDOWN) continue;
+        ScrBlockArgument* arg = vector_add_dst((ScrBlockArgument**)&block.arguments);
+        arg->data.text = vector_create();
+        arg->input_id = i;
 
-            switch (blockdef.inputs[i].type) {
-            case INPUT_ARGUMENT:
-                arg->ms = blockdef.inputs[i].data.arg.ms;
-                switch (blockdef.inputs[i].data.arg.constr) {
-                case BLOCKCONSTR_UNLIMITED:
-                    arg->type = ARGUMENT_TEXT;
-                    break;
-                case BLOCKCONSTR_STRING:
-                    arg->type = ARGUMENT_CONST_STRING;
-                    break;
-                default:
-                    assert(false && "Unimplemented argument constraint");
-                    break;
-                }
-
-                for (char* pos = blockdef.inputs[i].data.arg.text; *pos; pos++) {
-                    vector_add(&arg->data.text, *pos);
-                }
+        switch (blockdef.inputs[i].type) {
+        case INPUT_ARGUMENT:
+            arg->ms = blockdef.inputs[i].data.arg.ms;
+            switch (blockdef.inputs[i].data.arg.constr) {
+            case BLOCKCONSTR_UNLIMITED:
+                arg->type = ARGUMENT_TEXT;
                 break;
-            case INPUT_DROPDOWN:
+            case BLOCKCONSTR_STRING:
                 arg->type = ARGUMENT_CONST_STRING;
-                arg->ms = (ScrMeasurement) {0};
-
-                size_t list_len = 0;
-                char** list = blockdef.inputs[i].data.drop.list(&block, &list_len);
-                if (!list || list_len == 0) break;
-
-                for (char* pos = list[0]; *pos; pos++) {
-                    vector_add(&arg->data.text, *pos);
-                }
                 break;
             default:
-                assert(false && "Unreachable");
+                assert(false && "Unimplemented argument constraint");
                 break;
             }
-            vector_add(&arg->data.text, 0);
+
+            for (char* pos = blockdef.inputs[i].data.arg.text; *pos; pos++) {
+                vector_add(&arg->data.text, *pos);
+            }
+            break;
+        case INPUT_DROPDOWN:
+            arg->type = ARGUMENT_CONST_STRING;
+            arg->ms = (ScrMeasurement) {0};
+
+            size_t list_len = 0;
+            char** list = blockdef.inputs[i].data.drop.list(&block, &list_len);
+            if (!list || list_len == 0) break;
+
+            for (char* pos = list[0]; *pos; pos++) {
+                vector_add(&arg->data.text, *pos);
+            }
+            break;
+        default:
+            assert(false && "Unreachable");
+            break;
         }
+        vector_add(&arg->data.text, 0);
     }
     return block;
 }
@@ -694,7 +709,7 @@ void argument_set_text(ScrBlockArgument* block_arg, char* text) {
     vector_add(&block_arg->data.text, 0);
 }
 
-int block_register(ScrVm* vm, char* id, ScrBlockType type, ScrColor color) {
+size_t block_register(ScrVm* vm, char* id, ScrBlockType type, ScrColor color) {
     ScrBlockdef* blockdef = vector_add_dst(&vm->blockdefs);
     blockdef->id = id;
     blockdef->color = color;
@@ -702,7 +717,7 @@ int block_register(ScrVm* vm, char* id, ScrBlockType type, ScrColor color) {
     blockdef->hidden = false;
     blockdef->inputs = vector_create();
 
-    if (type == BLOCKTYPE_END && vm->end_block_id == -1) {
+    if (type == BLOCKTYPE_END && vm->end_block_id == (size_t)-1) {
         vm->end_block_id = vector_size(vm->blockdefs) - 1;
         blockdef->hidden = true;
     }
@@ -710,7 +725,7 @@ int block_register(ScrVm* vm, char* id, ScrBlockType type, ScrColor color) {
     return vector_size(vm->blockdefs) - 1;
 }
 
-void block_add_text(ScrVm* vm, int block_id, char* text) {
+void block_add_text(ScrVm* vm, size_t block_id, char* text) {
     ScrBlockInput* input = vector_add_dst(&vm->blockdefs[block_id].inputs);
     input->type = INPUT_TEXT_DISPLAY;
     input->data = (ScrBlockInputData) {
@@ -721,7 +736,7 @@ void block_add_text(ScrVm* vm, int block_id, char* text) {
     };
 }
 
-void block_add_argument(ScrVm* vm, int block_id, char* defualt_data, ScrBlockArgumentConstraint constraint) {
+void block_add_argument(ScrVm* vm, size_t block_id, char* defualt_data, ScrBlockArgumentConstraint constraint) {
     ScrBlockInput* input = vector_add_dst(&vm->blockdefs[block_id].inputs);
     input->type = INPUT_ARGUMENT;
     input->data = (ScrBlockInputData) {
@@ -733,7 +748,7 @@ void block_add_argument(ScrVm* vm, int block_id, char* defualt_data, ScrBlockArg
     };
 }
 
-void block_add_dropdown(ScrVm* vm, int block_id, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor) {
+void block_add_dropdown(ScrVm* vm, size_t block_id, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor) {
     ScrBlockInput* input = vector_add_dst(&vm->blockdefs[block_id].inputs);
     input->type = INPUT_DROPDOWN;
     input->data = (ScrBlockInputData) {
@@ -744,7 +759,7 @@ void block_add_dropdown(ScrVm* vm, int block_id, ScrBlockDropdownSource dropdown
     };
 }
 
-void block_add_image(ScrVm* vm, int block_id, ScrImage image) {
+void block_add_image(ScrVm* vm, size_t block_id, ScrImage image) {
     ScrBlockInput* input = vector_add_dst(&vm->blockdefs[block_id].inputs);
     input->type = INPUT_IMAGE_DISPLAY;
     input->data = (ScrBlockInputData) {
@@ -755,7 +770,7 @@ void block_add_image(ScrVm* vm, int block_id, ScrImage image) {
     };
 }
 
-void block_unregister(ScrVm* vm, int block_id) {
+void block_unregister(ScrVm* vm, size_t block_id) {
     vector_free(vm->blockdefs[block_id].inputs);
     vector_remove(vm->blockdefs, block_id);
 }
