@@ -1686,14 +1686,42 @@ ScrMeasurement measure_image(ScrImage image) {
     return ms;
 }
 
-void block_noop(int argc, const char** argv) {
+ScrFuncArg block_noop(int argc, ScrFuncArg* argv) {
     (void) argc;
     (void) argv;
+    RETURN_NOTHING;
 }
 
-void block_print(int argc, const char** argv) {
-    if (argc < 1) return;
-    printf("%s\n", argv[0]);
+ScrFuncArg block_print(int argc, ScrFuncArg* argv) {
+    if (argc >= 1) {
+        int bytes_sent = 0;
+        switch (argv[0].type) {
+        case FUNC_ARG_INT:
+            bytes_sent = printf("%d\n", argv[0].data.int_arg) - 1;
+            break;
+        case FUNC_ARG_BOOL:
+            bytes_sent = printf("%s\n", argv[0].data.int_arg ? "true" : "false") - 1;
+            break;
+        case FUNC_ARG_STATIC_STR:
+            bytes_sent = printf("%s\n", argv[0].data.str_arg) - 1;
+            break;
+        default:
+            break;
+        }
+        RETURN_INT(bytes_sent);
+    }
+    RETURN_INT(0);
+}
+
+ScrFuncArg block_plus(int argc, ScrFuncArg* argv) {
+    if (argc < 2) RETURN_INT(0);
+    RETURN_INT(func_arg_to_int(argv[0]) + func_arg_to_int(argv[1]));
+}
+
+ScrFuncArg block_less(int argc, ScrFuncArg* argv) {
+    if (argc < 1) RETURN_BOOL(0);
+    if (argc < 2) RETURN_BOOL(func_arg_to_bool(argv[0]) < 0);
+    RETURN_BOOL(func_arg_to_int(argv[0]) < func_arg_to_int(argv[1]));
 }
 
 void setup(void) {
@@ -1763,12 +1791,12 @@ void setup(void) {
     int sc_end = block_register(&vm, "end", BLOCKTYPE_END, (ScrColor) { 0x77, 0x77, 0x77, 0xff }, NULL);
     block_add_text(&vm, sc_end, "End");
 
-    int sc_plus = block_register(&vm, "plus", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, NULL);
+    int sc_plus = block_register(&vm, "plus", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_plus);
     block_add_argument(&vm, sc_plus, "9", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_plus, "+");
     block_add_argument(&vm, sc_plus, "10", BLOCKCONSTR_UNLIMITED);
 
-    int sc_less = block_register(&vm, "less", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, NULL);
+    int sc_less = block_register(&vm, "less", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_less);
     block_add_argument(&vm, sc_less, "9", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_less, "<");
     block_add_argument(&vm, sc_less, "11", BLOCKCONSTR_UNLIMITED);
@@ -2090,8 +2118,13 @@ int main(void) {
         EndDrawing();
     }
 
+    vector_free(draw_stack);
     UnloadNuklear(gui.ctx);
     blockchain_free(&mouse_blockchain);
+    for (vec_size_t i = 0; i < vector_size(editor_code); i++) {
+        blockchain_free(&editor_code[i]);
+    }
+    
     for (vec_size_t i = 0; i < vector_size(sidebar.blocks); i++) {
         block_free(&sidebar.blocks[i]);
     }
