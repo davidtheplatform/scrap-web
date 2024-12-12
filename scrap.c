@@ -157,7 +157,10 @@ int shader_time_loc;
 TabType current_tab = TAB_CODE;
 
 ScrVm vm;
+ScrExec exec = {0};
 ScrBlockChain mouse_blockchain = {0};
+ScrBlockChain* editor_code = {0};
+
 DrawStack* draw_stack = NULL;
 HoverInfo hover_info = {0};
 Sidebar sidebar = {0};
@@ -229,6 +232,7 @@ Color as_rl_color(ScrColor color) {
 }
 
 void actionbar_show(const char* text) {
+    printf("[ACTION] %s\n", text);
     strncpy(actionbar.text, text, sizeof(actionbar.text) - 1);
     actionbar.show_time = 3.0;
 }
@@ -237,21 +241,21 @@ void blockcode_update_measurments(BlockCode* blockcode) {
     blockcode->max_pos = (Vector2) { -1.0 / 0.0, -1.0 / 0.0 };
     blockcode->min_pos = (Vector2) { 1.0 / 0.0, 1.0 / 0.0 };
 
-    for (vec_size_t i = 0; i < vector_size(vm.code); i++) {
-        blockcode->max_pos.x = MAX(blockcode->max_pos.x, vm.code[i].pos.x);
-        blockcode->max_pos.y = MAX(blockcode->max_pos.y, vm.code[i].pos.y);
-        blockcode->min_pos.x = MIN(blockcode->min_pos.x, vm.code[i].pos.x);
-        blockcode->min_pos.y = MIN(blockcode->min_pos.y, vm.code[i].pos.y);
+    for (vec_size_t i = 0; i < vector_size(editor_code); i++) {
+        blockcode->max_pos.x = MAX(blockcode->max_pos.x, editor_code[i].pos.x);
+        blockcode->max_pos.y = MAX(blockcode->max_pos.y, editor_code[i].pos.y);
+        blockcode->min_pos.x = MIN(blockcode->min_pos.x, editor_code[i].pos.x);
+        blockcode->min_pos.y = MIN(blockcode->min_pos.y, editor_code[i].pos.y);
     }
 }
 
 void blockcode_add_blockchain(BlockCode* blockcode, ScrBlockChain chain) {
-    vm_add_chain(&vm, chain);
+    vector_add(&editor_code, chain);
     blockcode_update_measurments(blockcode);
 }
 
 void blockcode_remove_blockchain(BlockCode* blockcode, size_t ind) {
-    vm_remove_chain(&vm, ind);
+    vector_remove(editor_code, ind);
     blockcode_update_measurments(blockcode);
 }
 
@@ -1301,6 +1305,14 @@ bool handle_mouse_click(void) {
                 shader_time = 0.0;
                 current_tab = hover_info.top_bars.ind;
             }
+        } else if (hover_info.top_bars.type == TOPBAR_RUN_BUTTON && !vm.is_running) {
+            exec = exec_new(&vm);
+            exec_copy_code(&vm, &exec, editor_code);
+            if (exec_start(&vm, &exec)) {
+                actionbar_show("Started successfully!");
+            } else {
+                actionbar_show("Start failed!");
+            }
         }
         return true;
     }
@@ -1414,7 +1426,7 @@ bool handle_mouse_click(void) {
             blockchain_detach(&vm, &mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
             if (hover_info.blockchain_index == 0) {
                 blockchain_free(hover_info.blockchain);
-                blockcode_remove_blockchain(&block_code, hover_info.blockchain - vm.code);
+                blockcode_remove_blockchain(&block_code, hover_info.blockchain - editor_code);
                 hover_info.block = NULL;
             }
         }
@@ -1425,13 +1437,13 @@ bool handle_mouse_click(void) {
 
 void handle_key_press(void) {
     if (!hover_info.select_argument) {
-        if (IsKeyPressed(KEY_SPACE) && vector_size(vm.code) > 0) {
+        if (IsKeyPressed(KEY_SPACE) && vector_size(editor_code) > 0) {
             blockchain_select_counter++;
-            if ((vec_size_t)blockchain_select_counter >= vector_size(vm.code)) blockchain_select_counter = 0;
+            if ((vec_size_t)blockchain_select_counter >= vector_size(editor_code)) blockchain_select_counter = 0;
 
-            camera_pos.x = vm.code[blockchain_select_counter].pos.x - ((GetScreenWidth() - conf.side_bar_size) / 2 + conf.side_bar_size);
-            camera_pos.y = vm.code[blockchain_select_counter].pos.y - ((GetScreenHeight() - conf.font_size * 2.2) / 2 + conf.font_size * 2.2);
-            actionbar_show(TextFormat("Jump to chain (%d/%d)", blockchain_select_counter + 1, vector_size(vm.code)));
+            camera_pos.x = editor_code[blockchain_select_counter].pos.x - ((GetScreenWidth() - conf.side_bar_size) / 2 + conf.side_bar_size);
+            camera_pos.y = editor_code[blockchain_select_counter].pos.y - ((GetScreenHeight() - conf.font_size * 2.2) / 2 + conf.font_size * 2.2);
+            actionbar_show(TextFormat("Jump to chain (%d/%d)", blockchain_select_counter + 1, vector_size(editor_code)));
         }
         return;
     };
@@ -1539,9 +1551,9 @@ void check_block_collisions(void) {
             pos_y += conf.font_size + SIDE_BAR_PADDING;
         }
     } else {
-        for (vec_size_t i = 0; i < vector_size(vm.code); i++) {
+        for (vec_size_t i = 0; i < vector_size(editor_code); i++) {
             if (hover_info.block) break;
-            blockchain_check_collisions(&vm.code[i], camera_pos);
+            blockchain_check_collisions(&editor_code[i], camera_pos);
         }
     }
 }
@@ -1559,8 +1571,8 @@ void sanitize_block(ScrBlock* block) {
 }
 
 void sanitize_links(void) {
-    for (vec_size_t i = 0; i < vector_size(vm.code); i++) {
-        ScrBlock* blocks = vm.code[i].blocks;
+    for (vec_size_t i = 0; i < vector_size(editor_code); i++) {
+        ScrBlock* blocks = editor_code[i].blocks;
         for (vec_size_t j = 0; j < vector_size(blocks); j++) {
             sanitize_block(&blocks[j]);
         }
@@ -1674,6 +1686,16 @@ ScrMeasurement measure_image(ScrImage image) {
     return ms;
 }
 
+void block_noop(int argc, const char** argv) {
+    (void) argc;
+    (void) argv;
+}
+
+void block_print(int argc, const char** argv) {
+    if (argc < 1) return;
+    printf("%s\n", argv[0]);
+}
+
 void setup(void) {
     run_tex = LoadTexture(DATA_PATH "run.png");
     SetTextureFilter(run_tex, TEXTURE_FILTER_BILINEAR);
@@ -1708,60 +1730,61 @@ void setup(void) {
 
     vm = vm_new(measure_text, measure_argument, measure_image);
 
-    int on_start = block_register(&vm, "on_start", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xFF });
+    int on_start = block_register(&vm, "on_start", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xFF }, block_noop);
     block_add_text(&vm, on_start, "When");
     block_add_image(&vm, on_start, (ScrImage) { .image_ptr = &run_tex });
     block_add_text(&vm, on_start, "clicked");
 
-    int on_key_press = block_register(&vm, "on_key_press", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xFF });
+    int on_key_press = block_register(&vm, "on_key_press", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xFF }, NULL);
     block_add_text(&vm, on_key_press, "When");
     block_add_dropdown(&vm, on_key_press, DROPDOWN_SOURCE_LISTREF, &keys_accessor);
     block_add_text(&vm, on_key_press, "pressed");
 
-    int sc_print = block_register(&vm, "print", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF });
+    int sc_print = block_register(&vm, "print", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_print);
     block_add_text(&vm, sc_print, "Print");
     block_add_argument(&vm, sc_print, "Привет, мусороид!", BLOCKCONSTR_UNLIMITED);
 
-    int sc_loop = block_register(&vm, "loop", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff });
+    int sc_loop = block_register(&vm, "loop", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, NULL);
     block_add_text(&vm, sc_loop, "Loop");
 
-    int sc_if = block_register(&vm, "if", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff });
+    int sc_if = block_register(&vm, "if", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, NULL);
     block_add_text(&vm, sc_if, "If");
     block_add_argument(&vm, sc_if, "", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_if, ", then");
 
-    int sc_else_if = block_register(&vm, "else_if", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff });
+    int sc_else_if = block_register(&vm, "else_if", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, NULL);
     block_add_text(&vm, sc_else_if, "Else if");
     block_add_argument(&vm, sc_else_if, "", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_else_if, ", then");
 
-    int sc_else = block_register(&vm, "else", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff });
+    int sc_else = block_register(&vm, "else", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, NULL);
     block_add_text(&vm, sc_else, "Else");
 
-    int sc_end = block_register(&vm, "end", BLOCKTYPE_END, (ScrColor) { 0x77, 0x77, 0x77, 0xff });
+    int sc_end = block_register(&vm, "end", BLOCKTYPE_END, (ScrColor) { 0x77, 0x77, 0x77, 0xff }, NULL);
     block_add_text(&vm, sc_end, "End");
 
-    int sc_plus = block_register(&vm, "plus", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF });
+    int sc_plus = block_register(&vm, "plus", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, NULL);
     block_add_argument(&vm, sc_plus, "9", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_plus, "+");
     block_add_argument(&vm, sc_plus, "10", BLOCKCONSTR_UNLIMITED);
 
-    int sc_less = block_register(&vm, "less", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF });
+    int sc_less = block_register(&vm, "less", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, NULL);
     block_add_argument(&vm, sc_less, "9", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_less, "<");
     block_add_argument(&vm, sc_less, "11", BLOCKCONSTR_UNLIMITED);
 
-    int sc_decl_var = block_register(&vm, "decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff });
+    int sc_decl_var = block_register(&vm, "decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, NULL);
     block_add_text(&vm, sc_decl_var, "Declare");
     block_add_argument(&vm, sc_decl_var, "my variable", BLOCKCONSTR_STRING);
     block_add_text(&vm, sc_decl_var, "=");
     block_add_argument(&vm, sc_decl_var, "", BLOCKCONSTR_UNLIMITED);
 
-    int sc_get_var = block_register(&vm, "get_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff });
+    int sc_get_var = block_register(&vm, "get_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, NULL);
     block_add_argument(&vm, sc_get_var, "my variable", BLOCKCONSTR_STRING);
 
     mouse_blockchain = blockchain_new();
     draw_stack = vector_create();
+    editor_code = vector_create();
 
     sidebar.blocks = vector_create();
     for (vec_size_t i = 0; i < vector_size(vm.blockdefs); i++) {
@@ -1964,6 +1987,16 @@ int main(void) {
             SetMouseCursor(MOUSE_CURSOR_DEFAULT);
         }*/
 
+        size_t vm_success = -1;
+        if (exec_try_join(&vm, &exec, &vm_success)) {
+            if (vm_success) {
+                actionbar_show("Vm executed successfully");
+            } else {
+                actionbar_show("Vm shitted and died :(");
+            }
+            exec_free(&exec);
+        }
+
         BeginDrawing();
         ClearBackground(GetColor(0x202020ff));
 
@@ -1978,8 +2011,8 @@ int main(void) {
         if (current_tab == TAB_CODE) {
             BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
                 draw_dots();
-                for (vec_size_t i = 0; i < vector_size(vm.code); i++) {
-                    draw_block_chain(&vm.code[i], camera_pos);
+                for (vec_size_t i = 0; i < vector_size(editor_code); i++) {
+                    draw_block_chain(&editor_code[i], camera_pos);
                 }
             EndScissorMode();
 

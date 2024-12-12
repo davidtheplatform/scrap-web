@@ -15,5 +15,5 @@ run: $(EXE_NAME)
 $(EXE_NAME): $(OBJFILES)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-scrap.o: scrap.c external/raylib-nuklear.h
+scrap.o: scrap.c external/raylib-nuklear.h vm.h
 	$(CC) $(CFLAGS) -c -o $@ scrap.c

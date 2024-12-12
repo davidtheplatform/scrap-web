@@ -1,5 +1,7 @@
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <pthread.h>
 
 typedef struct {
     float x, y;
@@ -84,12 +86,15 @@ typedef struct {
     ScrBlockInputData data;
 } ScrBlockInput;
 
+typedef void (*ScrBlockFunc)(int argc, const char** argv);
+
 typedef struct {
-    char* id;
+    const char* id;
     ScrColor color;
     ScrBlockType type;
     bool hidden;
     ScrBlockInput* inputs;
+    ScrBlockFunc func;
 } ScrBlockdef;
 
 typedef enum {
@@ -118,29 +123,63 @@ typedef struct {
 typedef ScrMeasurement (*ScrTextMeasureFunc)(char* text);
 typedef ScrMeasurement (*ScrTextArgMeasureFunc)(char* text);
 typedef ScrMeasurement (*ScrImageMeasureFunc)(ScrImage image);
+
+typedef enum {
+    FUNC_ARG_INT,
+    FUNC_ARG_STATIC_STR,
+} ScrFuncArgType;
+
+typedef union {
+    int int_arg;
+    char* str_arg;
+} ScrFuncArgData;
+
 typedef struct {
-    ScrBlockdef* blockdefs;
+    ScrFuncArgType type;
+    ScrFuncArgData data;
+} ScrFuncArg;
+
+typedef struct ScrVm ScrVm;
+
+typedef struct {
     ScrBlockChain* code;
+    const char** args; // Scratch buffer for storing block args
+    pthread_t thread;
+    pthread_mutex_t is_running_mut;
+    bool is_running;
+    ScrVm* vm;
+} ScrExec;
+
+struct ScrVm {
+    ScrBlockdef* blockdefs;
     size_t end_block_id;
+    bool is_running;
     ScrTextMeasureFunc text_measure;
     ScrTextArgMeasureFunc arg_measure;
     ScrImageMeasureFunc img_measure;
-} ScrVm;
+};
 
 // Public functions
 ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure);
-void vm_add_chain(ScrVm* vm, ScrBlockChain chain);
-void vm_remove_chain(ScrVm* vm, size_t ind);
 void vm_free(ScrVm* vm);
 
-size_t block_register(ScrVm* vm, char* id, ScrBlockType type, ScrColor color);
+ScrExec exec_new(ScrVm* vm);
+void exec_free(ScrExec* exec);
+void exec_add_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain);
+void exec_remove_chain(ScrVm* vm, ScrExec* exec, size_t ind);
+bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain);
+bool exec_start(ScrVm* vm, ScrExec* exec);
+bool exec_try_join(ScrVm* vm, ScrExec* exec, size_t* return_code);
+
+size_t block_register(ScrVm* vm, const char* id, ScrBlockType type, ScrColor color, ScrBlockFunc func);
 void block_add_text(ScrVm* vm, size_t block_id, char* text);
 void block_add_argument(ScrVm* vm, size_t block_id, char* defualt_data, ScrBlockArgumentConstraint constraint);
 void block_add_dropdown(ScrVm* vm, size_t block_id, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor);
 void block_add_image(ScrVm* vm, size_t block_id, ScrImage image);
 void block_unregister(ScrVm* vm, size_t block_id);
 
-ScrBlockChain blockchain_new();
+ScrBlockChain blockchain_new(void);
+ScrBlockChain blockchain_copy(ScrBlockChain* chain);
 void blockchain_add_block(ScrBlockChain* chain, ScrBlock block);
 void blockchain_clear_blocks(ScrBlockChain* chain);
 void blockchain_insert(ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
@@ -149,7 +188,7 @@ void blockchain_detach(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src, size_t
 void blockchain_free(ScrBlockChain* chain);
 
 ScrBlock block_new(ScrVm* vm, size_t id);
-ScrBlock block_copy(ScrBlock* block);
+ScrBlock block_copy(ScrBlock* block, ScrBlock* parent);
 void block_free(ScrBlock* block);
 
 void argument_set_block(ScrBlockArgument* block_arg, ScrBlock block);
@@ -461,41 +500,118 @@ void block_update_parent_links(ScrBlock* block);
 void blockchain_update_parent_links(ScrBlockChain* chain);
 
 ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure) {
-    return (ScrVm) {
+    ScrVm vm = (ScrVm) {
         .blockdefs = vector_create(),
-        .code = vector_create(),
         .end_block_id = (size_t)-1,
+        .is_running = false,
         .text_measure = text_measure,
         .arg_measure = arg_measure,
         .img_measure = img_measure,
     };
-}
-
-void vm_add_chain(ScrVm* vm, ScrBlockChain chain) {
-    vector_add(&vm->code, chain);
-}
-
-void vm_remove_chain(ScrVm* vm, size_t ind) {
-    vector_remove(vm->code, ind);
+    return vm;
 }
 
 void vm_free(ScrVm* vm) {
-    for (vec_size_t i = 0; i < vector_size(vm->code); i++) {
-        blockchain_free(&vm->code[i]);
-    }
-    vector_free(vm->code);
-
     for (ssize_t i = (ssize_t)vector_size(vm->blockdefs) - 1; i >= 0 ; i--) {
         block_unregister(vm, i);
     }
     vector_free(vm->blockdefs);
 }
 
-void block_update_parent_links(ScrBlock* block) {
-    for (size_t i = 0; i < vector_size(block->arguments); i++) {
-        if (block->arguments[i].type != ARGUMENT_BLOCK) continue;
-        block->arguments[i].data.block.parent = block;
+ScrExec exec_new(ScrVm* vm) {
+    ScrExec exec = (ScrExec) {
+        .code = vector_create(),
+        .args = vector_create(),
+        .thread = (pthread_t) {0},
+        .is_running = false,
+        .vm = vm,
+    };
+    pthread_mutex_init(&exec.is_running_mut, NULL);
+
+    return exec;
+}
+
+void exec_free(ScrExec* exec) {
+    pthread_mutex_destroy(&exec->is_running_mut);
+    vector_free(exec->args);
+    for (vec_size_t i = 0; i < vector_size(exec->code); i++) {
+        blockchain_free(&exec->code[i]);
     }
+    vector_free(exec->code);
+}
+
+void exec_copy_code(ScrVm* vm, ScrExec* exec, ScrBlockChain* code) {
+    if (vm->is_running) return;
+    for (vec_size_t i = 0; i < vector_size(code); i++) {
+        exec_add_chain(vm, exec, blockchain_copy(&code[i]));
+    }
+}
+
+void exec_add_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
+    if (vm->is_running) return;
+    vector_add(&exec->code, chain);
+}
+
+void exec_remove_chain(ScrVm* vm, ScrExec* exec, size_t ind) {
+    if (vm->is_running) return;
+    vector_remove(exec->code, ind);
+}
+
+bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
+    for (vec_size_t i = 0; i < vector_size(chain.blocks); i++) {
+        ScrBlockFunc execute_block = vm->blockdefs[chain.blocks[i].id].func;
+        printf("Execute block: %s\n", vm->blockdefs[chain.blocks[i].id].id);
+        if (!execute_block) return false;
+
+        vector_clear(exec->args);
+        for (vec_size_t j = 0; j < vector_size(chain.blocks[i].arguments); j++) {
+            if (chain.blocks[i].arguments[j].type == ARGUMENT_BLOCK) return false;
+            vector_add(&exec->args, chain.blocks[i].arguments[j].data.text);
+        }
+
+        execute_block(vector_size(exec->args), exec->args);
+    }
+    return true;
+}
+
+void* exec_thread_entry(void* thread_exec) {
+    ScrExec* exec = thread_exec;
+    pthread_mutex_lock(&exec->is_running_mut);
+    exec->is_running = true;
+    pthread_mutex_unlock(&exec->is_running_mut);
+
+    for (vec_size_t i = 0; i < vector_size(exec->code); i++) {
+        if (!exec_run_chain(exec->vm, exec, exec->code[i])) {
+            pthread_mutex_lock(&exec->is_running_mut);
+            exec->is_running = false;
+            pthread_mutex_unlock(&exec->is_running_mut);
+            return (void*)0;
+        }
+    }
+    pthread_mutex_lock(&exec->is_running_mut);
+    exec->is_running = false;
+    pthread_mutex_unlock(&exec->is_running_mut);
+    return (void*)1;
+}
+
+bool exec_start(ScrVm* vm, ScrExec* exec) {
+    if (vm->is_running) return false;
+    if (exec->is_running) return false;
+    vm->is_running = true;
+
+    if (pthread_create(&exec->thread, NULL, exec_thread_entry, exec)) return false;
+    return true;
+}
+
+bool exec_try_join(ScrVm* vm, ScrExec* exec, size_t* return_code) {
+    if (!vm->is_running) return false;
+    if (exec->is_running) return false;
+
+    void* return_val;
+    if (pthread_join(exec->thread, &return_val)) return false;
+    vm->is_running = false;
+    *return_code = (size_t)return_val;
+    return true;
 }
 
 ScrBlock block_new(ScrVm* vm, size_t id) {
@@ -553,11 +669,15 @@ ScrBlock block_new(ScrVm* vm, size_t id) {
 }
 
 // Broken at the moment, not sure why
-ScrBlock block_copy(ScrBlock* block) {
+ScrBlock block_copy(ScrBlock* block, ScrBlock* parent) {
     if (!block->arguments) return *block;
 
-    ScrBlock new = *block;
+    ScrBlock new;
+    new.id = block->id;
+    new.ms = block->ms;
+    new.parent = parent;
     new.arguments = vector_create();
+
     for (size_t i = 0; i < vector_size(block->arguments); i++) {
         ScrBlockArgument* arg = vector_add_dst((ScrBlockArgument**)&new.arguments);
         arg->ms = block->arguments[i].ms;
@@ -567,7 +687,7 @@ ScrBlock block_copy(ScrBlock* block) {
             arg->data.text = vector_copy(block->arguments[i].data.text);
             break;
         case ARGUMENT_BLOCK:
-            arg->data.block = block_copy(&block->arguments[i].data.block);
+            arg->data.block = block_copy(&block->arguments[i].data.block, &new);
             break;
         default:
             assert(false && "Unimplemented argument copy");
@@ -598,12 +718,32 @@ void block_free(ScrBlock* block) {
     }
 }
 
-ScrBlockChain blockchain_new() {
+void block_update_parent_links(ScrBlock* block) {
+    for (size_t i = 0; i < vector_size(block->arguments); i++) {
+        if (block->arguments[i].type != ARGUMENT_BLOCK) continue;
+        block->arguments[i].data.block.parent = block;
+    }
+}
+
+ScrBlockChain blockchain_new(void) {
     ScrBlockChain chain;
     chain.pos = (ScrVec) {0};
     chain.blocks = vector_create();
 
     return chain;
+}
+
+ScrBlockChain blockchain_copy(ScrBlockChain* chain) {
+    ScrBlockChain new;
+    new.pos = chain->pos;
+    new.blocks = vector_create();
+
+    vector_reserve(&new.blocks, vector_size(chain->blocks));
+    for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
+        vector_add(&new.blocks, block_copy(&chain->blocks[i], NULL));
+    }
+
+    return new;
 }
 
 void blockchain_update_parent_links(ScrBlockChain* chain) {
@@ -709,13 +849,16 @@ void argument_set_text(ScrBlockArgument* block_arg, char* text) {
     vector_add(&block_arg->data.text, 0);
 }
 
-size_t block_register(ScrVm* vm, char* id, ScrBlockType type, ScrColor color) {
+size_t block_register(ScrVm* vm, const char* id, ScrBlockType type, ScrColor color, ScrBlockFunc func) {
     ScrBlockdef* blockdef = vector_add_dst(&vm->blockdefs);
     blockdef->id = id;
     blockdef->color = color;
     blockdef->type = type;
     blockdef->hidden = false;
     blockdef->inputs = vector_create();
+    blockdef->func = func;
+
+    if (!func) printf("[VM] WARNING: Block \"%s\" has not defined its implementation!\n", id);
 
     if (type == BLOCKTYPE_END && vm->end_block_id == (size_t)-1) {
         vm->end_block_id = vector_size(vm->blockdefs) - 1;
