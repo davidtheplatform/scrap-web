@@ -1686,13 +1686,30 @@ ScrMeasurement measure_image(ScrImage image) {
     return ms;
 }
 
-ScrFuncArg block_noop(int argc, ScrFuncArg* argv) {
+ScrFuncArg block_noop(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
     (void) argc;
     (void) argv;
     RETURN_NOTHING;
 }
 
-ScrFuncArg block_print(int argc, ScrFuncArg* argv) {
+ScrFuncArg block_loop(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 1) RETURN_NOTHING;
+    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_NOTHING;
+
+    if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
+        control_stack_push_data(exec->running_ind, size_t)
+    } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
+        control_stack_pop_data(exec->running_ind, size_t)
+        control_stack_push_data(exec->running_ind, size_t)
+        control_stack_push_data(exec->running_ind, size_t)
+    }
+
+    RETURN_NOTHING;
+}
+
+ScrFuncArg block_print(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
     if (argc >= 1) {
         int bytes_sent = 0;
         switch (argv[0].type) {
@@ -1713,12 +1730,14 @@ ScrFuncArg block_print(int argc, ScrFuncArg* argv) {
     RETURN_INT(0);
 }
 
-ScrFuncArg block_plus(int argc, ScrFuncArg* argv) {
+ScrFuncArg block_plus(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
     if (argc < 2) RETURN_INT(0);
     RETURN_INT(func_arg_to_int(argv[0]) + func_arg_to_int(argv[1]));
 }
 
-ScrFuncArg block_less(int argc, ScrFuncArg* argv) {
+ScrFuncArg block_less(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
     if (argc < 1) RETURN_BOOL(0);
     if (argc < 2) RETURN_BOOL(func_arg_to_bool(argv[0]) < 0);
     RETURN_BOOL(func_arg_to_int(argv[0]) < func_arg_to_int(argv[1]));
@@ -1772,7 +1791,7 @@ void setup(void) {
     block_add_text(&vm, sc_print, "Print");
     block_add_argument(&vm, sc_print, "Привет, мусороид!", BLOCKCONSTR_UNLIMITED);
 
-    int sc_loop = block_register(&vm, "loop", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, NULL);
+    int sc_loop = block_register(&vm, "loop", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_loop);
     block_add_text(&vm, sc_loop, "Loop");
 
     int sc_if = block_register(&vm, "if", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, NULL);

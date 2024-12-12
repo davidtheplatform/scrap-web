@@ -4,6 +4,7 @@
 #include <pthread.h>
 
 #define VM_ARG_STACK_SIZE 1024
+#define VM_CONTROL_STACK_SIZE 1024
 
 typedef struct {
     float x, y;
@@ -89,15 +90,22 @@ typedef struct {
 } ScrBlockInput;
 
 typedef enum {
+    CONTROL_ARG_BEGIN,
+    CONTROL_ARG_END,
+} ScrControlArgType;
+
+typedef enum {
     FUNC_ARG_INT,
     FUNC_ARG_STATIC_STR,
     FUNC_ARG_BOOL,
+    FUNC_ARG_CONTROL,
     FUNC_ARG_NOTHING,
 } ScrFuncArgType;
 
 typedef union {
     int int_arg;
     const char* str_arg;
+    ScrControlArgType control_arg;
 } ScrFuncArgData;
 
 typedef struct {
@@ -105,7 +113,9 @@ typedef struct {
     ScrFuncArgData data;
 } ScrFuncArg;
 
-typedef ScrFuncArg (*ScrBlockFunc)(int argc, ScrFuncArg* argv);
+typedef struct ScrExec ScrExec;
+
+typedef ScrFuncArg (*ScrBlockFunc)(ScrExec* exec, int argc, ScrFuncArg* argv);
 
 typedef struct {
     const char* id;
@@ -145,15 +155,19 @@ typedef ScrMeasurement (*ScrImageMeasureFunc)(ScrImage image);
 
 typedef struct ScrVm ScrVm;
 
-typedef struct {
+struct ScrExec {
     ScrBlockChain* code;
-    ScrFuncArg stack[VM_ARG_STACK_SIZE];
-    size_t stack_len;
+    ScrFuncArg arg_stack[VM_ARG_STACK_SIZE];
+    size_t arg_stack_len;
+    unsigned char control_stack[VM_CONTROL_STACK_SIZE];
+    size_t control_stack_bp;
+    size_t control_stack_len;
     pthread_t thread;
     pthread_mutex_t is_running_mut;
     bool is_running;
+    size_t running_ind;
     ScrVm* vm;
-} ScrExec;
+};
 
 struct ScrVm {
     ScrBlockdef* blockdefs;
@@ -164,6 +178,7 @@ struct ScrVm {
     ScrImageMeasureFunc img_measure;
 };
 
+// Public macros
 #define RETURN_NOTHING return (ScrFuncArg) { \
     .type = FUNC_ARG_NOTHING, \
     .data = (ScrFuncArgData) {0}, \
@@ -182,6 +197,18 @@ struct ScrVm {
         .int_arg = (val) \
     }, \
 }
+
+#define control_stack_push_data(data, type) \
+    if (exec->control_stack_len + sizeof(type) <= VM_CONTROL_STACK_SIZE) { \
+        *(type *)(exec->control_stack + exec->control_stack_len) = (data); \
+        exec->control_stack_len += sizeof(type); \
+    }
+
+#define control_stack_pop_data(data, type) \
+    if (sizeof(type) <= exec->control_stack_len) { \
+        exec->control_stack_len -= sizeof(type); \
+        data = *(type*)(exec->control_stack + exec->control_stack_len); \
+    }
 
 // Public functions
 ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure);
@@ -524,8 +551,10 @@ vector _vector_copy(vector vec, vec_type_t type_size)
 // Private functions
 void block_update_parent_links(ScrBlock* block);
 void blockchain_update_parent_links(ScrBlockChain* chain);
-bool stack_push_arg(ScrExec* exec, ScrFuncArg arg);
-bool stack_undo_args(ScrExec* exec, size_t count);
+bool arg_stack_push_arg(ScrExec* exec, ScrFuncArg arg);
+bool arg_stack_undo_args(ScrExec* exec, size_t count);
+void control_stack_push_bp(ScrExec* exec);
+void control_stack_pop_bp(ScrExec* exec);
 
 ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure) {
     ScrVm vm = (ScrVm) {
@@ -549,7 +578,10 @@ void vm_free(ScrVm* vm) {
 ScrExec exec_new(ScrVm* vm) {
     ScrExec exec = (ScrExec) {
         .code = vector_create(),
-        .stack_len = 0,
+        .arg_stack_len = 0,
+        .control_stack_len = 0,
+        .control_stack_bp = 0,
+        .running_ind = 0,
         .thread = (pthread_t) {0},
         .is_running = false,
         .vm = vm,
@@ -584,17 +616,35 @@ void exec_remove_chain(ScrVm* vm, ScrExec* exec, size_t ind) {
     vector_remove(exec->code, ind);
 }
 
-bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_return) {
+bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_return, bool from_end) {
     ScrBlockFunc execute_block = vm->blockdefs[block.id].func;
     if (!execute_block) return false;
 
-    int stack_begin = exec->stack_len;
+    int stack_begin = exec->arg_stack_len;
+    if (vm->blockdefs[block.id].type == BLOCKTYPE_CONTROL) {
+        if (from_end) {
+            arg_stack_push_arg(exec, (ScrFuncArg) {
+                .type = FUNC_ARG_CONTROL,
+                .data = (ScrFuncArgData) {
+                    .control_arg = CONTROL_ARG_END,
+                },
+            });
+        } else {
+            //control_stack_push_bp(exec);
+            arg_stack_push_arg(exec, (ScrFuncArg) {
+                .type = FUNC_ARG_CONTROL,
+                .data = (ScrFuncArgData) {
+                    .control_arg = CONTROL_ARG_BEGIN,
+                },
+            });
+        }
+    }
     for (vec_size_t i = 0; i < vector_size(block.arguments); i++) {
         ScrBlockArgument block_arg = block.arguments[i];
         switch (block_arg.type) {
         case ARGUMENT_TEXT:
         case ARGUMENT_CONST_STRING:
-            stack_push_arg(exec, (ScrFuncArg) {
+            arg_stack_push_arg(exec, (ScrFuncArg) {
                 .type = FUNC_ARG_STATIC_STR,
                 .data = (ScrFuncArgData) {
                     .str_arg = block_arg.data.text,
@@ -603,40 +653,54 @@ bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_retu
             break;
         case ARGUMENT_BLOCK:
             ScrFuncArg arg_return;
-            if (!exec_block(vm, exec, block_arg.data.block, &arg_return)) return false;
-            stack_push_arg(exec, arg_return);
+            if (!exec_block(vm, exec, block_arg.data.block, &arg_return, false)) return false;
+            arg_stack_push_arg(exec, arg_return);
             break;
         default:
             return false;
         }
     }
 
-    printf("Execute block: %s\n", vm->blockdefs[block.id].id);
-    *block_return = execute_block(exec->stack_len - stack_begin, exec->stack + stack_begin);
-    stack_undo_args(exec, exec->stack_len - stack_begin);
-    switch (block_return->type) {
-    case FUNC_ARG_BOOL:
-    case FUNC_ARG_INT:
-        printf("[VM] Function returned int: %d\n", block_return->data.int_arg);
-        break;
-    case FUNC_ARG_STATIC_STR:
-        printf("[VM] Function returned static str: \"%s\"\n", block_return->data.str_arg);
-        break;
-    case FUNC_ARG_NOTHING:
-        printf("[VM] Function returned nothing\n");
-        break;
-    default:
-        printf("[VM] Function returned unknown data\n");
-        break;
-    }
+    //printf("Execute block: %s\n", vm->blockdefs[block.id].id);
+    *block_return = execute_block(exec, exec->arg_stack_len - stack_begin, exec->arg_stack + stack_begin);
+    arg_stack_undo_args(exec, exec->arg_stack_len - stack_begin);
+
+    //if (vm->blockdefs[block.id].type == BLOCKTYPE_CONTROL && from_end) {
+    //    control_stack_pop_bp(exec);
+    //}
+
+    //switch (block_return->type) {
+    //case FUNC_ARG_BOOL:
+    //case FUNC_ARG_INT:
+    //    printf("[VM] Function returned int: %d\n", block_return->data.int_arg);
+    //    break;
+    //case FUNC_ARG_STATIC_STR:
+    //    printf("[VM] Function returned static str: \"%s\"\n", block_return->data.str_arg);
+    //    break;
+    //case FUNC_ARG_NOTHING:
+    //    printf("[VM] Function returned nothing\n");
+    //    break;
+    //default:
+    //    printf("[VM] Function returned unknown data\n");
+    //    break;
+    //}
 
     return true;
 }
 
 bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
     ScrFuncArg bin;
-    for (vec_size_t i = 0; i < vector_size(chain.blocks); i++) {
-        if (!exec_block(vm, exec, chain.blocks[i], &bin)) return false;
+    for (exec->running_ind = 0; exec->running_ind < vector_size(chain.blocks); exec->running_ind++) {
+        size_t block_ind = exec->running_ind;
+        bool from_end = false;
+        if (vm->blockdefs[chain.blocks[exec->running_ind].id].type == BLOCKTYPE_END) {
+            control_stack_pop_data(block_ind, size_t)
+            from_end = true;
+        }
+        if (!exec_block(vm, exec, chain.blocks[block_ind], &bin, from_end)) return false;
+        if (vm->blockdefs[chain.blocks[exec->running_ind].id].type == BLOCKTYPE_CONTROL) {
+            control_stack_push_data(exec->running_ind, size_t)
+        } 
     }
     return true;
 }
@@ -647,7 +711,8 @@ void* exec_thread_entry(void* thread_exec) {
     exec->is_running = true;
     pthread_mutex_unlock(&exec->is_running_mut);
 
-    exec->stack_len = 0;
+    exec->arg_stack_len = 0;
+    exec->control_stack_len = 0;
     for (vec_size_t i = 0; i < vector_size(exec->code); i++) {
         if (!exec_run_chain(exec->vm, exec, exec->code[i])) {
             pthread_mutex_lock(&exec->is_running_mut);
@@ -668,6 +733,9 @@ bool exec_start(ScrVm* vm, ScrExec* exec) {
     vm->is_running = true;
 
     if (pthread_create(&exec->thread, NULL, exec_thread_entry, exec)) return false;
+    pthread_mutex_lock(&exec->is_running_mut);
+    exec->is_running = true;
+    pthread_mutex_unlock(&exec->is_running_mut);
     return true;
 }
 
@@ -682,16 +750,24 @@ bool exec_try_join(ScrVm* vm, ScrExec* exec, size_t* return_code) {
     return true;
 }
 
-bool stack_push_arg(ScrExec* exec, ScrFuncArg arg) {
-    if (exec->stack_len >= VM_ARG_STACK_SIZE) return false;
-    exec->stack[exec->stack_len++] = arg;
+bool arg_stack_push_arg(ScrExec* exec, ScrFuncArg arg) {
+    if (exec->arg_stack_len >= VM_ARG_STACK_SIZE) return false;
+    exec->arg_stack[exec->arg_stack_len++] = arg;
     return true;
 }
 
-bool stack_undo_args(ScrExec* exec, size_t count) {
-    if (count > exec->stack_len) return false;
-    exec->stack_len -= count;
+bool arg_stack_undo_args(ScrExec* exec, size_t count) {
+    if (count > exec->arg_stack_len) return false;
+    exec->arg_stack_len -= count;
     return true;
+}
+
+void control_stack_push_bp(ScrExec* exec) {
+    control_stack_push_data(exec->control_stack_bp, size_t)
+}
+
+void control_stack_pop_bp(ScrExec* exec) {
+    control_stack_pop_data(exec->control_stack_bp, size_t)
 }
 
 int func_arg_to_int(ScrFuncArg arg) {
