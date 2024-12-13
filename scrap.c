@@ -77,6 +77,8 @@ typedef struct {
     int dropdown_hover_ind;
     bool drag_cancelled;
     TopBars top_bars;
+    size_t exec_chain_ind;
+    size_t exec_ind;
 } HoverInfo;
 
 typedef struct {
@@ -138,6 +140,7 @@ Config conf;
 Config gui_conf;
 
 Texture2D run_tex;
+Texture2D stop_tex;
 Texture2D drop_tex;
 Texture2D close_tex;
 Texture2D logo_tex;
@@ -451,10 +454,11 @@ void draw_text_shadow(Font font, const char *text, Vector2 position, float font_
     DrawTextEx(font, text, position, font_size, spacing, tint);
 }
 
-void draw_block(Vector2 position, ScrBlock* block, bool force_outline) {
-    bool collision = hover_info.block == block;
+void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool force_collision) {
+    bool collision = hover_info.block == block || force_collision;
     ScrBlockdef blockdef = vm.blockdefs[block->id];
     Color color = as_rl_color(blockdef.color);
+    Color outline_color = force_collision ? YELLOW : ColorBrightness(color, collision ? 0.5 : -0.2);
 
     Vector2 cursor = position;
 
@@ -466,7 +470,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline) {
 
     DrawRectangleRec(block_size, ColorBrightness(color, collision ? 0.3 : 0.0));
     if (force_outline || (blockdef.type != BLOCKTYPE_CONTROL && blockdef.type != BLOCKTYPE_CONTROLEND)) {
-        DrawRectangleLinesEx(block_size, BLOCK_OUTLINE_SIZE, ColorBrightness(color, collision ? 0.5 : -0.2));
+        DrawRectangleLinesEx(block_size, BLOCK_OUTLINE_SIZE, outline_color);
     }
     cursor.x += BLOCK_PADDING;
 
@@ -534,7 +538,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline) {
                 block_pos.x = cursor.x;
                 block_pos.y = cursor.y + block_size.height * 0.5 - block->arguments[arg_id].ms.size.y * 0.5;
 
-                draw_block(block_pos, &block->arguments[arg_id].data.block, true);
+                draw_block(block_pos, &block->arguments[arg_id].data.block, true, force_collision);
                 break;
             default:
                 assert(false && "Unimplemented argument draw");
@@ -749,14 +753,16 @@ void blockchain_check_collisions(ScrBlockChain* chain, Vector2 camera_pos) {
     }
 }
 
-void draw_block_chain(ScrBlockChain* chain, Vector2 camera_pos) {
+void draw_block_chain(ScrBlockChain* chain, Vector2 camera_pos, bool chain_highlight) {
     vector_clear(draw_stack);
 
     Vector2 pos = as_rl_vec(chain->pos);
     pos.x -= camera_pos.x;
     pos.y -= camera_pos.y;
     for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
+        bool exec_highlight = hover_info.exec_ind == i && chain_highlight;
         ScrBlockdef blockdef = vm.blockdefs[chain->blocks[i].id];
+
         if ((blockdef.type == BLOCKTYPE_END || blockdef.type == BLOCKTYPE_CONTROLEND) && vector_size(draw_stack) > 0) {
             pos.x -= BLOCK_CONTROL_INDENT;
             DrawStack prev_block = draw_stack[vector_size(draw_stack) - 1];
@@ -769,26 +775,20 @@ void draw_block_chain(ScrBlockChain* chain, Vector2 camera_pos) {
             rect.height = pos.y - (prev_block.pos.y + prev_block.block->ms.size.y);
             DrawRectangleRec(rect, as_rl_color(prev_blockdef.color));
 
+            bool touching_block = hover_info.block == &chain->blocks[i];
+            Color outline_color = ColorBrightness(as_rl_color(prev_blockdef.color), hover_info.block == prev_block.block || touching_block ? 0.5 : -0.2);
             if (blockdef.type == BLOCKTYPE_END) {
-                DrawRectangle(pos.x, pos.y, prev_block.block->ms.size.x, conf.font_size, ColorBrightness(as_rl_color(prev_blockdef.color), hover_info.block == &chain->blocks[i] ? 0.3 : 0.0));
-                draw_control_outline(
-                    &prev_block, 
-                    pos, 
-                    ColorBrightness(as_rl_color(prev_blockdef.color), hover_info.block == prev_block.block || hover_info.block == &chain->blocks[i] ? 0.5 : -0.2),
-                    true
-                );
+                Color end_color = ColorBrightness(as_rl_color(prev_blockdef.color), exec_highlight || touching_block ? 0.3 : 0.0);
+                DrawRectangle(pos.x, pos.y, prev_block.block->ms.size.x, conf.font_size, end_color);
+                draw_control_outline(&prev_block, pos, outline_color, true);
             } else if (blockdef.type == BLOCKTYPE_CONTROLEND) {
-                draw_block(pos, &chain->blocks[i], false);
-                draw_controlend_outline(
-                    &prev_block, 
-                    pos, 
-                    ColorBrightness(as_rl_color(prev_blockdef.color), hover_info.block == prev_block.block || hover_info.block == &chain->blocks[i] ? 0.5 : -0.2)
-                );
+                draw_block(pos, &chain->blocks[i], false, exec_highlight);
+                draw_controlend_outline(&prev_block, pos, outline_color);
             }
 
             vector_pop(draw_stack);
         } else {
-            draw_block(pos, &chain->blocks[i], false);
+            draw_block(pos, &chain->blocks[i], false, exec_highlight);
         }
         if (blockdef.type == BLOCKTYPE_CONTROL || blockdef.type == BLOCKTYPE_CONTROLEND) {
             DrawStack stack_item;
@@ -872,11 +872,13 @@ void bars_check_collisions(void) {
         }
     }
 
-    Vector2 run_pos = (Vector2){ GetScreenWidth() - conf.font_size, conf.font_size * 1.2 };
-    if (button_check_collisions(&run_pos, NULL, 1.0, 0.5, 0)) {
-        hover_info.top_bars.type = TOPBAR_RUN_BUTTON;
-        hover_info.top_bars.ind = 0;
-        return;
+    Vector2 run_pos = (Vector2){ GetScreenWidth() - conf.font_size * 2.0, conf.font_size * 1.2 };
+    for (int i = 0; i < 2; i++) {
+        if (button_check_collisions(&run_pos, NULL, 1.0, 0.5, 0)) {
+            hover_info.top_bars.type = TOPBAR_RUN_BUTTON;
+            hover_info.top_bars.ind = i;
+            return;
+        }
     }
 
     int width = MeasureTextEx(font_eb, "Scrap", conf.font_size * 0.8, 0.0).x;
@@ -897,10 +899,13 @@ void draw_tab_buttons(int sw) {
         draw_button(&pos, tab_bar_buttons_text[i], 1.0, 0.3, 0, i == current_tab, COLLISION_AT(TOPBAR_TABS, i));
     }
 
-    Vector2 run_pos = (Vector2){ sw - conf.font_size, conf.font_size * 1.2 };
+    Vector2 run_pos = (Vector2){ sw - conf.font_size * 2.0, conf.font_size * 1.2 };
     Vector2 run_pos_copy = run_pos;
     draw_button(&run_pos_copy, NULL, 1.0, 0.5, 0, false, COLLISION_AT(TOPBAR_RUN_BUTTON, 0));
-    DrawTextureEx(run_tex, run_pos, 0, (float)conf.font_size / (float)run_tex.width, WHITE);
+    draw_button(&run_pos_copy, NULL, 1.0, 0.5, 0, vm.is_running, COLLISION_AT(TOPBAR_RUN_BUTTON, 1));
+    DrawTextureEx(stop_tex, run_pos, 0, (float)conf.font_size / (float)run_tex.width, WHITE);
+    run_pos.x += conf.font_size;
+    DrawTextureEx(run_tex, run_pos, 0, (float)conf.font_size / (float)run_tex.width, vm.is_running ? BLACK : WHITE);
 }
 
 void draw_top_bar(void) {
@@ -1032,7 +1037,7 @@ void draw_sidebar(void) {
 
     int pos_y = conf.font_size * 2.2 + SIDE_BAR_PADDING - sidebar.scroll_amount;
     for (vec_size_t i = 0; i < vector_size(sidebar.blocks); i++) {
-        draw_block((Vector2){ SIDE_BAR_PADDING, pos_y }, &sidebar.blocks[i], true);
+        draw_block((Vector2){ SIDE_BAR_PADDING, pos_y }, &sidebar.blocks[i], true, false);
         pos_y += conf.font_size + SIDE_BAR_PADDING;
     }
 
@@ -1305,13 +1310,18 @@ bool handle_mouse_click(void) {
                 shader_time = 0.0;
                 current_tab = hover_info.top_bars.ind;
             }
-        } else if (hover_info.top_bars.type == TOPBAR_RUN_BUTTON && !vm.is_running) {
-            exec = exec_new(&vm);
-            exec_copy_code(&vm, &exec, editor_code);
-            if (exec_start(&vm, &exec)) {
-                actionbar_show("Started successfully!");
-            } else {
-                actionbar_show("Start failed!");
+        } else if (hover_info.top_bars.type == TOPBAR_RUN_BUTTON) {
+            if (hover_info.top_bars.ind == 1 && !vm.is_running) {
+                exec = exec_new(&vm);
+                exec_copy_code(&vm, &exec, editor_code);
+                if (exec_start(&vm, &exec)) {
+                    actionbar_show("Started successfully!");
+                } else {
+                    actionbar_show("Start failed!");
+                }
+            } else if (hover_info.top_bars.ind == 0 && vm.is_running) {
+                printf("STOP\n");
+                exec_stop(&vm, &exec);
             }
         }
         return true;
@@ -1320,6 +1330,8 @@ bool handle_mouse_click(void) {
     if (current_tab != TAB_CODE) {
         return true;
     }
+
+    if (vm.is_running) return false;
 
     bool mouse_empty = vector_size(mouse_blockchain.blocks) == 0;
 
@@ -1702,7 +1714,42 @@ ScrFuncArg block_loop(ScrExec* exec, int argc, ScrFuncArg* argv) {
     } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
         control_stack_pop_data(exec->running_ind, size_t)
         control_stack_push_data(exec->running_ind, size_t)
+    }
+
+    RETURN_NOTHING;
+}
+
+ScrFuncArg block_if(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 2) RETURN_NOTHING;
+    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_NOTHING;
+    if (argv[0].data.control_arg == CONTROL_ARG_BEGIN && !func_arg_to_bool(argv[1])) exec->skip_block = true;
+    RETURN_NOTHING;
+}
+
+ScrFuncArg block_repeat(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 2) RETURN_NOTHING;
+    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_NOTHING;
+
+    if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
+        int cycles = func_arg_to_int(argv[1]);
+        if (cycles <= 0) {
+            exec->skip_block = true;
+            RETURN_NOTHING;
+        }
         control_stack_push_data(exec->running_ind, size_t)
+        control_stack_push_data(cycles - 1, int)
+    } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
+        int left = -1;
+        control_stack_pop_data(left, int)
+        if (left <= 0) {
+            size_t bin;
+            control_stack_pop_data(bin, size_t)
+            RETURN_NOTHING;
+        }
+
+        control_stack_pop_data(exec->running_ind, size_t)
+        control_stack_push_data(exec->running_ind, size_t)
+        control_stack_push_data(left - 1, int)
     }
 
     RETURN_NOTHING;
@@ -1743,6 +1790,14 @@ ScrFuncArg block_less(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_BOOL(func_arg_to_int(argv[0]) < func_arg_to_int(argv[1]));
 }
 
+Texture2D load_svg(const char* path) {
+    Image svg_img = LoadImageSvg(path, conf.font_size, conf.font_size);
+    Texture2D texture = LoadTextureFromImage(svg_img);
+    SetTextureFilter(texture, TEXTURE_FILTER_BILINEAR);
+    UnloadImage(svg_img);
+    return texture;
+}
+
 void setup(void) {
     run_tex = LoadTexture(DATA_PATH "run.png");
     SetTextureFilter(run_tex, TEXTURE_FILTER_BILINEAR);
@@ -1751,17 +1806,11 @@ void setup(void) {
     close_tex = LoadTexture(DATA_PATH "close.png");
     SetTextureFilter(close_tex, TEXTURE_FILTER_BILINEAR);
 
-    Image logo = LoadImageSvg(DATA_PATH "logo.svg", conf.font_size, conf.font_size);
-    logo_tex = LoadTextureFromImage(logo);
-    SetTextureFilter(logo_tex, TEXTURE_FILTER_BILINEAR);
+    logo_tex = load_svg(DATA_PATH "logo.svg");
+    warn_tex = load_svg(DATA_PATH "warning.svg");
+    stop_tex = load_svg(DATA_PATH "stop.svg");
     logo_tex_nuc = TextureToNuklear(logo_tex);
-    UnloadImage(logo);
-
-    Image warn = LoadImageSvg(DATA_PATH "warning.svg", conf.font_size, conf.font_size);
-    warn_tex = LoadTextureFromImage(warn);
-    SetTextureFilter(warn_tex, TEXTURE_FILTER_BILINEAR);
     warn_tex_nuc = TextureToNuklear(warn_tex);
-    UnloadImage(warn);
 
     int codepoints_count;
     int *codepoints = LoadCodepoints(conf.font_symbols, &codepoints_count);
@@ -1794,7 +1843,12 @@ void setup(void) {
     int sc_loop = block_register(&vm, "loop", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_loop);
     block_add_text(&vm, sc_loop, "Loop");
 
-    int sc_if = block_register(&vm, "if", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, NULL);
+    int sc_repeat = block_register(&vm, "repeat", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_repeat);
+    block_add_text(&vm, sc_repeat, "Repeat");
+    block_add_argument(&vm, sc_repeat, "10", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_repeat, "times");
+
+    int sc_if = block_register(&vm, "if", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_if);
     block_add_text(&vm, sc_if, "If");
     block_add_argument(&vm, sc_if, "", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_if, ", then");
@@ -1968,6 +2022,8 @@ int main(void) {
         hover_info.blockchain_layer = 0;
         hover_info.dropdown_hover_ind = -1;
         hover_info.top_bars.ind = -1;
+        hover_info.exec_ind = -1;
+        hover_info.exec_chain_ind = -1;
 
         Vector2 mouse_pos = GetMousePosition();
         if ((int)hover_info.last_mouse_pos.x == (int)mouse_pos.x && (int)hover_info.last_mouse_pos.y == (int)mouse_pos.y) {
@@ -2034,14 +2090,20 @@ int main(void) {
             SetMouseCursor(MOUSE_CURSOR_DEFAULT);
         }*/
 
-        size_t vm_success = -1;
-        if (exec_try_join(&vm, &exec, &vm_success)) {
-            if (vm_success) {
+        size_t vm_return = -1;
+        if (exec_try_join(&vm, &exec, &vm_return)) {
+            if (vm_return == 1) {
                 actionbar_show("Vm executed successfully");
+            } else if (vm_return == (size_t)PTHREAD_CANCELED) {
+                actionbar_show("Vm stopped >:(");
             } else {
                 actionbar_show("Vm shitted and died :(");
             }
             exec_free(&exec);
+        } else if (vm.is_running) {
+            hover_info.exec_chain_ind = exec.running_chain_ind;
+            hover_info.exec_ind = exec.running_ind;
+            //actionbar_show(TextFormat("chain: %zu, ind: %zu", hover_info.exec_chain_ind, hover_info.exec_ind));
         }
 
         BeginDrawing();
@@ -2059,7 +2121,7 @@ int main(void) {
             BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
                 draw_dots();
                 for (vec_size_t i = 0; i < vector_size(editor_code); i++) {
-                    draw_block_chain(&editor_code[i], camera_pos);
+                    draw_block_chain(&editor_code[i], camera_pos, hover_info.exec_chain_ind == i);
                 }
             EndScissorMode();
 
@@ -2068,7 +2130,7 @@ int main(void) {
             draw_sidebar();
 
             BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
-                draw_block_chain(&mouse_blockchain, (Vector2) {0});
+                draw_block_chain(&mouse_blockchain, (Vector2) {0}, false);
             EndScissorMode();
 
             draw_action_bar();

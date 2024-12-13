@@ -1,7 +1,8 @@
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <stdbool.h>
+#include <stdatomic.h>
 
 #define VM_ARG_STACK_SIZE 1024
 #define VM_CONTROL_STACK_SIZE 1024
@@ -163,8 +164,9 @@ struct ScrExec {
     size_t control_stack_bp;
     size_t control_stack_len;
     pthread_t thread;
-    pthread_mutex_t is_running_mut;
-    bool is_running;
+    atomic_bool is_running;
+    bool skip_block;
+    size_t running_chain_ind;
     size_t running_ind;
     ScrVm* vm;
 };
@@ -199,16 +201,20 @@ struct ScrVm {
 }
 
 #define control_stack_push_data(data, type) \
-    if (exec->control_stack_len + sizeof(type) <= VM_CONTROL_STACK_SIZE) { \
-        *(type *)(exec->control_stack + exec->control_stack_len) = (data); \
-        exec->control_stack_len += sizeof(type); \
-    }
+    if (exec->control_stack_len + sizeof(type) > VM_CONTROL_STACK_SIZE) { \
+        printf("[VM] CRITICAL: Control stack overflow\n"); \
+        pthread_exit((void*)0); \
+    } \
+    *(type *)(exec->control_stack + exec->control_stack_len) = (data); \
+    exec->control_stack_len += sizeof(type);
 
 #define control_stack_pop_data(data, type) \
-    if (sizeof(type) <= exec->control_stack_len) { \
-        exec->control_stack_len -= sizeof(type); \
-        data = *(type*)(exec->control_stack + exec->control_stack_len); \
-    }
+    if (sizeof(type) > exec->control_stack_len) { \
+        printf("[VM] CRITICAL: Control stack underflow\n"); \
+        pthread_exit((void*)0); \
+    } \
+    exec->control_stack_len -= sizeof(type); \
+    data = *(type*)(exec->control_stack + exec->control_stack_len);
 
 // Public functions
 ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure);
@@ -220,6 +226,7 @@ void exec_add_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain);
 void exec_remove_chain(ScrVm* vm, ScrExec* exec, size_t ind);
 bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain);
 bool exec_start(ScrVm* vm, ScrExec* exec);
+bool exec_stop(ScrVm* vm, ScrExec* exec);
 bool exec_try_join(ScrVm* vm, ScrExec* exec, size_t* return_code);
 
 int func_arg_to_int(ScrFuncArg arg);
@@ -584,15 +591,13 @@ ScrExec exec_new(ScrVm* vm) {
         .running_ind = 0,
         .thread = (pthread_t) {0},
         .is_running = false,
+        .skip_block = false,
         .vm = vm,
     };
-    pthread_mutex_init(&exec.is_running_mut, NULL);
-
     return exec;
 }
 
 void exec_free(ScrExec* exec) {
-    pthread_mutex_destroy(&exec->is_running_mut);
     for (vec_size_t i = 0; i < vector_size(exec->code); i++) {
         blockchain_free(&exec->code[i]);
     }
@@ -689,42 +694,56 @@ bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_retu
 }
 
 bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
+    int layer = 0;
+    int skip_layer = -1;
+    exec->skip_block = false;
     ScrFuncArg bin;
     for (exec->running_ind = 0; exec->running_ind < vector_size(chain.blocks); exec->running_ind++) {
+        pthread_testcancel();
         size_t block_ind = exec->running_ind;
         bool from_end = false;
+
+        if (exec->skip_block && skip_layer == layer) {
+            exec->skip_block = false;
+            skip_layer = -1;
+        }
         if (vm->blockdefs[chain.blocks[exec->running_ind].id].type == BLOCKTYPE_END) {
+            layer--;
             control_stack_pop_data(block_ind, size_t)
             from_end = true;
         }
-        if (!exec_block(vm, exec, chain.blocks[block_ind], &bin, from_end)) return false;
+        if (!exec->skip_block) {
+            if (!exec_block(vm, exec, chain.blocks[block_ind], &bin, from_end)) return false;
+        }
         if (vm->blockdefs[chain.blocks[exec->running_ind].id].type == BLOCKTYPE_CONTROL) {
             control_stack_push_data(exec->running_ind, size_t)
+            if (exec->skip_block && skip_layer == -1) skip_layer = layer;
+            layer++;
         } 
     }
     return true;
 }
 
+void exec_thread_exit(void* thread_exec) {
+    ScrExec* exec = thread_exec;
+    exec->is_running = false;
+}
+
 void* exec_thread_entry(void* thread_exec) {
     ScrExec* exec = thread_exec;
-    pthread_mutex_lock(&exec->is_running_mut);
-    exec->is_running = true;
-    pthread_mutex_unlock(&exec->is_running_mut);
+    pthread_cleanup_push(exec_thread_exit, thread_exec);
 
+    exec->is_running = true;
     exec->arg_stack_len = 0;
     exec->control_stack_len = 0;
-    for (vec_size_t i = 0; i < vector_size(exec->code); i++) {
-        if (!exec_run_chain(exec->vm, exec, exec->code[i])) {
-            pthread_mutex_lock(&exec->is_running_mut);
-            exec->is_running = false;
-            pthread_mutex_unlock(&exec->is_running_mut);
-            return (void*)0;
+    for (exec->running_chain_ind = 0; exec->running_chain_ind < vector_size(exec->code); exec->running_chain_ind++) {
+        if (!exec_run_chain(exec->vm, exec, exec->code[exec->running_chain_ind])) {
+            pthread_exit((void*)0);
         }
     }
-    pthread_mutex_lock(&exec->is_running_mut);
-    exec->is_running = false;
-    pthread_mutex_unlock(&exec->is_running_mut);
-    return (void*)1;
+
+    pthread_cleanup_pop(1);
+    pthread_exit((void*)1);
 }
 
 bool exec_start(ScrVm* vm, ScrExec* exec) {
@@ -733,9 +752,14 @@ bool exec_start(ScrVm* vm, ScrExec* exec) {
     vm->is_running = true;
 
     if (pthread_create(&exec->thread, NULL, exec_thread_entry, exec)) return false;
-    pthread_mutex_lock(&exec->is_running_mut);
     exec->is_running = true;
-    pthread_mutex_unlock(&exec->is_running_mut);
+    return true;
+}
+
+bool exec_stop(ScrVm* vm, ScrExec* exec) {
+    if (!vm->is_running) return false;
+    if (!exec->is_running) return false;
+    if (pthread_cancel(exec->thread)) return false;
     return true;
 }
 
