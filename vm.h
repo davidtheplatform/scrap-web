@@ -101,6 +101,7 @@ typedef enum {
     FUNC_ARG_BOOL,
     FUNC_ARG_CONTROL,
     FUNC_ARG_NOTHING,
+    FUNC_ARG_OMIT_ARGS, // Marker for vm used in C-blocks that do not require argument recomputation
 } ScrFuncArgType;
 
 typedef union {
@@ -161,7 +162,6 @@ struct ScrExec {
     ScrFuncArg arg_stack[VM_ARG_STACK_SIZE];
     size_t arg_stack_len;
     unsigned char control_stack[VM_CONTROL_STACK_SIZE];
-    size_t control_stack_bp;
     size_t control_stack_len;
     pthread_t thread;
     atomic_bool is_running;
@@ -183,6 +183,11 @@ struct ScrVm {
 // Public macros
 #define RETURN_NOTHING return (ScrFuncArg) { \
     .type = FUNC_ARG_NOTHING, \
+    .data = (ScrFuncArgData) {0}, \
+}
+
+#define RETURN_OMIT_ARGS return (ScrFuncArg) { \
+    .type = FUNC_ARG_OMIT_ARGS, \
     .data = (ScrFuncArgData) {0}, \
 }
 
@@ -560,8 +565,6 @@ void block_update_parent_links(ScrBlock* block);
 void blockchain_update_parent_links(ScrBlockChain* chain);
 bool arg_stack_push_arg(ScrExec* exec, ScrFuncArg arg);
 bool arg_stack_undo_args(ScrExec* exec, size_t count);
-void control_stack_push_bp(ScrExec* exec);
-void control_stack_pop_bp(ScrExec* exec);
 
 ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure) {
     ScrVm vm = (ScrVm) {
@@ -587,7 +590,6 @@ ScrExec exec_new(ScrVm* vm) {
         .code = vector_create(),
         .arg_stack_len = 0,
         .control_stack_len = 0,
-        .control_stack_bp = 0,
         .running_ind = 0,
         .thread = (pthread_t) {0},
         .is_running = false,
@@ -621,101 +623,86 @@ void exec_remove_chain(ScrVm* vm, ScrExec* exec, size_t ind) {
     vector_remove(exec->code, ind);
 }
 
-bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_return, bool from_end) {
-    ScrBlockFunc execute_block = vm->blockdefs[block.id].func;
+bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_return, bool from_end, bool omit_args, ScrFuncArg control_arg) {
+    ScrBlockdef blockdef = vm->blockdefs[block.id];
+    ScrBlockFunc execute_block = blockdef.func;
     if (!execute_block) return false;
 
     int stack_begin = exec->arg_stack_len;
-    if (vm->blockdefs[block.id].type == BLOCKTYPE_CONTROL) {
-        if (from_end) {
-            arg_stack_push_arg(exec, (ScrFuncArg) {
-                .type = FUNC_ARG_CONTROL,
-                .data = (ScrFuncArgData) {
-                    .control_arg = CONTROL_ARG_END,
-                },
-            });
-        } else {
-            //control_stack_push_bp(exec);
-            arg_stack_push_arg(exec, (ScrFuncArg) {
-                .type = FUNC_ARG_CONTROL,
-                .data = (ScrFuncArgData) {
-                    .control_arg = CONTROL_ARG_BEGIN,
-                },
-            });
+    if (blockdef.type == BLOCKTYPE_CONTROL || blockdef.type == BLOCKTYPE_CONTROLEND) {
+        arg_stack_push_arg(exec, (ScrFuncArg) {
+            .type = FUNC_ARG_CONTROL,
+            .data = (ScrFuncArgData) {
+                .control_arg = from_end ? CONTROL_ARG_END : CONTROL_ARG_BEGIN,
+            },
+        });
+        if (!from_end && blockdef.type == BLOCKTYPE_CONTROLEND) {
+            arg_stack_push_arg(exec, control_arg);
         }
     }
-    for (vec_size_t i = 0; i < vector_size(block.arguments); i++) {
-        ScrBlockArgument block_arg = block.arguments[i];
-        switch (block_arg.type) {
-        case ARGUMENT_TEXT:
-        case ARGUMENT_CONST_STRING:
-            arg_stack_push_arg(exec, (ScrFuncArg) {
-                .type = FUNC_ARG_STATIC_STR,
-                .data = (ScrFuncArgData) {
-                    .str_arg = block_arg.data.text,
-                },
-            });
-            break;
-        case ARGUMENT_BLOCK:
-            ScrFuncArg arg_return;
-            if (!exec_block(vm, exec, block_arg.data.block, &arg_return, false)) return false;
-            arg_stack_push_arg(exec, arg_return);
-            break;
-        default:
-            return false;
+    if (!omit_args) {
+        for (vec_size_t i = 0; i < vector_size(block.arguments); i++) {
+            ScrBlockArgument block_arg = block.arguments[i];
+            switch (block_arg.type) {
+            case ARGUMENT_TEXT:
+            case ARGUMENT_CONST_STRING:
+                arg_stack_push_arg(exec, (ScrFuncArg) {
+                    .type = FUNC_ARG_STATIC_STR,
+                    .data = (ScrFuncArgData) {
+                        .str_arg = block_arg.data.text,
+                    },
+                });
+                break;
+            case ARGUMENT_BLOCK:
+                ScrFuncArg arg_return;
+                if (!exec_block(vm, exec, block_arg.data.block, &arg_return, false, false, (ScrFuncArg) {0})) return false;
+                arg_stack_push_arg(exec, arg_return);
+                break;
+            default:
+                return false;
+            }
         }
     }
 
-    //printf("Execute block: %s\n", vm->blockdefs[block.id].id);
     *block_return = execute_block(exec, exec->arg_stack_len - stack_begin, exec->arg_stack + stack_begin);
     arg_stack_undo_args(exec, exec->arg_stack_len - stack_begin);
-
-    //if (vm->blockdefs[block.id].type == BLOCKTYPE_CONTROL && from_end) {
-    //    control_stack_pop_bp(exec);
-    //}
-
-    //switch (block_return->type) {
-    //case FUNC_ARG_BOOL:
-    //case FUNC_ARG_INT:
-    //    printf("[VM] Function returned int: %d\n", block_return->data.int_arg);
-    //    break;
-    //case FUNC_ARG_STATIC_STR:
-    //    printf("[VM] Function returned static str: \"%s\"\n", block_return->data.str_arg);
-    //    break;
-    //case FUNC_ARG_NOTHING:
-    //    printf("[VM] Function returned nothing\n");
-    //    break;
-    //default:
-    //    printf("[VM] Function returned unknown data\n");
-    //    break;
-    //}
 
     return true;
 }
 
+#define BLOCKDEF vm->blockdefs[chain.blocks[exec->running_ind].id]
 bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
     int layer = 0;
     int skip_layer = -1;
     exec->skip_block = false;
-    ScrFuncArg bin;
+    ScrFuncArg block_return;
     for (exec->running_ind = 0; exec->running_ind < vector_size(chain.blocks); exec->running_ind++) {
         pthread_testcancel();
         size_t block_ind = exec->running_ind;
         bool from_end = false;
+        bool omit_args = false;
 
-        if (exec->skip_block && skip_layer == layer) {
-            exec->skip_block = false;
-            skip_layer = -1;
-        }
-        if (vm->blockdefs[chain.blocks[exec->running_ind].id].type == BLOCKTYPE_END) {
+        if (BLOCKDEF.type == BLOCKTYPE_END || BLOCKDEF.type == BLOCKTYPE_CONTROLEND) {
+            if (BLOCKDEF.type == BLOCKTYPE_CONTROLEND && layer == 0) continue;
             layer--;
             control_stack_pop_data(block_ind, size_t)
+            control_stack_pop_data(block_return, ScrFuncArg)
+            if (block_return.type == FUNC_ARG_OMIT_ARGS) omit_args = true;
             from_end = true;
+            if (exec->skip_block && skip_layer == layer) {
+                exec->skip_block = false;
+                skip_layer = -1;
+            }
         }
         if (!exec->skip_block) {
-            if (!exec_block(vm, exec, chain.blocks[block_ind], &bin, from_end)) return false;
+            if (!exec_block(vm, exec, chain.blocks[block_ind], &block_return, from_end, omit_args, (ScrFuncArg){0})) return false;
         }
-        if (vm->blockdefs[chain.blocks[exec->running_ind].id].type == BLOCKTYPE_CONTROL) {
+        if (BLOCKDEF.type == BLOCKTYPE_CONTROLEND && block_ind != exec->running_ind) {
+            from_end = false;
+            if (!exec_block(vm, exec, chain.blocks[exec->running_ind], &block_return, from_end, false, block_return)) return false;
+        }
+        if (BLOCKDEF.type == BLOCKTYPE_CONTROL || BLOCKDEF.type == BLOCKTYPE_CONTROLEND) {
+            control_stack_push_data(block_return, ScrFuncArg)
             control_stack_push_data(exec->running_ind, size_t)
             if (exec->skip_block && skip_layer == -1) skip_layer = layer;
             layer++;
@@ -723,6 +710,7 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
     }
     return true;
 }
+#undef BLOCKDEF
 
 void exec_thread_exit(void* thread_exec) {
     ScrExec* exec = thread_exec;
@@ -786,14 +774,6 @@ bool arg_stack_undo_args(ScrExec* exec, size_t count) {
     return true;
 }
 
-void control_stack_push_bp(ScrExec* exec) {
-    control_stack_push_data(exec->control_stack_bp, size_t)
-}
-
-void control_stack_pop_bp(ScrExec* exec) {
-    control_stack_pop_data(exec->control_stack_bp, size_t)
-}
-
 int func_arg_to_int(ScrFuncArg arg) {
     switch (arg.type) {
     case FUNC_ARG_BOOL:
@@ -806,8 +786,9 @@ int func_arg_to_int(ScrFuncArg arg) {
 
 int func_arg_to_bool(ScrFuncArg arg) {
     switch (arg.type) {
-    case FUNC_ARG_BOOL: return arg.data.int_arg;
-    case FUNC_ARG_INT: return arg.data.int_arg != 0;
+    case FUNC_ARG_BOOL:
+    case FUNC_ARG_INT:
+        return arg.data.int_arg != 0;
     case FUNC_ARG_STATIC_STR: return *arg.data.str_arg != 0;
     default: return 0;
     }

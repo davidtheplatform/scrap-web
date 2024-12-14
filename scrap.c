@@ -1706,8 +1706,8 @@ ScrFuncArg block_noop(ScrExec* exec, int argc, ScrFuncArg* argv) {
 }
 
 ScrFuncArg block_loop(ScrExec* exec, int argc, ScrFuncArg* argv) {
-    if (argc < 1) RETURN_NOTHING;
-    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_NOTHING;
+    if (argc < 1) RETURN_OMIT_ARGS;
+    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_OMIT_ARGS;
 
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
         control_stack_push_data(exec->running_ind, size_t)
@@ -1716,43 +1716,112 @@ ScrFuncArg block_loop(ScrExec* exec, int argc, ScrFuncArg* argv) {
         control_stack_push_data(exec->running_ind, size_t)
     }
 
-    RETURN_NOTHING;
+    RETURN_OMIT_ARGS;
 }
 
 ScrFuncArg block_if(ScrExec* exec, int argc, ScrFuncArg* argv) {
-    if (argc < 2) RETURN_NOTHING;
-    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_NOTHING;
-    if (argv[0].data.control_arg == CONTROL_ARG_BEGIN && !func_arg_to_bool(argv[1])) exec->skip_block = true;
-    RETURN_NOTHING;
+    if (argc < 1) RETURN_BOOL(1);
+    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(1);
+    if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
+        if (!func_arg_to_bool(argv[1])) {
+            exec->skip_block = true;
+            control_stack_push_data((int)0, int)
+        } else {
+            control_stack_push_data((int)1, int)
+        }
+        RETURN_OMIT_ARGS;
+    } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
+        int is_success = 0;
+        control_stack_pop_data(is_success, int)
+        RETURN_BOOL(is_success);
+    }
+    RETURN_BOOL(1);
 }
 
+ScrFuncArg block_else_if(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 1) RETURN_BOOL(1);
+    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(1);
+    if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
+        if (argc < 3 || func_arg_to_bool(argv[1])) {
+            exec->skip_block = true;
+            control_stack_push_data((int)1, int)
+        } else {
+            int condition = func_arg_to_bool(argv[2]);
+            if (!condition) exec->skip_block = true;
+            control_stack_push_data(condition, int)
+        }
+        RETURN_OMIT_ARGS;
+    } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
+        int is_success = 0;
+        control_stack_pop_data(is_success, int)
+        RETURN_BOOL(is_success);
+    }
+    RETURN_BOOL(1);
+}
+
+
+ScrFuncArg block_else(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 1) RETURN_BOOL(0);
+    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(0);
+    if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
+        if (argc < 2 || func_arg_to_bool(argv[1])) {
+            exec->skip_block = true;
+            control_stack_push_data((int)0, int)
+        } else {
+            control_stack_push_data((int)1, int)
+        }
+        RETURN_OMIT_ARGS;
+    } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
+        int is_success = 0;
+        control_stack_pop_data(is_success, int)
+        RETURN_BOOL(is_success);
+    }
+    RETURN_BOOL(1);
+}
+
+
+// Visualization of control stack (stack grows downwards):
+// - loop block index
+// - cycles left to loop
+// - 1 <- indicator for end block to do looping
+//
+// If the loop should not loop then the stack will look like this:
+// - 0 <- indicator for end block that it should stop immediately
 ScrFuncArg block_repeat(ScrExec* exec, int argc, ScrFuncArg* argv) {
-    if (argc < 2) RETURN_NOTHING;
-    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_NOTHING;
+    if (argc < 1) RETURN_OMIT_ARGS;
+    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_OMIT_ARGS;
 
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
         int cycles = func_arg_to_int(argv[1]);
         if (cycles <= 0) {
             exec->skip_block = true;
-            RETURN_NOTHING;
+            control_stack_push_data((int)0, int) // This indicates the end block that it should NOT loop
+            RETURN_OMIT_ARGS;
         }
         control_stack_push_data(exec->running_ind, size_t)
         control_stack_push_data(cycles - 1, int)
+        control_stack_push_data((int)1, int) // This indicates the end block that it should loop
     } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
+        int should_loop = 0;
+        control_stack_pop_data(should_loop, int)
+        if (!should_loop) RETURN_OMIT_ARGS;
+
         int left = -1;
         control_stack_pop_data(left, int)
         if (left <= 0) {
             size_t bin;
             control_stack_pop_data(bin, size_t)
-            RETURN_NOTHING;
+            (void) bin; // Cleanup stack
+            RETURN_OMIT_ARGS;
         }
 
         control_stack_pop_data(exec->running_ind, size_t)
         control_stack_push_data(exec->running_ind, size_t)
         control_stack_push_data(left - 1, int)
+        control_stack_push_data((int)1, int)
     }
 
-    RETURN_NOTHING;
+    RETURN_OMIT_ARGS;
 }
 
 ScrFuncArg block_print(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -1853,12 +1922,12 @@ void setup(void) {
     block_add_argument(&vm, sc_if, "", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_if, ", then");
 
-    int sc_else_if = block_register(&vm, "else_if", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, NULL);
+    int sc_else_if = block_register(&vm, "else_if", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_else_if);
     block_add_text(&vm, sc_else_if, "Else if");
     block_add_argument(&vm, sc_else_if, "", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_else_if, ", then");
 
-    int sc_else = block_register(&vm, "else", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, NULL);
+    int sc_else = block_register(&vm, "else", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_else);
     block_add_text(&vm, sc_else, "Else");
 
     int sc_end = block_register(&vm, "end", BLOCKTYPE_END, (ScrColor) { 0x77, 0x77, 0x77, 0xff }, NULL);
@@ -2174,6 +2243,18 @@ int main(void) {
                     block_code.min_pos.x, block_code.min_pos.y, block_code.max_pos.x, block_code.max_pos.y,
                     sidebar.scroll_amount, sidebar.max_y
                 ), 
+                (Vector2){ 
+                    conf.side_bar_size + 5, 
+                    conf.font_size * 2.2 + 5
+                }, 
+                conf.font_size * 0.5,
+                0.0, 
+                GRAY
+            );
+#else
+            DrawTextEx(
+                font_cond, 
+                TextFormat("FPS: %d\nFrame time: %.3f", GetFPS(), GetFrameTime()), 
                 (Vector2){ 
                     conf.side_bar_size + 5, 
                     conf.font_size * 2.2 + 5
