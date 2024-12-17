@@ -1,6 +1,9 @@
 // TODO:
 // - Better collision resolution
 // - Swap blocks inside arguments?
+// - Hat blocks
+// - User input
+// - Move print output to window
 
 #define LICENSE_URL "https://www.gnu.org/licenses/gpl-3.0.html"
 
@@ -1395,6 +1398,7 @@ bool handle_mouse_click(void) {
             // Attach to argument
             printf("Attach to argument\n");
             if (vector_size(mouse_blockchain.blocks) > 1) return true;
+            if (vm.blockdefs[mouse_blockchain.blocks[0].id].type == BLOCKTYPE_CONTROLEND) return true;
             if (hover_info.argument->type != ARGUMENT_TEXT) return true;
             mouse_blockchain.blocks[0].parent = hover_info.block;
             argument_set_block(hover_info.argument, mouse_blockchain.blocks[0]);
@@ -1761,24 +1765,18 @@ ScrFuncArg block_else_if(ScrExec* exec, int argc, ScrFuncArg* argv) {
 
 
 ScrFuncArg block_else(ScrExec* exec, int argc, ScrFuncArg* argv) {
-    if (argc < 1) RETURN_BOOL(0);
-    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(0);
+    if (argc < 1) RETURN_BOOL(1);
+    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(1);
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
         if (argc < 2 || func_arg_to_bool(argv[1])) {
             exec->skip_block = true;
-            control_stack_push_data((int)0, int)
-        } else {
-            control_stack_push_data((int)1, int)
         }
         RETURN_OMIT_ARGS;
     } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
-        int is_success = 0;
-        control_stack_pop_data(is_success, int)
-        RETURN_BOOL(is_success);
+        RETURN_BOOL(1);
     }
     RETURN_BOOL(1);
 }
-
 
 // Visualization of control stack (stack grows downwards):
 // - loop block index
@@ -1804,7 +1802,7 @@ ScrFuncArg block_repeat(ScrExec* exec, int argc, ScrFuncArg* argv) {
     } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
         int should_loop = 0;
         control_stack_pop_data(should_loop, int)
-        if (!should_loop) RETURN_OMIT_ARGS;
+        if (!should_loop) RETURN_BOOL(0);
 
         int left = -1;
         control_stack_pop_data(left, int)
@@ -1812,7 +1810,7 @@ ScrFuncArg block_repeat(ScrExec* exec, int argc, ScrFuncArg* argv) {
             size_t bin;
             control_stack_pop_data(bin, size_t)
             (void) bin; // Cleanup stack
-            RETURN_OMIT_ARGS;
+            RETURN_BOOL(1);
         }
 
         control_stack_pop_data(exec->running_ind, size_t)
@@ -1822,6 +1820,33 @@ ScrFuncArg block_repeat(ScrExec* exec, int argc, ScrFuncArg* argv) {
     }
 
     RETURN_OMIT_ARGS;
+}
+
+ScrFuncArg block_declare_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 2) RETURN_NOTHING;
+    if (argv[0].type != FUNC_ARG_STATIC_STR) RETURN_NOTHING;
+
+    variable_stack_push_var(exec, argv[0].data.str_arg, argv[1]);
+    return argv[1];
+}
+
+ScrFuncArg block_get_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 1) RETURN_NOTHING;
+    if (argv[0].type != FUNC_ARG_STATIC_STR) RETURN_NOTHING;
+
+    ScrVariable* var = variable_stack_get_variable(exec, argv[0].data.str_arg);
+    if (!var) RETURN_NOTHING;
+    return var->value;
+}
+
+ScrFuncArg block_set_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 2) RETURN_NOTHING;
+    if (argv[0].type != FUNC_ARG_STATIC_STR) RETURN_NOTHING;
+
+    ScrVariable* var = variable_stack_get_variable(exec, argv[0].data.str_arg);
+    if (!var) RETURN_NOTHING;
+    var->value = argv[1];
+    return var->value;
 }
 
 ScrFuncArg block_print(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -1943,14 +1968,21 @@ void setup(void) {
     block_add_text(&vm, sc_less, "<");
     block_add_argument(&vm, sc_less, "11", BLOCKCONSTR_UNLIMITED);
 
-    int sc_decl_var = block_register(&vm, "decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, NULL);
+    int sc_decl_var = block_register(&vm, "decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, block_declare_var);
     block_add_text(&vm, sc_decl_var, "Declare");
     block_add_argument(&vm, sc_decl_var, "my variable", BLOCKCONSTR_STRING);
     block_add_text(&vm, sc_decl_var, "=");
     block_add_argument(&vm, sc_decl_var, "", BLOCKCONSTR_UNLIMITED);
 
-    int sc_get_var = block_register(&vm, "get_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, NULL);
+    int sc_get_var = block_register(&vm, "get_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, block_get_var);
+    block_add_text(&vm, sc_get_var, "Get");
     block_add_argument(&vm, sc_get_var, "my variable", BLOCKCONSTR_STRING);
+
+    int sc_set_var = block_register(&vm, "set_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, block_set_var);
+    block_add_text(&vm, sc_set_var, "Set");
+    block_add_argument(&vm, sc_set_var, "my variable", BLOCKCONSTR_STRING);
+    block_add_text(&vm, sc_set_var, "=");
+    block_add_argument(&vm, sc_set_var, "", BLOCKCONSTR_UNLIMITED);
 
     mouse_blockchain = blockchain_new();
     draw_stack = vector_create();

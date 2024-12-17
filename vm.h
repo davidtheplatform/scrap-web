@@ -6,6 +6,7 @@
 
 #define VM_ARG_STACK_SIZE 1024
 #define VM_CONTROL_STACK_SIZE 1024
+#define VM_VARIABLE_STACK_SIZE 1024
 
 typedef struct {
     float x, y;
@@ -155,6 +156,12 @@ typedef ScrMeasurement (*ScrTextMeasureFunc)(char* text);
 typedef ScrMeasurement (*ScrTextArgMeasureFunc)(char* text);
 typedef ScrMeasurement (*ScrImageMeasureFunc)(ScrImage image);
 
+typedef struct {
+    const char* name;
+    ScrFuncArg value;
+    int layer;
+} ScrVariable;
+
 typedef struct ScrVm ScrVm;
 
 struct ScrExec {
@@ -163,11 +170,14 @@ struct ScrExec {
     size_t arg_stack_len;
     unsigned char control_stack[VM_CONTROL_STACK_SIZE];
     size_t control_stack_len;
+    ScrVariable variable_stack[VM_VARIABLE_STACK_SIZE];
+    size_t variable_stack_len;
     pthread_t thread;
     atomic_bool is_running;
     bool skip_block;
     size_t running_chain_ind;
     size_t running_ind;
+    int layer;
     ScrVm* vm;
 };
 
@@ -233,6 +243,9 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain);
 bool exec_start(ScrVm* vm, ScrExec* exec);
 bool exec_stop(ScrVm* vm, ScrExec* exec);
 bool exec_try_join(ScrVm* vm, ScrExec* exec, size_t* return_code);
+
+bool variable_stack_push_var(ScrExec* exec, const char* name, ScrFuncArg arg);
+ScrVariable* variable_stack_get_variable(ScrExec* exec, const char* name);
 
 int func_arg_to_int(ScrFuncArg arg);
 
@@ -565,6 +578,7 @@ void block_update_parent_links(ScrBlock* block);
 void blockchain_update_parent_links(ScrBlockChain* chain);
 bool arg_stack_push_arg(ScrExec* exec, ScrFuncArg arg);
 bool arg_stack_undo_args(ScrExec* exec, size_t count);
+void variable_stack_pop_layer(ScrExec* exec);
 
 ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure) {
     ScrVm vm = (ScrVm) {
@@ -591,6 +605,7 @@ ScrExec exec_new(ScrVm* vm) {
         .arg_stack_len = 0,
         .control_stack_len = 0,
         .running_ind = 0,
+        .layer = 0,
         .thread = (pthread_t) {0},
         .is_running = false,
         .skip_block = false,
@@ -672,9 +687,9 @@ bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_retu
 
 #define BLOCKDEF vm->blockdefs[chain.blocks[exec->running_ind].id]
 bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
-    int layer = 0;
     int skip_layer = -1;
     exec->skip_block = false;
+    exec->layer = 0;
     ScrFuncArg block_return;
     for (exec->running_ind = 0; exec->running_ind < vector_size(chain.blocks); exec->running_ind++) {
         pthread_testcancel();
@@ -683,13 +698,14 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
         bool omit_args = false;
 
         if (BLOCKDEF.type == BLOCKTYPE_END || BLOCKDEF.type == BLOCKTYPE_CONTROLEND) {
-            if (BLOCKDEF.type == BLOCKTYPE_CONTROLEND && layer == 0) continue;
-            layer--;
+            if (BLOCKDEF.type == BLOCKTYPE_CONTROLEND && exec->layer == 0) continue;
+            variable_stack_pop_layer(exec);
+            exec->layer--;
             control_stack_pop_data(block_ind, size_t)
             control_stack_pop_data(block_return, ScrFuncArg)
             if (block_return.type == FUNC_ARG_OMIT_ARGS) omit_args = true;
             from_end = true;
-            if (exec->skip_block && skip_layer == layer) {
+            if (exec->skip_block && skip_layer == exec->layer) {
                 exec->skip_block = false;
                 skip_layer = -1;
             }
@@ -704,8 +720,8 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
         if (BLOCKDEF.type == BLOCKTYPE_CONTROL || BLOCKDEF.type == BLOCKTYPE_CONTROLEND) {
             control_stack_push_data(block_return, ScrFuncArg)
             control_stack_push_data(exec->running_ind, size_t)
-            if (exec->skip_block && skip_layer == -1) skip_layer = layer;
-            layer++;
+            if (exec->skip_block && skip_layer == -1) skip_layer = exec->layer;
+            exec->layer++;
         } 
     }
     return true;
@@ -760,6 +776,30 @@ bool exec_try_join(ScrVm* vm, ScrExec* exec, size_t* return_code) {
     vm->is_running = false;
     *return_code = (size_t)return_val;
     return true;
+}
+
+bool variable_stack_push_var(ScrExec* exec, const char* name, ScrFuncArg arg) {
+    if (exec->variable_stack_len >= VM_VARIABLE_STACK_SIZE) return false;
+    if (*name == 0) return false;
+    ScrVariable var;
+    var.name = name;
+    var.value = arg;
+    var.layer = exec->layer;
+    exec->variable_stack[exec->variable_stack_len++] = var;
+    return true;
+}
+
+void variable_stack_pop_layer(ScrExec* exec) {
+    size_t count = 0;
+    for (int i = exec->variable_stack_len - 1; i >= 0 && exec->variable_stack[i].layer == exec->layer; i--) count++;
+    exec->variable_stack_len -= count;
+}
+
+ScrVariable* variable_stack_get_variable(ScrExec* exec, const char* name) {
+    for (int i = exec->variable_stack_len - 1; i >= 0; i--) {
+        if (!strcmp(exec->variable_stack[i].name, name)) return &exec->variable_stack[i];
+    }
+    return NULL;
 }
 
 bool arg_stack_push_arg(ScrExec* exec, ScrFuncArg arg) {
@@ -863,6 +903,7 @@ ScrBlock block_copy(ScrBlock* block, ScrBlock* parent) {
         arg->ms = block->arguments[i].ms;
         arg->type = block->arguments[i].type;
         switch (block->arguments[i].type) {
+        case ARGUMENT_CONST_STRING:
         case ARGUMENT_TEXT:
             arg->data.text = vector_copy(block->arguments[i].data.text);
             break;
