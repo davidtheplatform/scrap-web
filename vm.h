@@ -9,6 +9,12 @@
 #define VM_VARIABLE_STACK_SIZE 1024
 
 typedef struct {
+    char* str;
+    size_t len;
+    size_t cap;
+} ScrString;
+
+typedef struct {
     float x, y;
 } ScrVec;
 
@@ -98,7 +104,9 @@ typedef enum {
 
 typedef enum {
     FUNC_ARG_INT,
-    FUNC_ARG_STATIC_STR,
+    FUNC_ARG_STATIC_STR, // String is borrowed from static or immutable memory
+    FUNC_ARG_MANAGED_STR, // String that was allocated by argument temporarily and will be cleared by vm automatically
+    FUNC_ARG_UNMANAGED_STR, // String that was previously allocated in chain and it's owned by different entity (e.g. variable)
     FUNC_ARG_BOOL,
     FUNC_ARG_CONTROL,
     FUNC_ARG_NOTHING,
@@ -242,6 +250,7 @@ void exec_remove_chain(ScrVm* vm, ScrExec* exec, size_t ind);
 bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain);
 bool exec_start(ScrVm* vm, ScrExec* exec);
 bool exec_stop(ScrVm* vm, ScrExec* exec);
+bool exec_join(ScrVm* vm, ScrExec* exec, size_t* return_code);
 bool exec_try_join(ScrVm* vm, ScrExec* exec, size_t* return_code);
 
 bool variable_stack_push_var(ScrExec* exec, const char* name, ScrFuncArg arg);
@@ -579,6 +588,7 @@ void blockchain_update_parent_links(ScrBlockChain* chain);
 bool arg_stack_push_arg(ScrExec* exec, ScrFuncArg arg);
 bool arg_stack_undo_args(ScrExec* exec, size_t count);
 void variable_stack_pop_layer(ScrExec* exec);
+void variable_stack_cleanup(ScrExec* exec);
 
 ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure) {
     ScrVm vm = (ScrVm) {
@@ -696,6 +706,7 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
         size_t block_ind = exec->running_ind;
         bool from_end = false;
         bool omit_args = false;
+        bool return_used = false;
 
         if (BLOCKDEF.type == BLOCKTYPE_END || BLOCKDEF.type == BLOCKTYPE_CONTROLEND) {
             if (BLOCKDEF.type == BLOCKTYPE_CONTROLEND && exec->layer == 0) continue;
@@ -704,6 +715,7 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
             control_stack_pop_data(block_ind, size_t)
             control_stack_pop_data(block_return, ScrFuncArg)
             if (block_return.type == FUNC_ARG_OMIT_ARGS) omit_args = true;
+            if (block_return.type == FUNC_ARG_MANAGED_STR) free((char*)block_return.data.str_arg);
             from_end = true;
             if (exec->skip_block && skip_layer == exec->layer) {
                 exec->skip_block = false;
@@ -716,13 +728,18 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
         if (BLOCKDEF.type == BLOCKTYPE_CONTROLEND && block_ind != exec->running_ind) {
             from_end = false;
             if (!exec_block(vm, exec, chain.blocks[exec->running_ind], &block_return, from_end, false, block_return)) return false;
+            return_used = true;
         }
         if (BLOCKDEF.type == BLOCKTYPE_CONTROL || BLOCKDEF.type == BLOCKTYPE_CONTROLEND) {
             control_stack_push_data(block_return, ScrFuncArg)
             control_stack_push_data(exec->running_ind, size_t)
             if (exec->skip_block && skip_layer == -1) skip_layer = exec->layer;
+            return_used = true;
             exec->layer++;
         } 
+        if (!return_used && block_return.type == FUNC_ARG_MANAGED_STR) {
+            free((char*)block_return.data.str_arg);
+        }
     }
     return true;
 }
@@ -730,6 +747,8 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
 
 void exec_thread_exit(void* thread_exec) {
     ScrExec* exec = thread_exec;
+    variable_stack_cleanup(exec);
+    arg_stack_undo_args(exec, exec->arg_stack_len);
     exec->is_running = false;
 }
 
@@ -767,6 +786,17 @@ bool exec_stop(ScrVm* vm, ScrExec* exec) {
     return true;
 }
 
+bool exec_join(ScrVm* vm, ScrExec* exec, size_t* return_code) {
+    if (!vm->is_running) return false;
+    if (!exec->is_running) return false;
+    
+    void* return_val;
+    if (pthread_join(exec->thread, &return_val)) return false;
+    vm->is_running = false;
+    *return_code = (size_t)return_val;
+    return true;
+}
+
 bool exec_try_join(ScrVm* vm, ScrExec* exec, size_t* return_code) {
     if (!vm->is_running) return false;
     if (exec->is_running) return false;
@@ -791,8 +821,24 @@ bool variable_stack_push_var(ScrExec* exec, const char* name, ScrFuncArg arg) {
 
 void variable_stack_pop_layer(ScrExec* exec) {
     size_t count = 0;
-    for (int i = exec->variable_stack_len - 1; i >= 0 && exec->variable_stack[i].layer == exec->layer; i--) count++;
+    for (int i = exec->variable_stack_len - 1; i >= 0 && exec->variable_stack[i].layer == exec->layer; i--) {
+        ScrFuncArg arg = exec->variable_stack[i].value;
+        if (arg.type == FUNC_ARG_UNMANAGED_STR) {
+            free((char*)arg.data.str_arg);
+        }
+        count++;
+    }
     exec->variable_stack_len -= count;
+}
+
+void variable_stack_cleanup(ScrExec* exec) {
+    for (size_t i = 0; i < exec->variable_stack_len; i++) {
+        ScrFuncArg arg = exec->variable_stack[i].value;
+        if (arg.type == FUNC_ARG_UNMANAGED_STR) {
+            free((char*)arg.data.str_arg);
+        }
+    }
+    exec->variable_stack_len = 0;
 }
 
 ScrVariable* variable_stack_get_variable(ScrExec* exec, const char* name) {
@@ -810,6 +856,11 @@ bool arg_stack_push_arg(ScrExec* exec, ScrFuncArg arg) {
 
 bool arg_stack_undo_args(ScrExec* exec, size_t count) {
     if (count > exec->arg_stack_len) return false;
+    for (size_t i = 0; i < count; i++) {
+        ScrFuncArg arg = exec->arg_stack[exec->arg_stack_len - 1 - i];
+        if (arg.type != FUNC_ARG_MANAGED_STR) continue;
+        free((char*)arg.data.str_arg);
+    }
     exec->arg_stack_len -= count;
     return true;
 }
@@ -819,7 +870,10 @@ int func_arg_to_int(ScrFuncArg arg) {
     case FUNC_ARG_BOOL:
     case FUNC_ARG_INT:
         return arg.data.int_arg;
-    case FUNC_ARG_STATIC_STR: return atoi(arg.data.str_arg);
+    case FUNC_ARG_MANAGED_STR:
+    case FUNC_ARG_UNMANAGED_STR:
+    case FUNC_ARG_STATIC_STR:
+        return atoi(arg.data.str_arg);
     default: return 0;
     }
 }
@@ -829,9 +883,35 @@ int func_arg_to_bool(ScrFuncArg arg) {
     case FUNC_ARG_BOOL:
     case FUNC_ARG_INT:
         return arg.data.int_arg != 0;
-    case FUNC_ARG_STATIC_STR: return *arg.data.str_arg != 0;
+    case FUNC_ARG_MANAGED_STR:
+    case FUNC_ARG_UNMANAGED_STR:
+    case FUNC_ARG_STATIC_STR:
+        return *arg.data.str_arg != 0;
     default: return 0;
     }
+}
+
+ScrString string_new(size_t cap) {
+    ScrString string;
+    string.str = malloc((cap + 1)* sizeof(char));
+    *string.str = 0;
+    string.len = 0;
+    string.cap = cap;
+    return string;
+}
+
+void string_add(ScrString* string, const char* other) {
+    size_t new_len = string->len + strlen(other);
+    if (new_len > string->cap) {
+        string->str = realloc(string->str, (new_len + 1) * sizeof(char));
+        string->cap = new_len;
+    }
+    strcat(string->str, other);
+    string->len = new_len;
+}
+
+void string_free(ScrString string) {
+    free(string.str);
 }
 
 ScrBlock block_new(ScrVm* vm, size_t id) {
