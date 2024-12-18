@@ -461,6 +461,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
     ScrBlockdef blockdef = vm.blockdefs[block->id];
     Color color = as_rl_color(blockdef.color);
     Color outline_color = force_collision ? YELLOW : ColorBrightness(color, collision ? 0.5 : -0.2);
+    Color block_color = ColorBrightness(color, collision ? 0.3 : 0.0);
 
     Vector2 cursor = position;
 
@@ -470,9 +471,34 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
     block_size.width = block->ms.size.x;
     block_size.height = block->ms.size.y;
 
-    DrawRectangleRec(block_size, ColorBrightness(color, collision ? 0.3 : 0.0));
+    if (blockdef.type == BLOCKTYPE_HAT) {
+        DrawRectangle(block_size.x, block_size.y, block_size.width - conf.font_size / 4.0, block_size.height, block_color);
+        DrawRectangle(block_size.x, block_size.y + conf.font_size / 4.0, block_size.width, block_size.height - conf.font_size / 4.0, block_color);
+        DrawTriangle(
+            (Vector2) { block_size.x + block_size.width - conf.font_size / 4.0 - 1, block_size.y }, 
+            (Vector2) { block_size.x + block_size.width - conf.font_size / 4.0 - 1, block_size.y + conf.font_size / 4.0 }, 
+            (Vector2) { block_size.x + block_size.width, block_size.y + conf.font_size / 4.0 }, 
+            block_color
+        );
+    } else {
+        DrawRectangleRec(block_size, block_color);
+    }
+
     if (force_outline || (blockdef.type != BLOCKTYPE_CONTROL && blockdef.type != BLOCKTYPE_CONTROLEND)) {
-        DrawRectangleLinesEx(block_size, BLOCK_OUTLINE_SIZE, outline_color);
+        if (blockdef.type == BLOCKTYPE_HAT) {
+            DrawRectangle(block_size.x, block_size.y, block_size.width - conf.font_size / 4.0, BLOCK_OUTLINE_SIZE, outline_color);
+            DrawRectangle(block_size.x, block_size.y, BLOCK_OUTLINE_SIZE, block_size.height, outline_color);
+            DrawRectangle(block_size.x, block_size.y + block_size.height - BLOCK_OUTLINE_SIZE, block_size.width, BLOCK_OUTLINE_SIZE, outline_color);
+            DrawRectangle(block_size.x + block_size.width - BLOCK_OUTLINE_SIZE, block_size.y + conf.font_size / 4.0, BLOCK_OUTLINE_SIZE, block_size.height - conf.font_size / 4.0, outline_color);
+            DrawRectanglePro((Rectangle) {
+                block_size.x + block_size.width - conf.font_size / 4.0,
+                block_size.y,
+                sqrtf((conf.font_size / 4.0 * conf.font_size / 4.0) * 2),
+                BLOCK_OUTLINE_SIZE,
+            }, (Vector2) {0}, 45.0, outline_color);
+        } else {
+            DrawRectangleLinesEx(block_size, BLOCK_OUTLINE_SIZE, outline_color);
+        }
     }
     cursor.x += BLOCK_PADDING;
 
@@ -905,7 +931,7 @@ void draw_tab_buttons(int sw) {
     Vector2 run_pos_copy = run_pos;
     draw_button(&run_pos_copy, NULL, 1.0, 0.5, 0, false, COLLISION_AT(TOPBAR_RUN_BUTTON, 0));
     draw_button(&run_pos_copy, NULL, 1.0, 0.5, 0, vm.is_running, COLLISION_AT(TOPBAR_RUN_BUTTON, 1));
-    DrawTextureEx(stop_tex, run_pos, 0, (float)conf.font_size / (float)run_tex.width, WHITE);
+    DrawTextureEx(stop_tex, run_pos, 0, (float)conf.font_size / (float)stop_tex.width, WHITE);
     run_pos.x += conf.font_size;
     DrawTextureEx(run_tex, run_pos, 0, (float)conf.font_size / (float)run_tex.width, vm.is_running ? BLACK : WHITE);
 }
@@ -1398,6 +1424,7 @@ bool handle_mouse_click(void) {
             printf("Attach to argument\n");
             if (vector_size(mouse_blockchain.blocks) > 1) return true;
             if (vm.blockdefs[mouse_blockchain.blocks[0].id].type == BLOCKTYPE_CONTROLEND) return true;
+            if (vm.blockdefs[mouse_blockchain.blocks[0].id].type == BLOCKTYPE_HAT) return true;
             if (hover_info.argument->type != ARGUMENT_TEXT) return true;
             mouse_blockchain.blocks[0].parent = hover_info.block;
             argument_set_block(hover_info.argument, mouse_blockchain.blocks[0]);
@@ -1410,6 +1437,7 @@ bool handle_mouse_click(void) {
         ) {
             // Attach block
             printf("Attach block\n");
+            if (vm.blockdefs[mouse_blockchain.blocks[0].id].type == BLOCKTYPE_HAT) return true;
             blockchain_insert(hover_info.blockchain, &mouse_blockchain, hover_info.blockchain_index);
             // Update block link to make valgrind happy
             hover_info.block = &hover_info.blockchain->blocks[hover_info.blockchain_index];
@@ -2101,7 +2129,7 @@ void setup(void) {
 
     vm = vm_new(measure_text, measure_argument, measure_image);
 
-    int on_start = block_register(&vm, "on_start", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xFF }, block_noop);
+    int on_start = block_register(&vm, "on_start", BLOCKTYPE_HAT, (ScrColor) { 0xff, 0x77, 0x00, 0xFF }, block_noop);
     block_add_text(&vm, on_start, "When");
     block_add_image(&vm, on_start, (ScrImage) { .image_ptr = &run_tex });
     block_add_text(&vm, on_start, "clicked");
