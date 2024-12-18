@@ -1,8 +1,6 @@
 // TODO:
-// - Better collision resolution
 // - Swap blocks inside arguments?
-// - Hat blocks
-// - Move print output to window
+// - Add more basic blocks
 
 #define LICENSE_URL "https://www.gnu.org/licenses/gpl-3.0.html"
 
@@ -15,6 +13,7 @@
 #include <assert.h>
 #include <string.h>
 #include <math.h>
+#include <semaphore.h>
 
 #include "raylib.h"
 #define RAYLIB_NUKLEAR_IMPLEMENTATION
@@ -28,19 +27,21 @@
 #define LERP(min, max, t) (((max) - (min)) * (t) + (min))
 #define UNLERP(min, max, v) (((float)(v) - (float)(min)) / ((float)(max) - (float)(min)))
 
+#define TERM_INPUT_BUF_SIZE 256
 #define ACTION_BAR_MAX_SIZE 128
 #define FONT_PATH_MAX_SIZE 256
 #define FONT_SYMBOLS_MAX_SIZE 1024
 #define CONFIG_PATH "config.txt"
+#define DATA_PATH "data/"
 
 #define BLOCK_TEXT_SIZE (conf.font_size * 0.6)
-#define DATA_PATH "data/"
 #define BLOCK_PADDING (5.0 * (float)conf.font_size / 32.0)
 #define BLOCK_OUTLINE_SIZE (2.0 * (float)conf.font_size / 32.0)
 #define BLOCK_STRING_PADDING (10.0 * (float)conf.font_size / 32.0)
 #define BLOCK_CONTROL_INDENT (16.0 * (float)conf.font_size / 32.0)
 #define SIDE_BAR_PADDING (10.0 * (float)conf.font_size / 32.0)
 #define DROP_TEX_WIDTH ((float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)drop_tex.height * (float)drop_tex.width)
+#define TERM_CHAR_SIZE (conf.font_size * 0.6)
 
 typedef struct {
     int font_size;
@@ -48,6 +49,7 @@ typedef struct {
     char font_symbols[FONT_SYMBOLS_MAX_SIZE];
     char font_path[FONT_PATH_MAX_SIZE];
     char font_bold_path[FONT_PATH_MAX_SIZE];
+    char font_mono_path[FONT_PATH_MAX_SIZE];
 } Config;
 
 typedef enum {
@@ -127,6 +129,19 @@ typedef struct {
     ScrBlock* block;
 } DrawStack;
 
+typedef struct {
+    Rectangle size;
+    int char_w, char_h;
+    int cursor_pos;
+    Vector2 char_size;
+    char (*buffer)[5];
+
+    sem_t input_sem;
+    char input_buf[TERM_INPUT_BUF_SIZE];
+    int buf_start;
+    int buf_end;
+} OutputWindow;
+
 char* top_bar_buttons_text[] = {
     "File",
     "Settings",
@@ -152,6 +167,7 @@ struct nk_image warn_tex_nuc;
 
 Font font_cond;
 Font font_eb;
+Font font_mono;
 struct nk_user_font* font_eb_nuc = NULL;
 struct nk_user_font* font_cond_nuc = NULL;
 
@@ -173,17 +189,11 @@ BlockCode block_code = {0};
 Dropdown dropdown = {0};
 ActionBar actionbar;
 NuklearGui gui = {0};
+OutputWindow out_win = {0};
 
 Vector2 camera_pos = {0};
 Vector2 camera_click_pos = {0};
 int blockchain_select_counter = -1;
-
-char* keys_list[] = {
-    "Space", "Enter",
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", 
-    "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", 
-    "U", "V", "W", "X", "Y", "Z",
-};
 
 const char* line_shader_vertex =
     "#version 330\n"
@@ -213,16 +223,13 @@ const char* line_shader_fragment =
     "    finalColor = vec4(fragColor.xyz, pow(diff, 2.0));\n"
     "}";
 
-char** keys_accessor(ScrBlock* block, size_t* list_len) {
-    (void)block;
-    *list_len = ARRLEN(keys_list);
-    return keys_list;
-}
-
 void save_config(Config* config);
 void apply_config(Config* dst, Config* src);
 void set_default_config(Config* config);
 void update_measurements(ScrVm* vm, ScrBlock* block);
+void term_input_put_char(char ch);
+int term_print_str(const char* str);
+void term_clear(void);
 
 ScrVec as_scr_vec(Vector2 vec) {
     return (ScrVec) { vec.x, vec.y };
@@ -1085,25 +1092,29 @@ void draw_sidebar(void) {
     EndScissorMode();
 }
 
-void draw_output_box(void) {
-    Vector2 screen_size = (Vector2) { GetScreenWidth() - 20, GetScreenHeight() - conf.font_size * 2.2 - 20 };
-    Rectangle rect = (Rectangle) { 0, 0, 16, 9 };
-    if (rect.width / rect.height > screen_size.x / screen_size.y) {
-        rect.height *= screen_size.x / rect.width;
-        rect.width  *= screen_size.x / rect.width;
-        rect.y = screen_size.y / 2 - rect.height / 2;
-    } else {
-        rect.width  *= screen_size.y / rect.height;
-        rect.height *= screen_size.y / rect.height;
-        rect.x = screen_size.x / 2 - rect.width / 2;
-    }
-    rect.x += 10;
-    rect.y += conf.font_size * 2.2 + 10;
-
-    DrawRectangleRec(rect, BLACK);
+void draw_term(void) {
+    DrawRectangleRec(out_win.size, BLACK);
     BeginShaderMode(line_shader);
-    DrawRectangleLinesEx(rect, 2.0, (Color) { 0x60, 0x60, 0x60, 0xff });
+    DrawRectangleLinesEx(out_win.size, 2.0, (Color) { 0x60, 0x60, 0x60, 0xff });
     EndShaderMode();
+
+    if (!out_win.buffer) return;
+    Vector2 pos = (Vector2) { out_win.size.x, out_win.size.y };
+    for (int y = 0; y < out_win.char_h; y++) {
+        pos.x = out_win.size.x;
+        for (int x = 0; x < out_win.char_w; x++) {
+            DrawTextEx(font_mono, out_win.buffer[x + y*out_win.char_w], pos, TERM_CHAR_SIZE, 0.0, WHITE);
+            pos.x += out_win.char_size.x;
+        }
+        pos.y += TERM_CHAR_SIZE;
+    }
+
+    if (fmod(GetTime(), 1.0) > 0.5) return;
+    Vector2 cursor_pos = (Vector2) {
+        out_win.size.x + (out_win.cursor_pos % out_win.char_w) * out_win.char_size.x,
+        out_win.size.y + (out_win.cursor_pos / out_win.char_w) * TERM_CHAR_SIZE,
+    };
+    DrawRectangle(cursor_pos.x, cursor_pos.y, BLOCK_OUTLINE_SIZE, TERM_CHAR_SIZE, WHITE);
 }
 
 // https://easings.net/#easeOutExpo
@@ -1233,6 +1244,12 @@ void handle_gui(void) {
             nk_edit_string_zero_terminated(gui.ctx, NK_EDIT_FIELD, gui_conf.font_bold_path, FONT_PATH_MAX_SIZE, nk_filter_default);
             nk_spacer(gui.ctx);
 
+            nk_spacer(gui.ctx);
+            nk_label(gui.ctx, "Monospaced font path", NK_TEXT_RIGHT);
+            gui_restart_warning();
+            nk_edit_string_zero_terminated(gui.ctx, NK_EDIT_FIELD, gui_conf.font_mono_path, FONT_PATH_MAX_SIZE, nk_filter_default);
+            nk_spacer(gui.ctx);
+
             nk_layout_row_template_begin(gui.ctx, conf.font_size);
             nk_layout_row_template_push_dynamic(gui.ctx);
             nk_layout_row_template_push_static(gui.ctx, conf.font_size * 3);
@@ -1340,10 +1357,19 @@ bool handle_mouse_click(void) {
             }
         } else if (hover_info.top_bars.type == TOPBAR_RUN_BUTTON) {
             if (hover_info.top_bars.ind == 1 && !vm.is_running) {
+                sem_destroy(&out_win.input_sem);
+                sem_init(&out_win.input_sem, 0, 0);
+                out_win.buf_start = 0;
+                out_win.buf_end = 0;
+                term_clear();
                 exec = exec_new(&vm);
                 exec_copy_code(&vm, &exec, editor_code);
                 if (exec_start(&vm, &exec)) {
                     actionbar_show("Started successfully!");
+                    if (current_tab != TAB_OUTPUT) {
+                        shader_time = 0.0;
+                        current_tab = TAB_OUTPUT;
+                    }
                 } else {
                     actionbar_show("Start failed!");
                 }
@@ -1479,6 +1505,26 @@ bool handle_mouse_click(void) {
 }
 
 void handle_key_press(void) {
+    if (current_tab == TAB_OUTPUT) {
+        if (!vm.is_running) return;
+        if (IsKeyPressed(KEY_ENTER)) {
+            term_input_put_char('\n');
+            term_print_str("\r\n");
+            return;
+        }
+
+        int char_val;
+        while ((char_val = GetCharPressed())) {
+            int utf_size = 0;
+            const char* utf_char = CodepointToUTF8(char_val, &utf_size);
+            for (int i = 0; i < utf_size; i++) {
+                term_input_put_char(utf_char[i]);
+            }
+            term_print_str(utf_char);
+        }
+        return;
+    }
+
     if (!hover_info.select_argument) {
         if (IsKeyPressed(KEY_SPACE) && vector_size(editor_code) > 0) {
             blockchain_select_counter++;
@@ -1601,6 +1647,97 @@ void check_block_collisions(void) {
     }
 }
 
+void term_input_put_char(char ch) {
+    out_win.input_buf[out_win.buf_end] = ch;
+    out_win.buf_end = (out_win.buf_end + 1) % TERM_INPUT_BUF_SIZE;
+    sem_post(&out_win.input_sem);
+}
+
+char term_input_get_char(void) {
+    sem_wait(&out_win.input_sem);
+    int out = out_win.input_buf[out_win.buf_start];
+    out_win.buf_start = (out_win.buf_start + 1) % TERM_INPUT_BUF_SIZE;
+    return out;
+}
+
+int leading_ones(unsigned char byte) {
+    int out = 0;
+    while (byte & 0x80) {
+        out++;
+        byte <<= 1;
+    }
+    return out;
+}
+
+int term_print_str(const char* str) {
+    const char* start = str;
+    while (*str) {
+        if (out_win.cursor_pos >= out_win.char_w * out_win.char_h) break;
+        if (*str == '\n') {
+            out_win.cursor_pos += out_win.char_w;
+            str++;
+            continue;
+        }
+        if (*str == '\r') {
+            out_win.cursor_pos -= out_win.cursor_pos % out_win.char_w;
+            str++;
+            continue;
+        }
+
+        int mb_size = leading_ones(*str);
+        if (mb_size == 0) mb_size = 1;
+        int i = 0;
+        for (; i < mb_size; i++) out_win.buffer[out_win.cursor_pos][i] = str[i];
+        out_win.buffer[out_win.cursor_pos][i] = 0;
+
+        str += mb_size;
+        out_win.cursor_pos++;
+    }
+
+    return str - start;
+}
+
+int term_print_int(int value) {
+    char converted[12];
+    snprintf(converted, 12, "%d", value);
+    return term_print_str(converted);
+}
+
+void term_clear(void) {
+    for (int i = 0; i < out_win.char_w * out_win.char_h; i++) strncpy(out_win.buffer[i], " ", ARRLEN(*out_win.buffer));
+    out_win.cursor_pos = 0;
+}
+
+void term_resize(void) {
+    Vector2 screen_size = (Vector2) { GetScreenWidth() - 20, GetScreenHeight() - conf.font_size * 2.2 - 20 };
+    out_win.size = (Rectangle) { 0, 0, 16, 9 };
+    if (out_win.size.width / out_win.size.height > screen_size.x / screen_size.y) {
+        out_win.size.height *= screen_size.x / out_win.size.width;
+        out_win.size.width  *= screen_size.x / out_win.size.width;
+        out_win.size.y = screen_size.y / 2 - out_win.size.height / 2;
+    } else {
+        out_win.size.width  *= screen_size.y / out_win.size.height;
+        out_win.size.height *= screen_size.y / out_win.size.height;
+        out_win.size.x = screen_size.x / 2 - out_win.size.width / 2;
+    }
+    out_win.size.x += 10;
+    out_win.size.y += conf.font_size * 2.2 + 10;
+
+    out_win.char_size = MeasureTextEx(font_mono, "A", TERM_CHAR_SIZE, 0.0);
+    Vector2 new_buffer_size = { out_win.size.width / out_win.char_size.x, out_win.size.height / out_win.char_size.y };
+
+    if (out_win.char_w != (int)new_buffer_size.x || out_win.char_h != (int)new_buffer_size.y) {
+        out_win.char_w = new_buffer_size.x;
+        out_win.char_h = new_buffer_size.y;
+
+        if (out_win.buffer) free(out_win.buffer);
+        int buf_size = out_win.char_w * out_win.char_h * sizeof(*out_win.buffer);
+        out_win.buffer = malloc(buf_size);
+        term_clear();
+        printf("Term resize: %d, %d\n", out_win.char_w, out_win.char_h);
+    }
+}
+
 void sanitize_block(ScrBlock* block) {
     for (vec_size_t i = 0; i < vector_size(block->arguments); i++) {
         if (block->arguments[i].type != ARGUMENT_BLOCK) continue;
@@ -1632,6 +1769,7 @@ void set_default_config(Config* config) {
     strncpy(config->font_symbols, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?", sizeof(config->font_symbols) - 1);
     strncpy(config->font_path, DATA_PATH "nk57-cond.otf", sizeof(config->font_path) - 1);
     strncpy(config->font_bold_path, DATA_PATH "nk57-eb.otf", sizeof(config->font_bold_path) - 1);
+    strncpy(config->font_mono_path, DATA_PATH "nk57.otf", sizeof(config->font_mono_path) - 1);
 }
 
 void apply_config(Config* dst, Config* src) {
@@ -1646,6 +1784,7 @@ void save_config(Config* config) {
     file_size += ARRLEN("FONT_SYMBOLS") + strlen(config->font_symbols) + 1;
     file_size += ARRLEN("FONT_PATH") + strlen(config->font_path) + 1;
     file_size += ARRLEN("FONT_BOLD_PATH") + strlen(config->font_bold_path) + 1;
+    file_size += ARRLEN("FONT_MONO_PATH") + strlen(config->font_mono_path) + 1;
     
     char* file_str = malloc(sizeof(char) * file_size);
     int cursor = 0;
@@ -1655,6 +1794,7 @@ void save_config(Config* config) {
     cursor += sprintf(file_str + cursor, "FONT_SYMBOLS=%s\n", config->font_symbols);
     cursor += sprintf(file_str + cursor, "FONT_PATH=%s\n", config->font_path);
     cursor += sprintf(file_str + cursor, "FONT_BOLD_PATH=%s\n", config->font_bold_path);
+    cursor += sprintf(file_str + cursor, "FONT_MONO_PATH=%s\n", config->font_mono_path);
 
     SaveFileText(CONFIG_PATH, file_str);
 
@@ -1699,6 +1839,8 @@ void load_config(Config* config) {
             strncpy(config->font_path, value, sizeof(config->font_path) - 1);
         } else if (!strcmp(field, "FONT_BOLD_PATH")) {
             strncpy(config->font_bold_path, value, sizeof(config->font_bold_path) - 1);
+        } else if (!strcmp(field, "FONT_MONO_PATH")) {
+            strncpy(config->font_mono_path, value, sizeof(config->font_mono_path) - 1);
         } else {
             printf("Unknown key: %s\n", field);
         }
@@ -1940,19 +2082,20 @@ ScrFuncArg block_print(ScrExec* exec, int argc, ScrFuncArg* argv) {
         int bytes_sent = 0;
         switch (argv[0].type) {
         case FUNC_ARG_INT:
-            bytes_sent = printf("%d\n", argv[0].data.int_arg) - 1;
+            bytes_sent = term_print_int(argv[0].data.int_arg);
             break;
         case FUNC_ARG_BOOL:
-            bytes_sent = printf("%s\n", argv[0].data.int_arg ? "true" : "false") - 1;
+            bytes_sent = term_print_str(argv[0].data.int_arg ? "true" : "false");
             break;
         case FUNC_ARG_UNMANAGED_STR:
         case FUNC_ARG_MANAGED_STR:
         case FUNC_ARG_STATIC_STR:
-            bytes_sent = printf("%s\n", argv[0].data.str_arg) - 1;
+            bytes_sent = term_print_str(argv[0].data.str_arg);
             break;
         default:
             break;
         }
+        term_print_str("\r\n");
         RETURN_INT(bytes_sent);
     }
     RETURN_INT(0);
@@ -1962,11 +2105,12 @@ ScrFuncArg block_input(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     (void) argv;
     (void) argc;
-    printf("Input int: ");
-    fflush(stdout);
+    term_print_str("Input int: ");
 
     char input[256];
-    fgets(input, 256, stdin);
+    char input_char = 0;
+    for (int i = 0; i < 256 && input_char != '\n'; i++) input[i] = (input_char = term_input_get_char());
+
     int val = atoi(input);
     RETURN_INT(val);
 }
@@ -2119,10 +2263,12 @@ void setup(void) {
     int *codepoints = LoadCodepoints(conf.font_symbols, &codepoints_count);
     font_cond = LoadFontEx(conf.font_path, conf.font_size, codepoints, codepoints_count);
     font_eb = LoadFontEx(conf.font_bold_path, conf.font_size, codepoints, codepoints_count);
+    font_mono = LoadFontEx(conf.font_mono_path, conf.font_size, codepoints, codepoints_count);
     UnloadCodepoints(codepoints);
 
     SetTextureFilter(font_cond.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(font_eb.texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(font_mono.texture, TEXTURE_FILTER_BILINEAR);
 
     line_shader = LoadShaderFromMemory(line_shader_vertex, line_shader_fragment);
     shader_time_loc = GetShaderLocation(line_shader, "time");
@@ -2136,11 +2282,6 @@ void setup(void) {
 
     int sc_input = block_register(&vm, "input", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xff }, block_input);
     block_add_text(&vm, sc_input, "Get int");
-
-    //int on_key_press = block_register(&vm, "on_key_press", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xFF }, NULL);
-    //block_add_text(&vm, on_key_press, "When");
-    //block_add_dropdown(&vm, on_key_press, DROPDOWN_SOURCE_LISTREF, &keys_accessor);
-    //block_add_text(&vm, on_key_press, "pressed");
 
     int sc_print = block_register(&vm, "print", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_print);
     block_add_text(&vm, sc_print, "Print");
@@ -2225,6 +2366,9 @@ void setup(void) {
     draw_stack = vector_create();
     editor_code = vector_create();
 
+    sem_init(&out_win.input_sem, 0, 0);
+    term_resize();
+
     sidebar.blocks = vector_create();
     for (vec_size_t i = 0; i < vector_size(vm.blockdefs); i++) {
         if (vm.blockdefs[i].hidden) continue;
@@ -2262,7 +2406,6 @@ void setup(void) {
     gui.ctx->style.slider.bar_hover = nk_rgb(0x30, 0x30, 0x30);
     gui.ctx->style.slider.bar_active = nk_rgb(0x30, 0x30, 0x30);
     gui.ctx->style.slider.bar_filled = nk_rgb(0xaa, 0xaa, 0xaa);
-
     gui.ctx->style.slider.cursor_normal.type = NK_STYLE_ITEM_COLOR;
     gui.ctx->style.slider.cursor_normal.data.color = nk_rgb(0xaa, 0xaa, 0xaa);
     gui.ctx->style.slider.cursor_hover.type = NK_STYLE_ITEM_COLOR;
@@ -2401,7 +2544,10 @@ int main(void) {
             handle_key_press();
         }
 
-        if (IsWindowResized()) shader_time = 0.0;
+        if (IsWindowResized()) {
+            shader_time = 0.0;
+            term_resize();
+        }
 
         sidebar.max_y = conf.font_size * 2.2 + SIDE_BAR_PADDING + (conf.font_size + SIDE_BAR_PADDING) * vector_size(sidebar.blocks);
         if (sidebar.max_y > GetScreenHeight()) {
@@ -2534,7 +2680,7 @@ int main(void) {
             );
 #endif
         } else if (current_tab == TAB_OUTPUT) {
-            draw_output_box();
+            draw_term();
         }
 
         if (gui.shown) {
@@ -2555,6 +2701,7 @@ int main(void) {
         exec_join(&vm, &exec, &bin);
         exec_free(&exec);
     }
+    sem_destroy(&out_win.input_sem);
     vector_free(draw_stack);
     UnloadNuklear(gui.ctx);
     blockchain_free(&mouse_blockchain);
