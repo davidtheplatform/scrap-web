@@ -265,6 +265,7 @@ void block_add_argument(ScrVm* vm, size_t block_id, char* defualt_data, ScrBlock
 void block_add_dropdown(ScrVm* vm, size_t block_id, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor);
 void block_add_image(ScrVm* vm, size_t block_id, ScrImage image);
 void block_unregister(ScrVm* vm, size_t block_id);
+void block_update_parent_links(ScrBlock* block);
 
 ScrBlockChain blockchain_new(void);
 ScrBlockChain blockchain_copy(ScrBlockChain* chain);
@@ -584,7 +585,6 @@ vector _vector_copy(vector vec, vec_type_t type_size)
 #include <assert.h>
 
 // Private functions
-void block_update_parent_links(ScrBlock* block);
 void blockchain_update_parent_links(ScrBlockChain* chain);
 bool arg_stack_push_arg(ScrExec* exec, ScrFuncArg arg);
 bool arg_stack_undo_args(ScrExec* exec, size_t count);
@@ -1118,9 +1118,7 @@ void blockchain_free(ScrBlockChain* chain) {
 }
 
 void argument_set_block(ScrBlockArgument* block_arg, ScrBlock block) {
-    assert(block_arg->type == ARGUMENT_TEXT);
-
-    vector_free(block_arg->data.text);
+    if (block_arg->type == ARGUMENT_TEXT || block_arg->type == ARGUMENT_CONST_STRING) vector_free(block_arg->data.text);
     block_arg->type = ARGUMENT_BLOCK;
     block_arg->data.block = block;
 

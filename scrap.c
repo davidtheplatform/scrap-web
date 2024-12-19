@@ -1,5 +1,4 @@
 // TODO:
-// - Swap blocks inside arguments
 // - Add more basic blocks
 // - Add license
 
@@ -48,6 +47,7 @@
 typedef struct {
     int font_size;
     int side_bar_size;
+    int fps_limit;
     char font_symbols[FONT_SYMBOLS_MAX_SIZE];
     char font_path[FONT_PATH_MAX_SIZE];
     char font_bold_path[FONT_PATH_MAX_SIZE];
@@ -1240,6 +1240,12 @@ void handle_gui(void) {
             nk_spacer(gui.ctx);
 
             nk_spacer(gui.ctx);
+            nk_label(gui.ctx, "FPS limit", NK_TEXT_RIGHT);
+            nk_spacer(gui.ctx);
+            nk_property_int(gui.ctx, "#", 10, &gui_conf.fps_limit, 240, 1, 1.0);
+            nk_spacer(gui.ctx);
+
+            nk_spacer(gui.ctx);
             nk_label(gui.ctx, "Font path", NK_TEXT_RIGHT);
             gui_restart_warning();
             nk_edit_string_zero_terminated(gui.ctx, NK_EDIT_FIELD, gui_conf.font_path, FONT_PATH_MAX_SIZE, nk_filter_default);
@@ -1452,17 +1458,31 @@ bool handle_mouse_click(void) {
 
     if (!mouse_empty) {
         mouse_blockchain.pos = as_scr_vec(GetMousePosition());
-        if (hover_info.argument) {
-            // Attach to argument
-            printf("Attach to argument\n");
+        if (hover_info.argument || hover_info.prev_argument) {
             if (vector_size(mouse_blockchain.blocks) > 1) return true;
             if (vm.blockdefs[mouse_blockchain.blocks[0].id].type == BLOCKTYPE_CONTROLEND) return true;
             if (vm.blockdefs[mouse_blockchain.blocks[0].id].type == BLOCKTYPE_HAT) return true;
-            if (hover_info.argument->type != ARGUMENT_TEXT) return true;
-            mouse_blockchain.blocks[0].parent = hover_info.block;
-            argument_set_block(hover_info.argument, mouse_blockchain.blocks[0]);
-            update_measurements(&vm, &hover_info.argument->data.block);
-            vector_clear(mouse_blockchain.blocks);
+
+            if (hover_info.argument) {
+                // Attach to argument
+                printf("Attach to argument\n");
+                if (hover_info.argument->type != ARGUMENT_TEXT) return true;
+                mouse_blockchain.blocks[0].parent = hover_info.block;
+                argument_set_block(hover_info.argument, mouse_blockchain.blocks[0]);
+                update_measurements(&vm, &hover_info.argument->data.block);
+                vector_clear(mouse_blockchain.blocks);
+            } else if (hover_info.prev_argument) {
+                // Swap argument
+                printf("Swap argument\n");
+                if (hover_info.prev_argument->type != ARGUMENT_BLOCK) return true;
+                mouse_blockchain.blocks[0].parent = hover_info.block->parent;
+                ScrBlock temp = mouse_blockchain.blocks[0];
+                mouse_blockchain.blocks[0] = *hover_info.block;
+                mouse_blockchain.blocks[0].parent = NULL;
+                block_update_parent_links(&mouse_blockchain.blocks[0]);
+                argument_set_block(hover_info.prev_argument, temp);
+                update_measurements(&vm, temp.parent);
+            }
         } else if (
             hover_info.block && 
             hover_info.blockchain && 
@@ -1794,6 +1814,7 @@ void sanitize_links(void) {
 void set_default_config(Config* config) {
     config->font_size = 32;
     config->side_bar_size = 300;
+    config->fps_limit = 60;
     strncpy(config->font_symbols, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?", sizeof(config->font_symbols) - 1);
     strncpy(config->font_path, DATA_PATH "nk57-cond.otf", sizeof(config->font_path) - 1);
     strncpy(config->font_bold_path, DATA_PATH "nk57-eb.otf", sizeof(config->font_bold_path) - 1);
@@ -1801,6 +1822,8 @@ void set_default_config(Config* config) {
 }
 
 void apply_config(Config* dst, Config* src) {
+    dst->fps_limit = src->fps_limit;
+    SetTargetFPS(dst->fps_limit);
     dst->side_bar_size = src->side_bar_size;
 }
 
@@ -1809,6 +1832,7 @@ void save_config(Config* config) {
     // ARRLEN also includes \0 into size, but we are using this size to put = sign instead
     file_size += ARRLEN("UI_SIZE") + 10 + 1;
     file_size += ARRLEN("SIDE_BAR_SIZE") + 10 + 1;
+    file_size += ARRLEN("FPS_LIMIT") + 10 + 1;
     file_size += ARRLEN("FONT_SYMBOLS") + strlen(config->font_symbols) + 1;
     file_size += ARRLEN("FONT_PATH") + strlen(config->font_path) + 1;
     file_size += ARRLEN("FONT_BOLD_PATH") + strlen(config->font_bold_path) + 1;
@@ -1819,6 +1843,7 @@ void save_config(Config* config) {
 
     cursor += sprintf(file_str + cursor, "UI_SIZE=%u\n", config->font_size);
     cursor += sprintf(file_str + cursor, "SIDE_BAR_SIZE=%u\n", config->side_bar_size);
+    cursor += sprintf(file_str + cursor, "FPS_LIMIT=%u\n", config->fps_limit);
     cursor += sprintf(file_str + cursor, "FONT_SYMBOLS=%s\n", config->font_symbols);
     cursor += sprintf(file_str + cursor, "FONT_PATH=%s\n", config->font_path);
     cursor += sprintf(file_str + cursor, "FONT_BOLD_PATH=%s\n", config->font_bold_path);
@@ -1861,6 +1886,9 @@ void load_config(Config* config) {
         } else if (!strcmp(field, "SIDE_BAR_SIZE")) {
             int val = atoi(value);
             config->side_bar_size = val ? val : config->side_bar_size;
+        } else if (!strcmp(field, "FPS_LIMIT")) {
+            int val = atoi(value);
+            config->fps_limit = val ? val : config->fps_limit;
         } else if (!strcmp(field, "FONT_SYMBOLS")) {
             strncpy(config->font_symbols, value, sizeof(config->font_symbols) - 1);
         } else if (!strcmp(field, "FONT_PATH")) {
@@ -2531,7 +2559,7 @@ int main(void) {
 
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(800, 600, "Scrap");
-    SetTargetFPS(60);
+    SetTargetFPS(conf.fps_limit);
     //EnableEventWaiting();
     SetWindowState(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
 
