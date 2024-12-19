@@ -1,6 +1,6 @@
 CC := gcc
 CFLAGS := -Wall -Wextra -O0 -g -fmax-errors=5
-LDFLAGS := -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+LDFLAGS := -lraylib -lGL -lm -lpthread -lX11
 OBJFILES := scrap.o
 EXE_NAME := scrap
 

@@ -1,6 +1,7 @@
 // TODO:
-// - Swap blocks inside arguments?
+// - Swap blocks inside arguments
 // - Add more basic blocks
+// - Add license
 
 #define LICENSE_URL "https://www.gnu.org/licenses/gpl-3.0.html"
 
@@ -14,6 +15,7 @@
 #include <string.h>
 #include <math.h>
 #include <semaphore.h>
+#include <unistd.h>
 
 #include "raylib.h"
 #define RAYLIB_NUKLEAR_IMPLEMENTATION
@@ -130,6 +132,7 @@ typedef struct {
 } DrawStack;
 
 typedef struct {
+    pthread_mutex_t lock;
     Rectangle size;
     int char_w, char_h;
     int cursor_pos;
@@ -1093,28 +1096,32 @@ void draw_sidebar(void) {
 }
 
 void draw_term(void) {
+    pthread_mutex_lock(&out_win.lock);
     DrawRectangleRec(out_win.size, BLACK);
     BeginShaderMode(line_shader);
     DrawRectangleLinesEx(out_win.size, 2.0, (Color) { 0x60, 0x60, 0x60, 0xff });
     EndShaderMode();
 
-    if (!out_win.buffer) return;
-    Vector2 pos = (Vector2) { out_win.size.x, out_win.size.y };
-    for (int y = 0; y < out_win.char_h; y++) {
-        pos.x = out_win.size.x;
-        for (int x = 0; x < out_win.char_w; x++) {
-            DrawTextEx(font_mono, out_win.buffer[x + y*out_win.char_w], pos, TERM_CHAR_SIZE, 0.0, WHITE);
-            pos.x += out_win.char_size.x;
+    if (out_win.buffer) {
+        Vector2 pos = (Vector2) { out_win.size.x, out_win.size.y };
+        for (int y = 0; y < out_win.char_h; y++) {
+            pos.x = out_win.size.x;
+            for (int x = 0; x < out_win.char_w; x++) {
+                DrawTextEx(font_mono, out_win.buffer[x + y*out_win.char_w], pos, TERM_CHAR_SIZE, 0.0, WHITE);
+                pos.x += out_win.char_size.x;
+            }
+            pos.y += TERM_CHAR_SIZE;
         }
-        pos.y += TERM_CHAR_SIZE;
+        if (fmod(GetTime(), 1.0) <= 0.5) {
+            Vector2 cursor_pos = (Vector2) {
+                out_win.size.x + (out_win.cursor_pos % out_win.char_w) * out_win.char_size.x,
+                out_win.size.y + (out_win.cursor_pos / out_win.char_w) * TERM_CHAR_SIZE,
+            };
+            DrawRectangle(cursor_pos.x, cursor_pos.y, BLOCK_OUTLINE_SIZE, TERM_CHAR_SIZE, WHITE);
+        }
     }
 
-    if (fmod(GetTime(), 1.0) > 0.5) return;
-    Vector2 cursor_pos = (Vector2) {
-        out_win.size.x + (out_win.cursor_pos % out_win.char_w) * out_win.char_size.x,
-        out_win.size.y + (out_win.cursor_pos / out_win.char_w) * TERM_CHAR_SIZE,
-    };
-    DrawRectangle(cursor_pos.x, cursor_pos.y, BLOCK_OUTLINE_SIZE, TERM_CHAR_SIZE, WHITE);
+    pthread_mutex_unlock(&out_win.lock);
 }
 
 // https://easings.net/#easeOutExpo
@@ -1648,15 +1655,19 @@ void check_block_collisions(void) {
 }
 
 void term_input_put_char(char ch) {
+    pthread_mutex_lock(&out_win.lock);
     out_win.input_buf[out_win.buf_end] = ch;
     out_win.buf_end = (out_win.buf_end + 1) % TERM_INPUT_BUF_SIZE;
+    pthread_mutex_unlock(&out_win.lock);
     sem_post(&out_win.input_sem);
 }
 
 char term_input_get_char(void) {
     sem_wait(&out_win.input_sem);
+    pthread_mutex_lock(&out_win.lock);
     int out = out_win.input_buf[out_win.buf_start];
     out_win.buf_start = (out_win.buf_start + 1) % TERM_INPUT_BUF_SIZE;
+    pthread_mutex_unlock(&out_win.lock);
     return out;
 }
 
@@ -1669,13 +1680,25 @@ int leading_ones(unsigned char byte) {
     return out;
 }
 
+void term_scroll_down(void) {
+    pthread_mutex_lock(&out_win.lock);
+    memmove(out_win.buffer, out_win.buffer + out_win.char_w, out_win.char_w * (out_win.char_h - 1) * sizeof(*out_win.buffer));
+    for (int i = out_win.char_w * (out_win.char_h - 1); i < out_win.char_w * out_win.char_h; i++) strncpy(out_win.buffer[i], " ", ARRLEN(*out_win.buffer));
+    pthread_mutex_unlock(&out_win.lock);
+}
+
 int term_print_str(const char* str) {
     const char* start = str;
+    pthread_mutex_lock(&out_win.lock);
     while (*str) {
         if (out_win.cursor_pos >= out_win.char_w * out_win.char_h) break;
         if (*str == '\n') {
             out_win.cursor_pos += out_win.char_w;
             str++;
+            if (out_win.cursor_pos >= out_win.char_w * out_win.char_h) {
+                out_win.cursor_pos -= out_win.char_w;
+                term_scroll_down();
+            }
             continue;
         }
         if (*str == '\r') {
@@ -1693,6 +1716,7 @@ int term_print_str(const char* str) {
         str += mb_size;
         out_win.cursor_pos++;
     }
+    pthread_mutex_unlock(&out_win.lock);
 
     return str - start;
 }
@@ -1704,11 +1728,14 @@ int term_print_int(int value) {
 }
 
 void term_clear(void) {
+    pthread_mutex_lock(&out_win.lock);
     for (int i = 0; i < out_win.char_w * out_win.char_h; i++) strncpy(out_win.buffer[i], " ", ARRLEN(*out_win.buffer));
     out_win.cursor_pos = 0;
+    pthread_mutex_unlock(&out_win.lock);
 }
 
 void term_resize(void) {
+    pthread_mutex_lock(&out_win.lock);
     Vector2 screen_size = (Vector2) { GetScreenWidth() - 20, GetScreenHeight() - conf.font_size * 2.2 - 20 };
     out_win.size = (Rectangle) { 0, 0, 16, 9 };
     if (out_win.size.width / out_win.size.height > screen_size.x / screen_size.y) {
@@ -1736,6 +1763,7 @@ void term_resize(void) {
         term_clear();
         printf("Term resize: %d, %d\n", out_win.char_w, out_win.char_h);
     }
+    pthread_mutex_unlock(&out_win.lock);
 }
 
 void sanitize_block(ScrBlock* block) {
@@ -2014,6 +2042,14 @@ ScrFuncArg block_while(ScrExec* exec, int argc, ScrFuncArg* argv) {
     }
 
     RETURN_NOTHING;
+}
+
+ScrFuncArg block_sleep(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 1) RETURN_INT(0);
+    int usecs = func_arg_to_int(argv[0]);
+    if (usecs < 0) RETURN_INT(0);
+    if (usleep(usecs)) RETURN_INT(0);
+    RETURN_INT(usecs);
 }
 
 ScrFuncArg block_declare_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -2312,6 +2348,11 @@ void setup(void) {
     int sc_else = block_register(&vm, "else", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_else);
     block_add_text(&vm, sc_else, "Else");
 
+    int sc_sleep = block_register(&vm, "sleep", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_sleep);
+    block_add_text(&vm, sc_sleep, "Sleep");
+    block_add_argument(&vm, sc_sleep, "", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_sleep, "us");
+
     int sc_end = block_register(&vm, "end", BLOCKTYPE_END, (ScrColor) { 0x77, 0x77, 0x77, 0xff }, block_noop);
     block_add_text(&vm, sc_end, "End");
 
@@ -2367,6 +2408,11 @@ void setup(void) {
     editor_code = vector_create();
 
     sem_init(&out_win.input_sem, 0, 0);
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&out_win.lock, &attr);
+    pthread_mutexattr_destroy(&attr);
     term_resize();
 
     sidebar.blocks = vector_create();
@@ -2701,6 +2747,7 @@ int main(void) {
         exec_join(&vm, &exec, &bin);
         exec_free(&exec);
     }
+    pthread_mutex_destroy(&out_win.lock);
     sem_destroy(&out_win.input_sem);
     vector_free(draw_stack);
     UnloadNuklear(gui.ctx);
