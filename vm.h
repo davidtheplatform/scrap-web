@@ -258,6 +258,8 @@ bool variable_stack_push_var(ScrExec* exec, const char* name, ScrFuncArg arg);
 ScrVariable* variable_stack_get_variable(ScrExec* exec, const char* name);
 
 int func_arg_to_int(ScrFuncArg arg);
+int func_arg_to_bool(ScrFuncArg arg);
+const char* func_arg_to_str(ScrFuncArg arg);
 
 size_t block_register(ScrVm* vm, const char* id, ScrBlockType type, ScrColor color, ScrBlockFunc func);
 void block_add_text(ScrVm* vm, size_t block_id, char* text);
@@ -893,6 +895,25 @@ int func_arg_to_bool(ScrFuncArg arg) {
     }
 }
 
+const char* func_arg_to_str(ScrFuncArg arg) {
+    static char buf[16];
+
+    switch (arg.type) {
+    case FUNC_ARG_UNMANAGED_STR:
+    case FUNC_ARG_MANAGED_STR:
+    case FUNC_ARG_STATIC_STR:
+        return arg.data.str_arg;
+    case FUNC_ARG_BOOL:
+        return arg.data.int_arg ? "true" : "false";
+    case FUNC_ARG_INT:
+        buf[0] = 0;
+        snprintf(buf, 16, "%d", arg.data.int_arg);
+        return buf;
+    default:
+        return "";
+    }
+}
+
 ScrString string_new(size_t cap) {
     ScrString string;
     string.str = malloc((cap + 1)* sizeof(char));
@@ -970,7 +991,6 @@ ScrBlock block_new(ScrVm* vm, size_t id) {
     return block;
 }
 
-// Broken at the moment, not sure why
 ScrBlock block_copy(ScrBlock* block, ScrBlock* parent) {
     if (!block->arguments) return *block;
 

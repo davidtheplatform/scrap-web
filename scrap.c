@@ -1,5 +1,6 @@
 // TODO:
-// - Add more basic blocks
+// - Add lists
+// - Add string manipulation
 // - Add license
 
 #define LICENSE_URL "https://www.gnu.org/licenses/gpl-3.0.html"
@@ -1547,7 +1548,11 @@ void handle_key_press(void) {
             for (int i = 0; i < utf_size; i++) {
                 term_input_put_char(utf_char[i]);
             }
-            term_print_str(utf_char);
+            // CodepointToUTF8() returns an array, not a null terminated string, so we copy it to satisfy constraints
+            char utf_str[7];
+            memcpy(utf_str, utf_char, utf_size);
+            utf_str[utf_size] = 0;
+            term_print_str(utf_str);
         }
         return;
     }
@@ -1708,10 +1713,13 @@ void term_scroll_down(void) {
 }
 
 int term_print_str(const char* str) {
-    const char* start = str;
+    int len = 0;
     pthread_mutex_lock(&out_win.lock);
     while (*str) {
-        if (out_win.cursor_pos >= out_win.char_w * out_win.char_h) break;
+        if (out_win.cursor_pos >= out_win.char_w * out_win.char_h) {
+            out_win.cursor_pos = out_win.char_w * out_win.char_h - 1;
+            break;
+        }
         if (*str == '\n') {
             out_win.cursor_pos += out_win.char_w;
             str++;
@@ -1735,10 +1743,11 @@ int term_print_str(const char* str) {
 
         str += mb_size;
         out_win.cursor_pos++;
+        len++;
     }
     pthread_mutex_unlock(&out_win.lock);
 
-    return str - start;
+    return len;
 }
 
 int term_print_int(int value) {
@@ -2061,7 +2070,7 @@ ScrFuncArg block_while(ScrExec* exec, int argc, ScrFuncArg* argv) {
         if (!func_arg_to_bool(argv[1])) {
             size_t bin;
             control_stack_pop_data(bin, size_t)
-            (void) bin; // Cleanup stack
+            (void) bin; 
             RETURN_BOOL(1);
         }
 
@@ -2073,6 +2082,7 @@ ScrFuncArg block_while(ScrExec* exec, int argc, ScrFuncArg* argv) {
 }
 
 ScrFuncArg block_sleep(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
     if (argc < 1) RETURN_INT(0);
     int usecs = func_arg_to_int(argv[0]);
     if (usecs < 0) RETURN_INT(0);
@@ -2105,18 +2115,15 @@ ScrFuncArg block_declare_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
 
 ScrFuncArg block_get_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
     if (argc < 1) RETURN_NOTHING;
-    if (argv[0].type != FUNC_ARG_STATIC_STR) RETURN_NOTHING;
-
-    ScrVariable* var = variable_stack_get_variable(exec, argv[0].data.str_arg);
+    ScrVariable* var = variable_stack_get_variable(exec, func_arg_to_str(argv[0]));
     if (!var) RETURN_NOTHING;
     return var->value;
 }
 
 ScrFuncArg block_set_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
     if (argc < 2) RETURN_NOTHING;
-    if (argv[0].type != FUNC_ARG_STATIC_STR) RETURN_NOTHING;
 
-    ScrVariable* var = variable_stack_get_variable(exec, argv[0].data.str_arg);
+    ScrVariable* var = variable_stack_get_variable(exec, func_arg_to_str(argv[0]));
     if (!var) RETURN_NOTHING;
 
     ScrFuncArg new_value;
@@ -2159,24 +2166,116 @@ ScrFuncArg block_print(ScrExec* exec, int argc, ScrFuncArg* argv) {
         default:
             break;
         }
-        term_print_str("\r\n");
         RETURN_INT(bytes_sent);
     }
     RETURN_INT(0);
+}
+
+ScrFuncArg block_println(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    ScrFuncArg out = block_print(exec, argc, argv);
+    term_print_str("\r\n");
+    return out;
+}
+
+ScrFuncArg block_cursor_x(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    (void) argv;
+    (void) argc;
+    pthread_mutex_lock(&out_win.lock);
+    int cur_x = out_win.cursor_pos % out_win.char_w;
+    pthread_mutex_unlock(&out_win.lock);
+    RETURN_INT(cur_x);
+}
+
+ScrFuncArg block_cursor_y(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    (void) argv;
+    (void) argc;
+    pthread_mutex_lock(&out_win.lock);
+    int cur_y = out_win.cursor_pos / out_win.char_w;
+    pthread_mutex_unlock(&out_win.lock);
+    RETURN_INT(cur_y);
+}
+
+ScrFuncArg block_cursor_max_x(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    (void) argv;
+    (void) argc;
+    pthread_mutex_lock(&out_win.lock);
+    int cur_max_x = out_win.char_w;
+    pthread_mutex_unlock(&out_win.lock);
+    RETURN_INT(cur_max_x);
+}
+
+ScrFuncArg block_cursor_max_y(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    (void) argv;
+    (void) argc;
+    pthread_mutex_lock(&out_win.lock);
+    int cur_max_y = out_win.char_h;
+    pthread_mutex_unlock(&out_win.lock);
+    RETURN_INT(cur_max_y);
+}
+
+ScrFuncArg block_set_cursor(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_NOTHING;
+    pthread_mutex_lock(&out_win.lock);
+    int x = CLAMP(func_arg_to_int(argv[0]), 0, out_win.char_w - 1);
+    int y = CLAMP(func_arg_to_int(argv[1]), 0, out_win.char_h - 1);
+    out_win.cursor_pos = x + y * out_win.char_w;
+    pthread_mutex_unlock(&out_win.lock);
+    RETURN_NOTHING;
+}
+
+ScrFuncArg block_term_clear(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    (void) argv;
+    (void) argc;
+    term_clear();
+    RETURN_NOTHING;
 }
 
 ScrFuncArg block_input(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     (void) argv;
     (void) argc;
-    term_print_str("Input int: ");
 
-    char input[256];
+    ScrString string = string_new(0);
     char input_char = 0;
-    for (int i = 0; i < 256 && input_char != '\n'; i++) input[i] = (input_char = term_input_get_char());
 
-    int val = atoi(input);
-    RETURN_INT(val);
+    while (input_char != '\n') {
+        char input[256];
+        int i = 0;
+        for (; i < 255 && input_char != '\n'; i++) input[i] = (input_char = term_input_get_char());
+        if (input[i - 1] == '\n') input[i - 1] = 0;
+        input[i] = 0;
+        string_add(&string, input);
+    }
+    ScrFuncArg out;
+    out.type = FUNC_ARG_MANAGED_STR;
+    out.data.str_arg = string.str;
+    return out;
+}
+
+ScrFuncArg block_get_char(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    (void) argv;
+    (void) argc;
+
+    ScrString string = string_new(0);
+    char input[10];
+    input[0] = term_input_get_char();
+    int mb_size = leading_ones(input[0]);
+    if (mb_size == 0) mb_size = 1;
+    for (int i = 1; i < mb_size; i++) input[i] = term_input_get_char();
+    input[mb_size] = 0;
+    string_add(&string, input);
+
+    ScrFuncArg out;
+    out.type = FUNC_ARG_MANAGED_STR;
+    out.data.str_arg = string.str;
+    return out;
 }
 
 ScrFuncArg block_random(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -2196,60 +2295,132 @@ ScrFuncArg block_random(ScrExec* exec, int argc, ScrFuncArg* argv) {
 ScrFuncArg block_join(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 2) RETURN_NOTHING;
-    const char* left;
-    const char* right;
 
-    char left_buf[16];
-    switch (argv[0].type) {
-    case FUNC_ARG_UNMANAGED_STR:
-    case FUNC_ARG_MANAGED_STR:
-    case FUNC_ARG_STATIC_STR:
-        left = argv[0].data.str_arg;
-        break;
-    case FUNC_ARG_BOOL:
-        left = argv[0].data.int_arg ? "true" : "false";
-        break;
-    case FUNC_ARG_INT:
-        snprintf(left_buf, 16, "%d", argv[0].data.int_arg);
-        left = left_buf;
-        break;
-    default:
-        left = "";
-        break;
-    }
-
-    char right_buf[16];
-    switch (argv[1].type) {
-    case FUNC_ARG_UNMANAGED_STR:
-    case FUNC_ARG_MANAGED_STR:
-    case FUNC_ARG_STATIC_STR:
-        right = argv[1].data.str_arg;
-        break;
-    case FUNC_ARG_BOOL:
-        right = argv[1].data.int_arg ? "true" : "false";
-        break;
-    case FUNC_ARG_INT:
-        snprintf(right_buf, 16, "%d", argv[1].data.int_arg);
-        right = right_buf;
-        break;
-    default:
-        right = "";
-        break;
-    }
     ScrString string = string_new(0);
-    string_add(&string, left);
-    string_add(&string, right);
+    string_add(&string, func_arg_to_str(argv[0]));
+    string_add(&string, func_arg_to_str(argv[1]));
 
-    ScrFuncArg arg;
-    arg.type = FUNC_ARG_MANAGED_STR;
-    arg.data.str_arg = string.str;
-    return arg;
+    ScrFuncArg out;
+    out.type = FUNC_ARG_MANAGED_STR;
+    out.data.str_arg = string.str;
+    return out;
+}
+
+ScrFuncArg block_length(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 1) RETURN_INT(0);
+    int len = 0;
+    const char* str = func_arg_to_str(argv[0]);
+    while (*str) {
+        int mb_size = leading_ones(*str);
+        if (mb_size == 0) mb_size = 1;
+        str += mb_size;
+        len++;
+    }
+    RETURN_INT(len);
+}
+
+ScrFuncArg block_unix_time(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    (void) argc;
+    (void) argv;
+    RETURN_INT(time(NULL));
+}
+
+ScrFuncArg block_convert_int(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 1) RETURN_INT(0);
+    RETURN_INT(func_arg_to_int(argv[0]));
+}
+
+ScrFuncArg block_convert_str(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    ScrString string = string_new(0);
+    ScrFuncArg out;
+    out.type = FUNC_ARG_MANAGED_STR;
+    out.data.str_arg = string.str;
+
+    if (argc < 1) return out;
+    string_add(&string, func_arg_to_str(argv[0]));
+    return out;
+}
+
+ScrFuncArg block_convert_bool(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 1) RETURN_BOOL(0);
+    RETURN_BOOL(func_arg_to_bool(argv[0]));
 }
 
 ScrFuncArg block_plus(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
     RETURN_INT(func_arg_to_int(argv[0]) + func_arg_to_int(argv[1]));
+}
+
+ScrFuncArg block_minus(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_INT(0);
+    RETURN_INT(func_arg_to_int(argv[0]) - func_arg_to_int(argv[1]));
+}
+
+ScrFuncArg block_mult(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_INT(0);
+    RETURN_INT(func_arg_to_int(argv[0]) * func_arg_to_int(argv[1]));
+}
+
+ScrFuncArg block_div(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_INT(0);
+    RETURN_INT(func_arg_to_int(argv[0]) / func_arg_to_int(argv[1]));
+}
+
+ScrFuncArg block_pow(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_INT(0);
+    int base = func_arg_to_int(argv[0]);
+    unsigned int exp = func_arg_to_int(argv[1]);
+    if (!exp) RETURN_INT(1);
+
+    int result = 1;
+    while (exp) {
+        if (exp & 1) result *= base;
+        exp >>= 1;
+        base *= base;
+    }
+    RETURN_INT(result);
+}
+
+ScrFuncArg block_bit_not(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 1) RETURN_INT(~0);
+    RETURN_INT(~func_arg_to_int(argv[0]));
+}
+
+ScrFuncArg block_bit_and(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_INT(0);
+    RETURN_INT(func_arg_to_int(argv[0]) & func_arg_to_int(argv[1]));
+}
+
+ScrFuncArg block_bit_xor(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 1) RETURN_INT(0);
+    if (argc < 2) RETURN_INT(func_arg_to_int(argv[0]));
+    RETURN_INT(func_arg_to_int(argv[0]) ^ func_arg_to_int(argv[1]));
+}
+
+ScrFuncArg block_bit_or(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 1) RETURN_INT(0);
+    if (argc < 2) RETURN_INT(func_arg_to_int(argv[0]));
+    RETURN_INT(func_arg_to_int(argv[0]) | func_arg_to_int(argv[1]));
+}
+
+ScrFuncArg block_rem(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_INT(0);
+    RETURN_INT(func_arg_to_int(argv[0]) % func_arg_to_int(argv[1]));
 }
 
 ScrFuncArg block_less(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -2259,22 +2430,79 @@ ScrFuncArg block_less(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_BOOL(func_arg_to_int(argv[0]) < func_arg_to_int(argv[1]));
 }
 
+ScrFuncArg block_less_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 1) RETURN_BOOL(0);
+    if (argc < 2) RETURN_BOOL(func_arg_to_bool(argv[0]) <= 0);
+    RETURN_BOOL(func_arg_to_int(argv[0]) <= func_arg_to_int(argv[1]));
+}
+
+ScrFuncArg block_more(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 1) RETURN_BOOL(0);
+    if (argc < 2) RETURN_BOOL(func_arg_to_bool(argv[0]) > 0);
+    RETURN_BOOL(func_arg_to_int(argv[0]) > func_arg_to_int(argv[1]));
+}
+
+ScrFuncArg block_more_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 1) RETURN_BOOL(0);
+    if (argc < 2) RETURN_BOOL(func_arg_to_bool(argv[0]) >= 0);
+    RETURN_BOOL(func_arg_to_int(argv[0]) >= func_arg_to_int(argv[1]));
+}
+
+ScrFuncArg block_not(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 1) RETURN_BOOL(1);
+    RETURN_BOOL(!func_arg_to_bool(argv[0]));
+}
+
+ScrFuncArg block_and(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_BOOL(0);
+    RETURN_BOOL(func_arg_to_bool(argv[0]) && func_arg_to_bool(argv[1]));
+}
+
+ScrFuncArg block_or(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_BOOL(0);
+    RETURN_BOOL(func_arg_to_bool(argv[0]) || func_arg_to_bool(argv[1]));
+}
+
+ScrFuncArg block_true(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    (void) argc;
+    (void) argv;
+    RETURN_BOOL(1);
+}
+
+ScrFuncArg block_false(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    (void) argc;
+    (void) argv;
+    RETURN_BOOL(0);
+}
+
+bool is_string(ScrFuncArg arg) {
+    return arg.type == FUNC_ARG_MANAGED_STR || arg.type == FUNC_ARG_STATIC_STR || arg.type == FUNC_ARG_UNMANAGED_STR;
+}
+
 ScrFuncArg block_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 2) RETURN_BOOL(0);
-    if (argv[0].type != argv[1].type) RETURN_BOOL(0);
 
-    switch (argv[0].type) {
-    case FUNC_ARG_BOOL:
-    case FUNC_ARG_INT:
-        RETURN_BOOL(argv[0].data.int_arg == argv[1].data.int_arg);
-    case FUNC_ARG_UNMANAGED_STR:
-    case FUNC_ARG_MANAGED_STR:
-    case FUNC_ARG_STATIC_STR:
+    if (is_string(argv[0]) && is_string(argv[1])) {
         RETURN_BOOL(!strcmp(argv[0].data.str_arg, argv[1].data.str_arg));
-    case FUNC_ARG_NOTHING:
+    } else if (argv[0].type == FUNC_ARG_BOOL && 
+               argv[1].type == FUNC_ARG_BOOL) {
+        RETURN_BOOL(argv[0].data.int_arg == argv[1].data.int_arg);
+    } else if (argv[0].type == FUNC_ARG_INT && 
+               argv[1].type == FUNC_ARG_INT) {
+        RETURN_BOOL(argv[0].data.int_arg == argv[1].data.int_arg);
+    } else if (argv[0].type == FUNC_ARG_NOTHING && 
+               argv[1].type == FUNC_ARG_NOTHING) {
         RETURN_BOOL(1);
-    default:
+    } else {
         RETURN_BOOL(0);
     }
 }
@@ -2345,11 +2573,39 @@ void setup(void) {
     block_add_text(&vm, on_start, "clicked");
 
     int sc_input = block_register(&vm, "input", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xff }, block_input);
-    block_add_text(&vm, sc_input, "Get int");
+    block_add_text(&vm, sc_input, "Get input");
+
+    int sc_char = block_register(&vm, "get_char", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xff }, block_get_char);
+    block_add_text(&vm, sc_char, "Get char");
 
     int sc_print = block_register(&vm, "print", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_print);
     block_add_text(&vm, sc_print, "Print");
     block_add_argument(&vm, sc_print, "Привет, мусороид!", BLOCKCONSTR_UNLIMITED);
+
+    int sc_println = block_register(&vm, "println", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_println);
+    block_add_text(&vm, sc_println, "Print line");
+    block_add_argument(&vm, sc_println, "Привет, мусороид!", BLOCKCONSTR_UNLIMITED);
+
+    int sc_cursor_x = block_register(&vm, "cursor_x", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_x);
+    block_add_text(&vm, sc_cursor_x, "Cursor X");
+
+    int sc_cursor_y = block_register(&vm, "cursor_y", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_y);
+    block_add_text(&vm, sc_cursor_y, "Cursor Y");
+
+    int sc_cursor_max_x = block_register(&vm, "cursor_max_x", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_max_x);
+    block_add_text(&vm, sc_cursor_max_x, "Terminal width");
+
+    int sc_cursor_max_y = block_register(&vm, "cursor_max_y", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_max_y);
+    block_add_text(&vm, sc_cursor_max_y, "Terminal height");
+
+    int sc_set_cursor = block_register(&vm, "set_cursor", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_set_cursor);
+    block_add_text(&vm, sc_set_cursor, "Set cursor X:");
+    block_add_argument(&vm, sc_set_cursor, "0", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_set_cursor, "Y:");
+    block_add_argument(&vm, sc_set_cursor, "0", BLOCKCONSTR_UNLIMITED);
+
+    int sc_term_clear = block_register(&vm, "term_clear", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_term_clear);
+    block_add_text(&vm, sc_term_clear, "Clear terminal");
 
     int sc_loop = block_register(&vm, "loop", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_loop);
     block_add_text(&vm, sc_loop, "Loop");
@@ -2389,10 +2645,59 @@ void setup(void) {
     block_add_text(&vm, sc_plus, "+");
     block_add_argument(&vm, sc_plus, "10", BLOCKCONSTR_UNLIMITED);
 
+    int sc_minus = block_register(&vm, "minus", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_minus);
+    block_add_argument(&vm, sc_minus, "9", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_minus, "-");
+    block_add_argument(&vm, sc_minus, "10", BLOCKCONSTR_UNLIMITED);
+
+    int sc_mult = block_register(&vm, "mult", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_mult);
+    block_add_argument(&vm, sc_mult, "9", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_mult, "*");
+    block_add_argument(&vm, sc_mult, "10", BLOCKCONSTR_UNLIMITED);
+
+    int sc_div = block_register(&vm, "div", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_div);
+    block_add_argument(&vm, sc_div, "39", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_div, "/");
+    block_add_argument(&vm, sc_div, "5", BLOCKCONSTR_UNLIMITED);
+
+    int sc_pow = block_register(&vm, "pow", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_pow);
+    block_add_text(&vm, sc_pow, "Pow");
+    block_add_argument(&vm, sc_pow, "5", BLOCKCONSTR_UNLIMITED);
+    block_add_argument(&vm, sc_pow, "5", BLOCKCONSTR_UNLIMITED);
+
+    int sc_bit_not = block_register(&vm, "bit_not", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_not);
+    block_add_text(&vm, sc_bit_not, "~");
+    block_add_argument(&vm, sc_bit_not, "39", BLOCKCONSTR_UNLIMITED);
+
+    int sc_bit_and = block_register(&vm, "bit_and", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_and);
+    block_add_argument(&vm, sc_bit_and, "39", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_bit_and, "&");
+    block_add_argument(&vm, sc_bit_and, "5", BLOCKCONSTR_UNLIMITED);
+
+    int sc_bit_or = block_register(&vm, "bit_or", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_or);
+    block_add_argument(&vm, sc_bit_or, "39", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_bit_or, "|");
+    block_add_argument(&vm, sc_bit_or, "5", BLOCKCONSTR_UNLIMITED);
+
+    int sc_bit_xor = block_register(&vm, "bit_xor", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_xor);
+    block_add_argument(&vm, sc_bit_xor, "39", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_bit_xor, "^");
+    block_add_argument(&vm, sc_bit_xor, "5", BLOCKCONSTR_UNLIMITED);
+
+    int sc_rem = block_register(&vm, "rem", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_rem);
+    block_add_argument(&vm, sc_rem, "39", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_rem, "%");
+    block_add_argument(&vm, sc_rem, "5", BLOCKCONSTR_UNLIMITED);
+
     int sc_less = block_register(&vm, "less", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_less);
     block_add_argument(&vm, sc_less, "9", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_less, "<");
     block_add_argument(&vm, sc_less, "11", BLOCKCONSTR_UNLIMITED);
+
+    int sc_less_eq = block_register(&vm, "less_eq", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_less_eq);
+    block_add_argument(&vm, sc_less_eq, "9", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_less_eq, "<=");
+    block_add_argument(&vm, sc_less_eq, "11", BLOCKCONSTR_UNLIMITED);
 
     int sc_eq = block_register(&vm, "eq", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_eq);
     block_add_argument(&vm, sc_eq, "", BLOCKCONSTR_UNLIMITED);
@@ -2403,6 +2708,36 @@ void setup(void) {
     block_add_argument(&vm, sc_not_eq, "", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_not_eq, "!=");
     block_add_argument(&vm, sc_not_eq, "", BLOCKCONSTR_UNLIMITED);
+
+    int sc_more_eq = block_register(&vm, "more_eq", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_more_eq);
+    block_add_argument(&vm, sc_more_eq, "9", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_more_eq, ">=");
+    block_add_argument(&vm, sc_more_eq, "11", BLOCKCONSTR_UNLIMITED);
+
+    int sc_more = block_register(&vm, "more", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_more);
+    block_add_argument(&vm, sc_more, "9", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_more, ">");
+    block_add_argument(&vm, sc_more, "11", BLOCKCONSTR_UNLIMITED);
+
+    int sc_not = block_register(&vm, "not", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_not);
+    block_add_text(&vm, sc_not, "Not");
+    block_add_argument(&vm, sc_not, "", BLOCKCONSTR_UNLIMITED);
+
+    int sc_and = block_register(&vm, "and", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_and);
+    block_add_argument(&vm, sc_and, "", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_and, "and");
+    block_add_argument(&vm, sc_and, "", BLOCKCONSTR_UNLIMITED);
+
+    int sc_or = block_register(&vm, "or", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_or);
+    block_add_argument(&vm, sc_or, "", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_or, "or");
+    block_add_argument(&vm, sc_or, "", BLOCKCONSTR_UNLIMITED);
+
+    int sc_true = block_register(&vm, "true", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_true);
+    block_add_text(&vm, sc_true, "True");
+
+    int sc_false = block_register(&vm, "false", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_false);
+    block_add_text(&vm, sc_false, "False");
 
     int sc_random = block_register(&vm, "random", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_random);
     block_add_text(&vm, sc_random, "Random");
@@ -2415,6 +2750,25 @@ void setup(void) {
     block_add_argument(&vm, sc_join, "абоба ", BLOCKCONSTR_UNLIMITED);
     block_add_argument(&vm, sc_join, "мусор", BLOCKCONSTR_UNLIMITED);
 
+    int sc_length = block_register(&vm, "length", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_length);
+    block_add_text(&vm, sc_length, "Length");
+    block_add_argument(&vm, sc_length, "мусорка", BLOCKCONSTR_UNLIMITED);
+
+    int sc_unix_time = block_register(&vm, "unix_time", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_unix_time);
+    block_add_text(&vm, sc_unix_time, "Time since 1970");
+
+    int sc_int = block_register(&vm, "convert_int", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_convert_int);
+    block_add_text(&vm, sc_int, "Int");
+    block_add_argument(&vm, sc_int, "", BLOCKCONSTR_UNLIMITED);
+
+    int sc_str = block_register(&vm, "convert_str", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_convert_str);
+    block_add_text(&vm, sc_str, "Str");
+    block_add_argument(&vm, sc_str, "", BLOCKCONSTR_UNLIMITED);
+
+    int sc_bool = block_register(&vm, "convert_bool", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_convert_bool);
+    block_add_text(&vm, sc_bool, "Bool");
+    block_add_argument(&vm, sc_bool, "", BLOCKCONSTR_UNLIMITED);
+
     int sc_decl_var = block_register(&vm, "decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, block_declare_var);
     block_add_text(&vm, sc_decl_var, "Declare");
     block_add_argument(&vm, sc_decl_var, "my variable", BLOCKCONSTR_STRING);
@@ -2423,11 +2777,11 @@ void setup(void) {
 
     int sc_get_var = block_register(&vm, "get_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, block_get_var);
     block_add_text(&vm, sc_get_var, "Get");
-    block_add_argument(&vm, sc_get_var, "my variable", BLOCKCONSTR_STRING);
+    block_add_argument(&vm, sc_get_var, "my variable", BLOCKCONSTR_UNLIMITED);
 
     int sc_set_var = block_register(&vm, "set_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, block_set_var);
     block_add_text(&vm, sc_set_var, "Set");
-    block_add_argument(&vm, sc_set_var, "my variable", BLOCKCONSTR_STRING);
+    block_add_argument(&vm, sc_set_var, "my variable", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_set_var, "=");
     block_add_argument(&vm, sc_set_var, "", BLOCKCONSTR_UNLIMITED);
 
@@ -2560,7 +2914,6 @@ int main(void) {
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(800, 600, "Scrap");
     SetTargetFPS(conf.fps_limit);
-    //EnableEventWaiting();
     SetWindowState(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
 
     setup();
@@ -2661,7 +3014,6 @@ int main(void) {
         } else if (vm.is_running) {
             hover_info.exec_chain_ind = exec.running_chain_ind;
             hover_info.exec_ind = exec.running_ind;
-            //actionbar_show(TextFormat("chain: %zu, ind: %zu", hover_info.exec_chain_ind, hover_info.exec_ind));
         }
 
         BeginDrawing();
