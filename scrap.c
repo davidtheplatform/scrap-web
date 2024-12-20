@@ -2092,22 +2092,10 @@ ScrFuncArg block_sleep(ScrExec* exec, int argc, ScrFuncArg* argv) {
 
 ScrFuncArg block_declare_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
     if (argc < 2) RETURN_NOTHING;
-    if (argv[0].type != FUNC_ARG_STATIC_STR) RETURN_NOTHING;
+    if (argv[0].type != FUNC_ARG_STR || argv[0].storage.type != FUNC_STORAGE_STATIC) RETURN_NOTHING;
 
-    ScrFuncArg var_value;
-
-    switch (argv[1].type) {
-    case FUNC_ARG_UNMANAGED_STR:
-    case FUNC_ARG_MANAGED_STR:
-        ScrString string = string_new(0);
-        string_add(&string, argv[1].data.str_arg);
-        var_value.type = FUNC_ARG_UNMANAGED_STR;
-        var_value.data.str_arg = string.str;
-        break;
-    default:
-        var_value = argv[1];
-        break;
-    }
+    ScrFuncArg var_value = func_arg_copy(argv[1]);
+    if (var_value.storage.type == FUNC_STORAGE_MANAGED) var_value.storage.type = FUNC_STORAGE_UNMANAGED;
 
     variable_stack_push_var(exec, argv[0].data.str_arg, var_value);
     return var_value;
@@ -2126,25 +2114,91 @@ ScrFuncArg block_set_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
     ScrVariable* var = variable_stack_get_variable(exec, func_arg_to_str(argv[0]));
     if (!var) RETURN_NOTHING;
 
-    ScrFuncArg new_value;
-    switch (argv[1].type) {
-    case FUNC_ARG_UNMANAGED_STR:
-    case FUNC_ARG_MANAGED_STR:
-        ScrString string = string_new(0);
-        string_add(&string, argv[1].data.str_arg);
-        new_value.type = FUNC_ARG_UNMANAGED_STR;
-        new_value.data.str_arg = string.str;
-        break;
-    default:
-        new_value = argv[1];
-        break;
-    }
-    if (var->value.type == FUNC_ARG_UNMANAGED_STR) {
-        free((char*)var->value.data.str_arg);
+    ScrFuncArg new_value = func_arg_copy(argv[1]);
+    if (new_value.storage.type == FUNC_STORAGE_MANAGED) new_value.storage.type = FUNC_STORAGE_UNMANAGED;
+
+    if (var->value.storage.type == FUNC_STORAGE_UNMANAGED) {
+        func_arg_free(var->value);
     }
 
     var->value = new_value;
     return var->value;
+}
+
+ScrFuncArg block_create_list(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    (void) argc;
+    (void) argv;
+
+    ScrFuncArg out;
+    out.type = FUNC_ARG_LIST;
+    out.storage.type = FUNC_STORAGE_MANAGED;
+    out.storage.storage_len = 0;
+    out.data.list_arg.items = NULL;
+    out.data.list_arg.len = 0;
+    return out;
+}
+
+ScrFuncArg block_list_add(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_NOTHING;
+
+    ScrVariable* var = variable_stack_get_variable(exec, func_arg_to_str(argv[0]));
+    if (!var) RETURN_NOTHING;
+    if (var->value.type != FUNC_ARG_LIST) RETURN_NOTHING;
+
+    if (!var->value.data.list_arg.items) {
+        var->value.data.list_arg.items = malloc(sizeof(ScrFuncArg));
+        var->value.data.list_arg.len = 1;
+    } else {
+        var->value.data.list_arg.items = realloc(var->value.data.list_arg.items, ++var->value.data.list_arg.len * sizeof(ScrFuncArg));
+    }
+    var->value.storage.storage_len = var->value.data.list_arg.len * sizeof(ScrFuncArg);
+    ScrFuncArg* list_item = &var->value.data.list_arg.items[var->value.data.list_arg.len - 1];
+    if (argv[1].storage.type == FUNC_STORAGE_MANAGED) {
+        argv[1].storage.type = FUNC_STORAGE_UNMANAGED;
+        *list_item = argv[1];
+    } else {
+        *list_item = func_arg_copy(argv[1]);
+        if (list_item->storage.type == FUNC_STORAGE_MANAGED) list_item->storage.type = FUNC_STORAGE_UNMANAGED;
+    }
+
+    return *list_item;
+}
+
+ScrFuncArg block_list_get(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_NOTHING;
+
+    ScrVariable* var = variable_stack_get_variable(exec, func_arg_to_str(argv[0]));
+    if (!var) RETURN_NOTHING;
+    if (var->value.type != FUNC_ARG_LIST) RETURN_NOTHING;
+    if (!var->value.data.list_arg.items || var->value.data.list_arg.len == 0) RETURN_NOTHING;
+    int index = func_arg_to_int(argv[1]);
+    if (index < 0 || (size_t)index >= var->value.data.list_arg.len) RETURN_NOTHING;
+
+    return var->value.data.list_arg.items[index];
+}
+
+ScrFuncArg block_list_set(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 3) RETURN_NOTHING;
+
+    ScrVariable* var = variable_stack_get_variable(exec, func_arg_to_str(argv[0]));
+    if (!var) RETURN_NOTHING;
+    if (var->value.type != FUNC_ARG_LIST) RETURN_NOTHING;
+    if (!var->value.data.list_arg.items || var->value.data.list_arg.len == 0) RETURN_NOTHING;
+    int index = func_arg_to_int(argv[1]);
+    if (index < 0 || (size_t)index >= var->value.data.list_arg.len) RETURN_NOTHING;
+
+    ScrFuncArg new_value = func_arg_copy(argv[2]);
+    if (new_value.storage.type == FUNC_STORAGE_MANAGED) new_value.storage.type = FUNC_STORAGE_UNMANAGED;
+
+    if (var->value.data.list_arg.items[index].storage.type == FUNC_STORAGE_UNMANAGED) {
+        func_arg_free(var->value.data.list_arg.items[index]);
+    }
+    var->value.data.list_arg.items[index] = new_value;
+    return var->value.data.list_arg.items[index];
 }
 
 ScrFuncArg block_print(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -2158,10 +2212,18 @@ ScrFuncArg block_print(ScrExec* exec, int argc, ScrFuncArg* argv) {
         case FUNC_ARG_BOOL:
             bytes_sent = term_print_str(argv[0].data.int_arg ? "true" : "false");
             break;
-        case FUNC_ARG_UNMANAGED_STR:
-        case FUNC_ARG_MANAGED_STR:
-        case FUNC_ARG_STATIC_STR:
+        case FUNC_ARG_STR:
             bytes_sent = term_print_str(argv[0].data.str_arg);
+            break;
+        case FUNC_ARG_LIST:
+            bytes_sent += term_print_str("[");
+            if (argv[0].data.list_arg.items && argv[0].data.list_arg.len) {
+                for (size_t i = 0; i < argv[0].data.list_arg.len; i++) {
+                    bytes_sent += block_print(exec, 1, &argv[0].data.list_arg.items[i]).data.int_arg;
+                    bytes_sent += term_print_str(", ");
+                }
+            }
+            bytes_sent += term_print_str("]");
             break;
         default:
             break;
@@ -2252,10 +2314,8 @@ ScrFuncArg block_input(ScrExec* exec, int argc, ScrFuncArg* argv) {
         input[i] = 0;
         string_add(&string, input);
     }
-    ScrFuncArg out;
-    out.type = FUNC_ARG_MANAGED_STR;
-    out.data.str_arg = string.str;
-    return out;
+
+    return string_make_managed(&string);
 }
 
 ScrFuncArg block_get_char(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -2272,10 +2332,7 @@ ScrFuncArg block_get_char(ScrExec* exec, int argc, ScrFuncArg* argv) {
     input[mb_size] = 0;
     string_add(&string, input);
 
-    ScrFuncArg out;
-    out.type = FUNC_ARG_MANAGED_STR;
-    out.data.str_arg = string.str;
-    return out;
+    return string_make_managed(&string);
 }
 
 ScrFuncArg block_random(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -2299,16 +2356,13 @@ ScrFuncArg block_join(ScrExec* exec, int argc, ScrFuncArg* argv) {
     ScrString string = string_new(0);
     string_add(&string, func_arg_to_str(argv[0]));
     string_add(&string, func_arg_to_str(argv[1]));
-
-    ScrFuncArg out;
-    out.type = FUNC_ARG_MANAGED_STR;
-    out.data.str_arg = string.str;
-    return out;
+    return string_make_managed(&string);
 }
 
 ScrFuncArg block_length(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 1) RETURN_INT(0);
+    if (argv[0].type == FUNC_ARG_LIST) RETURN_INT(argv[0].data.list_arg.len);
     int len = 0;
     const char* str = func_arg_to_str(argv[0]);
     while (*str) {
@@ -2336,13 +2390,9 @@ ScrFuncArg block_convert_int(ScrExec* exec, int argc, ScrFuncArg* argv) {
 ScrFuncArg block_convert_str(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     ScrString string = string_new(0);
-    ScrFuncArg out;
-    out.type = FUNC_ARG_MANAGED_STR;
-    out.data.str_arg = string.str;
-
-    if (argc < 1) return out;
+    if (argc < 1) return string_make_managed(&string);
     string_add(&string, func_arg_to_str(argv[0]));
-    return out;
+    return string_make_managed(&string);
 }
 
 ScrFuncArg block_convert_bool(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -2483,48 +2533,29 @@ ScrFuncArg block_false(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_BOOL(0);
 }
 
-bool is_string(ScrFuncArg arg) {
-    return arg.type == FUNC_ARG_MANAGED_STR || arg.type == FUNC_ARG_STATIC_STR || arg.type == FUNC_ARG_UNMANAGED_STR;
-}
-
 ScrFuncArg block_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 2) RETURN_BOOL(0);
+    if (argv[0].type != argv[1].type) RETURN_BOOL(0);
 
-    if (is_string(argv[0]) && is_string(argv[1])) {
+    switch (argv[0].type) {
+    case FUNC_ARG_BOOL:
+    case FUNC_ARG_INT:
+        RETURN_BOOL(argv[0].data.int_arg == argv[1].data.int_arg);
+    case FUNC_ARG_STR:
         RETURN_BOOL(!strcmp(argv[0].data.str_arg, argv[1].data.str_arg));
-    } else if (argv[0].type == FUNC_ARG_BOOL && 
-               argv[1].type == FUNC_ARG_BOOL) {
-        RETURN_BOOL(argv[0].data.int_arg == argv[1].data.int_arg);
-    } else if (argv[0].type == FUNC_ARG_INT && 
-               argv[1].type == FUNC_ARG_INT) {
-        RETURN_BOOL(argv[0].data.int_arg == argv[1].data.int_arg);
-    } else if (argv[0].type == FUNC_ARG_NOTHING && 
-               argv[1].type == FUNC_ARG_NOTHING) {
+    case FUNC_ARG_NOTHING:
         RETURN_BOOL(1);
-    } else {
+    default:
         RETURN_BOOL(0);
     }
 }
 
 ScrFuncArg block_not_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
-    if (argc < 2) RETURN_BOOL(1);
-    if (argv[0].type != argv[1].type) RETURN_BOOL(1);
-
-    switch (argv[0].type) {
-    case FUNC_ARG_BOOL:
-    case FUNC_ARG_INT:
-        RETURN_BOOL(argv[0].data.int_arg != argv[1].data.int_arg);
-    case FUNC_ARG_UNMANAGED_STR:
-    case FUNC_ARG_MANAGED_STR:
-    case FUNC_ARG_STATIC_STR:
-        RETURN_BOOL(strcmp(argv[0].data.str_arg, argv[1].data.str_arg) != 0);
-    case FUNC_ARG_NOTHING:
-        RETURN_BOOL(0);
-    default:
-        RETURN_BOOL(1);
-    }
+    ScrFuncArg out = block_eq(exec, argc, argv);
+    out.data.int_arg = !out.data.int_arg;
+    return out;
 }
 
 Texture2D load_svg(const char* path) {
@@ -2769,21 +2800,44 @@ void setup(void) {
     block_add_text(&vm, sc_bool, "Bool");
     block_add_argument(&vm, sc_bool, "", BLOCKCONSTR_UNLIMITED);
 
-    int sc_decl_var = block_register(&vm, "decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, block_declare_var);
+    int sc_decl_var = block_register(&vm, "decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xff }, block_declare_var);
     block_add_text(&vm, sc_decl_var, "Declare");
     block_add_argument(&vm, sc_decl_var, "my variable", BLOCKCONSTR_STRING);
     block_add_text(&vm, sc_decl_var, "=");
     block_add_argument(&vm, sc_decl_var, "", BLOCKCONSTR_UNLIMITED);
 
-    int sc_get_var = block_register(&vm, "get_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, block_get_var);
+    int sc_get_var = block_register(&vm, "get_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xff }, block_get_var);
     block_add_text(&vm, sc_get_var, "Get");
     block_add_argument(&vm, sc_get_var, "my variable", BLOCKCONSTR_UNLIMITED);
 
-    int sc_set_var = block_register(&vm, "set_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x66, 0x00, 0xff }, block_set_var);
+    int sc_set_var = block_register(&vm, "set_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xff }, block_set_var);
     block_add_text(&vm, sc_set_var, "Set");
     block_add_argument(&vm, sc_set_var, "my variable", BLOCKCONSTR_UNLIMITED);
     block_add_text(&vm, sc_set_var, "=");
     block_add_argument(&vm, sc_set_var, "", BLOCKCONSTR_UNLIMITED);
+
+    int sc_create_list = block_register(&vm, "create_list", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_create_list);
+    block_add_text(&vm, sc_create_list, "Empty list");
+
+    int sc_list_add = block_register(&vm, "list_add", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_add);
+    block_add_text(&vm, sc_list_add, "Add to list");
+    block_add_argument(&vm, sc_list_add, "my variable", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_list_add, "value");
+    block_add_argument(&vm, sc_list_add, "", BLOCKCONSTR_UNLIMITED);
+
+    int sc_list_get = block_register(&vm, "list_get", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_get);
+    block_add_text(&vm, sc_list_get, "List");
+    block_add_argument(&vm, sc_list_get, "my variable", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_list_get, "get at");
+    block_add_argument(&vm, sc_list_get, "0", BLOCKCONSTR_UNLIMITED);
+
+    int sc_list_set = block_register(&vm, "list_set", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_set);
+    block_add_text(&vm, sc_list_set, "List");
+    block_add_argument(&vm, sc_list_set, "my variable", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_list_set, "set at");
+    block_add_argument(&vm, sc_list_set, "0", BLOCKCONSTR_UNLIMITED);
+    block_add_text(&vm, sc_list_set, "=");
+    block_add_argument(&vm, sc_list_set, "", BLOCKCONSTR_UNLIMITED);
 
     mouse_blockchain = blockchain_new();
     draw_stack = vector_create();

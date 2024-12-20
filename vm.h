@@ -105,25 +105,50 @@ typedef enum {
 
 typedef enum {
     FUNC_ARG_INT,
-    FUNC_ARG_STATIC_STR, // String is borrowed from static or immutable memory
-    FUNC_ARG_MANAGED_STR, // String that was allocated by argument temporarily and will be cleared by vm automatically
-    FUNC_ARG_UNMANAGED_STR, // String that was previously allocated in chain and it's owned by different entity (e.g. variable)
+    FUNC_ARG_STR,
     FUNC_ARG_BOOL,
+    FUNC_ARG_LIST,
     FUNC_ARG_CONTROL,
     FUNC_ARG_NOTHING,
     FUNC_ARG_OMIT_ARGS, // Marker for vm used in C-blocks that do not require argument recomputation
 } ScrFuncArgType;
 
+typedef enum {
+    // Data that is contained within arg or lives for the entire lifetime of exec
+    FUNC_STORAGE_STATIC,
+    // Data that is allocated on heap and should be cleaned up by exec.
+    // Exec usually cleans up allocated data right after the block execution
+    FUNC_STORAGE_MANAGED,
+    // Data that is allocated on heap and should be cleaned up manually.
+    // Exec may free this memory for you if it's necessary
+    FUNC_STORAGE_UNMANAGED,
+} ScrFuncArgStorageType;
+
+typedef struct ScrFuncArg ScrFuncArg;
+
+typedef struct {
+    ScrFuncArg* items;
+    size_t len; // Length is NOT in bytes, if you want length in bytes, use func_arg.storage.storage_len
+} ScrFuncArgList;
+
 typedef union {
     int int_arg;
     const char* str_arg;
+    ScrFuncArgList list_arg;
     ScrControlArgType control_arg;
+    const void* custom_arg;
 } ScrFuncArgData;
 
 typedef struct {
+    ScrFuncArgStorageType type;
+    size_t storage_len; // Length is in bytes, so to make copy function work correctly. Only applicable if you don't use FUNC_STORAGE_STATIC
+} ScrFuncArgStorage;
+
+struct ScrFuncArg {
     ScrFuncArgType type;
+    ScrFuncArgStorage storage;
     ScrFuncArgData data;
-} ScrFuncArg;
+};
 
 typedef struct ScrExec ScrExec;
 
@@ -202,16 +227,19 @@ struct ScrVm {
 // Public macros
 #define RETURN_NOTHING return (ScrFuncArg) { \
     .type = FUNC_ARG_NOTHING, \
+    .storage = FUNC_STORAGE_STATIC, \
     .data = (ScrFuncArgData) {0}, \
 }
 
 #define RETURN_OMIT_ARGS return (ScrFuncArg) { \
     .type = FUNC_ARG_OMIT_ARGS, \
+    .storage = FUNC_STORAGE_STATIC, \
     .data = (ScrFuncArgData) {0}, \
 }
 
 #define RETURN_INT(val) return (ScrFuncArg) { \
     .type = FUNC_ARG_INT, \
+    .storage = FUNC_STORAGE_STATIC, \
     .data = (ScrFuncArgData) { \
         .int_arg = (val) \
     }, \
@@ -219,6 +247,7 @@ struct ScrVm {
 
 #define RETURN_BOOL(val) return (ScrFuncArg) { \
     .type = FUNC_ARG_BOOL, \
+    .storage = FUNC_STORAGE_STATIC, \
     .data = (ScrFuncArgData) { \
         .int_arg = (val) \
     }, \
@@ -592,6 +621,7 @@ bool arg_stack_push_arg(ScrExec* exec, ScrFuncArg arg);
 bool arg_stack_undo_args(ScrExec* exec, size_t count);
 void variable_stack_pop_layer(ScrExec* exec);
 void variable_stack_cleanup(ScrExec* exec);
+void func_arg_free(ScrFuncArg arg);
 
 ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure) {
     ScrVm vm = (ScrVm) {
@@ -660,6 +690,7 @@ bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_retu
     if (blockdef.type == BLOCKTYPE_CONTROL || blockdef.type == BLOCKTYPE_CONTROLEND) {
         arg_stack_push_arg(exec, (ScrFuncArg) {
             .type = FUNC_ARG_CONTROL,
+            .storage = FUNC_STORAGE_STATIC,
             .data = (ScrFuncArgData) {
                 .control_arg = from_end ? CONTROL_ARG_END : CONTROL_ARG_BEGIN,
             },
@@ -675,7 +706,8 @@ bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_retu
             case ARGUMENT_TEXT:
             case ARGUMENT_CONST_STRING:
                 arg_stack_push_arg(exec, (ScrFuncArg) {
-                    .type = FUNC_ARG_STATIC_STR,
+                    .type = FUNC_ARG_STR,
+                    .storage = FUNC_STORAGE_STATIC,
                     .data = (ScrFuncArgData) {
                         .str_arg = block_arg.data.text,
                     },
@@ -718,7 +750,7 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
             control_stack_pop_data(block_ind, size_t)
             control_stack_pop_data(block_return, ScrFuncArg)
             if (block_return.type == FUNC_ARG_OMIT_ARGS) omit_args = true;
-            if (block_return.type == FUNC_ARG_MANAGED_STR) free((char*)block_return.data.str_arg);
+            if (block_return.storage.type == FUNC_STORAGE_MANAGED) func_arg_free(block_return);
             from_end = true;
             if (exec->skip_block && skip_layer == exec->layer) {
                 exec->skip_block = false;
@@ -740,8 +772,8 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
             return_used = true;
             exec->layer++;
         } 
-        if (!return_used && block_return.type == FUNC_ARG_MANAGED_STR) {
-            free((char*)block_return.data.str_arg);
+        if (!return_used && block_return.storage.type == FUNC_STORAGE_MANAGED) {
+            func_arg_free(block_return);
         }
     }
     return true;
@@ -827,8 +859,8 @@ void variable_stack_pop_layer(ScrExec* exec) {
     size_t count = 0;
     for (int i = exec->variable_stack_len - 1; i >= 0 && exec->variable_stack[i].layer == exec->layer; i--) {
         ScrFuncArg arg = exec->variable_stack[i].value;
-        if (arg.type == FUNC_ARG_UNMANAGED_STR) {
-            free((char*)arg.data.str_arg);
+        if (arg.storage.type == FUNC_STORAGE_UNMANAGED || arg.storage.type == FUNC_STORAGE_MANAGED) {
+            func_arg_free(arg);
         }
         count++;
     }
@@ -838,8 +870,8 @@ void variable_stack_pop_layer(ScrExec* exec) {
 void variable_stack_cleanup(ScrExec* exec) {
     for (size_t i = 0; i < exec->variable_stack_len; i++) {
         ScrFuncArg arg = exec->variable_stack[i].value;
-        if (arg.type == FUNC_ARG_UNMANAGED_STR) {
-            free((char*)arg.data.str_arg);
+        if (arg.storage.type == FUNC_STORAGE_UNMANAGED || arg.storage.type == FUNC_STORAGE_MANAGED) {
+            func_arg_free(arg);
         }
     }
     exec->variable_stack_len = 0;
@@ -862,11 +894,47 @@ bool arg_stack_undo_args(ScrExec* exec, size_t count) {
     if (count > exec->arg_stack_len) return false;
     for (size_t i = 0; i < count; i++) {
         ScrFuncArg arg = exec->arg_stack[exec->arg_stack_len - 1 - i];
-        if (arg.type != FUNC_ARG_MANAGED_STR) continue;
-        free((char*)arg.data.str_arg);
+        if (arg.storage.type != FUNC_STORAGE_MANAGED) continue;
+        func_arg_free(arg);
     }
     exec->arg_stack_len -= count;
     return true;
+}
+
+ScrFuncArg func_arg_copy(ScrFuncArg arg) {
+    if (arg.storage.type == FUNC_STORAGE_STATIC) return arg;
+
+    ScrFuncArg out;
+    out.type = arg.type;
+    out.storage.type = FUNC_STORAGE_MANAGED;
+    out.storage.storage_len = arg.storage.storage_len;
+    out.data.custom_arg = malloc(arg.storage.storage_len);
+    if (arg.type == FUNC_ARG_LIST) {
+        out.data.list_arg.len = arg.data.list_arg.len;
+        for (size_t i = 0; i < arg.data.list_arg.len; i++) {
+            out.data.list_arg.items[i] = func_arg_copy(arg.data.list_arg.items[i]);
+        }
+    } else {
+        memcpy((void*)out.data.custom_arg, arg.data.custom_arg, arg.storage.storage_len);
+    }
+    return out;
+}
+
+void func_arg_free(ScrFuncArg arg) {
+    if (arg.storage.type == FUNC_STORAGE_STATIC) return;
+    switch (arg.type) {
+    case FUNC_ARG_LIST:
+        if (!arg.data.list_arg.items) break;
+        for (size_t i = 0; i < arg.data.list_arg.len; i++) {
+            func_arg_free(arg.data.list_arg.items[i]);
+        }
+        free((ScrFuncArg*)arg.data.list_arg.items);
+        break;
+    default:
+        if (!arg.data.custom_arg) break;
+        free((void*)arg.data.custom_arg);
+        break;
+    }
 }
 
 int func_arg_to_int(ScrFuncArg arg) {
@@ -874,11 +942,10 @@ int func_arg_to_int(ScrFuncArg arg) {
     case FUNC_ARG_BOOL:
     case FUNC_ARG_INT:
         return arg.data.int_arg;
-    case FUNC_ARG_MANAGED_STR:
-    case FUNC_ARG_UNMANAGED_STR:
-    case FUNC_ARG_STATIC_STR:
+    case FUNC_ARG_STR:
         return atoi(arg.data.str_arg);
-    default: return 0;
+    default:
+        return 0;
     }
 }
 
@@ -887,11 +954,12 @@ int func_arg_to_bool(ScrFuncArg arg) {
     case FUNC_ARG_BOOL:
     case FUNC_ARG_INT:
         return arg.data.int_arg != 0;
-    case FUNC_ARG_MANAGED_STR:
-    case FUNC_ARG_UNMANAGED_STR:
-    case FUNC_ARG_STATIC_STR:
+    case FUNC_ARG_STR:
         return *arg.data.str_arg != 0;
-    default: return 0;
+    case FUNC_ARG_LIST:
+        return arg.data.list_arg.len != 0;
+    default:
+        return 0;
     }
 }
 
@@ -899,9 +967,7 @@ const char* func_arg_to_str(ScrFuncArg arg) {
     static char buf[16];
 
     switch (arg.type) {
-    case FUNC_ARG_UNMANAGED_STR:
-    case FUNC_ARG_MANAGED_STR:
-    case FUNC_ARG_STATIC_STR:
+    case FUNC_ARG_STR:
         return arg.data.str_arg;
     case FUNC_ARG_BOOL:
         return arg.data.int_arg ? "true" : "false";
@@ -909,6 +975,8 @@ const char* func_arg_to_str(ScrFuncArg arg) {
         buf[0] = 0;
         snprintf(buf, 16, "%d", arg.data.int_arg);
         return buf;
+    case FUNC_ARG_LIST:
+        return "# LIST #";
     default:
         return "";
     }
@@ -931,6 +999,15 @@ void string_add(ScrString* string, const char* other) {
     }
     strcat(string->str, other);
     string->len = new_len;
+}
+
+ScrFuncArg string_make_managed(ScrString* string) {
+    ScrFuncArg out;
+    out.type = FUNC_ARG_STR;
+    out.storage.type = FUNC_STORAGE_MANAGED;
+    out.storage.storage_len = string->len + 1;
+    out.data.str_arg = string->str;
+    return out;
 }
 
 void string_free(ScrString string) {
