@@ -482,6 +482,8 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
     block_size.width = block->ms.size.x;
     block_size.height = block->ms.size.y;
 
+    if (!CheckCollisionRecs(block_size, (Rectangle) { 0, 0, GetScreenWidth(), GetScreenHeight() })) return;
+
     if (blockdef.type == BLOCKTYPE_HAT) {
         DrawRectangle(block_size.x, block_size.y, block_size.width - conf.font_size / 4.0, block_size.height, block_color);
         DrawRectangle(block_size.x, block_size.y + conf.font_size / 4.0, block_size.width, block_size.height - conf.font_size / 4.0, block_color);

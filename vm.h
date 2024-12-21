@@ -1089,12 +1089,16 @@ ScrBlock block_copy(ScrBlock* block, ScrBlock* parent) {
             break;
         case ARGUMENT_BLOCK:
             arg->data.block = block_copy(&block->arguments[i].data.block, &new);
-            block_update_parent_links(&arg->data.block);
             break;
         default:
             assert(false && "Unimplemented argument copy");
             break;
         }
+    }
+
+    for (size_t i = 0; i < vector_size(new.arguments); i++) {
+        if (new.arguments[i].type != ARGUMENT_BLOCK) continue;
+        block_update_parent_links(&new.arguments[i].data.block);
     }
 
     return new;
