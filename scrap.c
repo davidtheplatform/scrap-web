@@ -1506,25 +1506,38 @@ bool handle_mouse_click(void) {
         return true;
     } else if (hover_info.block) {
         if (hover_info.block->parent) {
-            // Detach argument
-            printf("Detach argument\n");
-            assert(hover_info.prev_argument != NULL);
+            if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) {
+                // Copy argument
+                printf("Copy argument\n");
+                blockchain_add_block(&mouse_blockchain, block_copy(hover_info.block, NULL));
+            } else {
+                // Detach argument
+                printf("Detach argument\n");
+                assert(hover_info.prev_argument != NULL);
 
-            blockchain_add_block(&mouse_blockchain, *hover_info.block);
-            mouse_blockchain.blocks[0].parent = NULL;
+                blockchain_add_block(&mouse_blockchain, *hover_info.block);
+                mouse_blockchain.blocks[0].parent = NULL;
 
-            ScrBlock* parent = hover_info.prev_argument->data.block.parent;
-            argument_set_text(hover_info.prev_argument, "");
-            hover_info.prev_argument->ms.size = as_scr_vec(MeasureTextEx(font_cond, "", BLOCK_TEXT_SIZE, 0.0));
-            update_measurements(&vm, parent);
+                ScrBlock* parent = hover_info.prev_argument->data.block.parent;
+                argument_set_text(hover_info.prev_argument, "");
+                hover_info.prev_argument->ms.size = as_scr_vec(MeasureTextEx(font_cond, "", BLOCK_TEXT_SIZE, 0.0));
+                update_measurements(&vm, parent);
+            }
         } else if (hover_info.blockchain) {
-            // Detach block
-            printf("Detach block\n");
-            blockchain_detach(&vm, &mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
-            if (hover_info.blockchain_index == 0) {
-                blockchain_free(hover_info.blockchain);
-                blockcode_remove_blockchain(&block_code, hover_info.blockchain - editor_code);
-                hover_info.block = NULL;
+            if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) {
+                // Copy chain
+                printf("Copy chain\n");
+                blockchain_free(&mouse_blockchain);
+                mouse_blockchain = blockchain_copy(&vm, hover_info.blockchain, hover_info.blockchain_index);
+            } else {
+                // Detach block
+                printf("Detach block\n");
+                blockchain_detach(&vm, &mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
+                if (hover_info.blockchain_index == 0) {
+                    blockchain_free(hover_info.blockchain);
+                    blockcode_remove_blockchain(&block_code, hover_info.blockchain - editor_code);
+                    hover_info.block = NULL;
+                }
             }
         }
         return true;
@@ -1717,8 +1730,8 @@ int term_print_str(const char* str) {
     pthread_mutex_lock(&out_win.lock);
     while (*str) {
         if (out_win.cursor_pos >= out_win.char_w * out_win.char_h) {
-            out_win.cursor_pos = out_win.char_w * out_win.char_h - 1;
-            break;
+            out_win.cursor_pos = out_win.char_w * out_win.char_h - out_win.char_w;
+            term_scroll_down();
         }
         if (*str == '\n') {
             out_win.cursor_pos += out_win.char_w;

@@ -299,7 +299,7 @@ void block_unregister(ScrVm* vm, size_t block_id);
 void block_update_parent_links(ScrBlock* block);
 
 ScrBlockChain blockchain_new(void);
-ScrBlockChain blockchain_copy(ScrBlockChain* chain);
+ScrBlockChain blockchain_copy(ScrVm* vm, ScrBlockChain* chain, size_t ind);
 void blockchain_add_block(ScrBlockChain* chain, ScrBlock block);
 void blockchain_clear_blocks(ScrBlockChain* chain);
 void blockchain_insert(ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
@@ -667,7 +667,7 @@ void exec_free(ScrExec* exec) {
 void exec_copy_code(ScrVm* vm, ScrExec* exec, ScrBlockChain* code) {
     if (vm->is_running) return;
     for (vec_size_t i = 0; i < vector_size(code); i++) {
-        exec_add_chain(vm, exec, blockchain_copy(&code[i]));
+        exec_add_chain(vm, exec, blockchain_copy(vm, &code[i], 0));
     }
 }
 
@@ -1081,6 +1081,7 @@ ScrBlock block_copy(ScrBlock* block, ScrBlock* parent) {
         ScrBlockArgument* arg = vector_add_dst((ScrBlockArgument**)&new.arguments);
         arg->ms = block->arguments[i].ms;
         arg->type = block->arguments[i].type;
+        arg->input_id = block->arguments[i].input_id;
         switch (block->arguments[i].type) {
         case ARGUMENT_CONST_STRING:
         case ARGUMENT_TEXT:
@@ -1088,6 +1089,7 @@ ScrBlock block_copy(ScrBlock* block, ScrBlock* parent) {
             break;
         case ARGUMENT_BLOCK:
             arg->data.block = block_copy(&block->arguments[i].data.block, &new);
+            block_update_parent_links(&arg->data.block);
             break;
         default:
             assert(false && "Unimplemented argument copy");
@@ -1133,14 +1135,40 @@ ScrBlockChain blockchain_new(void) {
     return chain;
 }
 
-ScrBlockChain blockchain_copy(ScrBlockChain* chain) {
+ScrBlockChain blockchain_copy(ScrVm* vm, ScrBlockChain* chain, size_t pos) {
     ScrBlockChain new;
     new.pos = chain->pos;
     new.blocks = vector_create();
 
-    vector_reserve(&new.blocks, vector_size(chain->blocks));
-    for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
+    assert(pos < vector_size(chain->blocks) || pos == 0);
+
+    int pos_layer = 0;
+    for (size_t i = 0; i < pos; i++) {
+        ScrBlockType block_type = vm->blockdefs[chain->blocks[i].id].type;
+        if (block_type == BLOCKTYPE_CONTROL) {
+            pos_layer++;
+        } else if (block_type == BLOCKTYPE_END) {
+            pos_layer--;
+            if (pos_layer < 0) pos_layer = 0;
+        }
+    }
+    int current_layer = pos_layer;
+
+    vector_reserve(&new.blocks, vector_size(chain->blocks) - pos);
+    for (vec_size_t i = pos; i < vector_size(chain->blocks); i++) {
+        ScrBlockType block_type = vm->blockdefs[chain->blocks[i].id].type;
+        if ((block_type == BLOCKTYPE_END || (block_type == BLOCKTYPE_CONTROLEND && i != pos)) &&
+            pos_layer == current_layer &&
+            current_layer != 0) break;
+
         vector_add(&new.blocks, block_copy(&chain->blocks[i], NULL));
+        block_update_parent_links(&new.blocks[vector_size(new.blocks) - 1]);
+
+        if (block_type == BLOCKTYPE_CONTROL) {
+            current_layer++;
+        } else if (block_type == BLOCKTYPE_END) {
+            current_layer--;
+        }
     }
 
     return new;
