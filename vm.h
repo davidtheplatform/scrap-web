@@ -22,8 +22,14 @@ typedef struct {
     unsigned char r, g, b, a;
 } ScrColor;
 
+typedef enum {
+    PLACEMENT_HORIZONTAL = 0,
+    PLACEMENT_VERTICAL,
+} ScrPlacementStrategy;
+
 typedef struct {
     ScrVec size;
+    ScrPlacementStrategy placement;
 } ScrMeasurement;
 
 typedef enum {

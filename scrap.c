@@ -1,5 +1,6 @@
 // TODO:
-// - Add lists
+// - Add code saving
+// - Add custom blocks
 // - Add string manipulation
 // - Add license
 
@@ -230,7 +231,7 @@ const char* line_shader_fragment =
 void save_config(Config* config);
 void apply_config(Config* dst, Config* src);
 void set_default_config(Config* config);
-void update_measurements(ScrVm* vm, ScrBlock* block);
+void update_measurements(ScrVm* vm, ScrBlock* block, ScrPlacementStrategy placement);
 void term_input_put_char(char ch);
 int term_print_str(const char* str);
 void term_clear(void);
@@ -277,15 +278,16 @@ void blockcode_remove_blockchain(BlockCode* blockcode, size_t ind) {
 
 ScrBlock block_new_ms(ScrVm* vm, int id) {
     ScrBlock block = block_new(vm, id);
-    update_measurements(vm, &block);
+    update_measurements(vm, &block, PLACEMENT_HORIZONTAL);
     return block;
 }
 
-void update_measurements(ScrVm* vm, ScrBlock* block) {
+void update_measurements(ScrVm* vm, ScrBlock* block, ScrPlacementStrategy placement) {
     ScrBlockdef blockdef = vm->blockdefs[block->id];
 
     block->ms.size.x = BLOCK_PADDING;
-    block->ms.size.y = conf.font_size;
+    block->ms.placement = placement;
+    block->ms.size.y = placement == PLACEMENT_HORIZONTAL ? conf.font_size : BLOCK_OUTLINE_SIZE * 2;
 
     int arg_id = 0;
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
@@ -303,6 +305,7 @@ void update_measurements(ScrVm* vm, ScrBlock* block) {
                 string_ms.size = as_scr_vec(MeasureTextEx(font_cond, block->arguments[arg_id].data.text, BLOCK_TEXT_SIZE, 0.0));
                 string_ms.size.x += BLOCK_STRING_PADDING;
                 string_ms.size.x = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, string_ms.size.x);
+                string_ms.placement = PLACEMENT_HORIZONTAL;
 
                 block->arguments[arg_id].ms = string_ms;
                 ms = string_ms;
@@ -325,6 +328,7 @@ void update_measurements(ScrVm* vm, ScrBlock* block) {
                 string_ms.size = as_scr_vec(MeasureTextEx(font_cond, block->arguments[arg_id].data.text, BLOCK_TEXT_SIZE, 0.0));
                 string_ms.size.x += BLOCK_STRING_PADDING + DROP_TEX_WIDTH;
                 string_ms.size.x = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, string_ms.size.x);
+                string_ms.placement = PLACEMENT_HORIZONTAL;
 
                 block->arguments[arg_id].ms = string_ms;
                 ms = string_ms;
@@ -347,13 +351,24 @@ void update_measurements(ScrVm* vm, ScrBlock* block) {
             ms.size = as_scr_vec(MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0));
             break;
         }
-        ms.size.x += BLOCK_PADDING;
 
-        block->ms.size.x += ms.size.x;
-        block->ms.size.y = MAX(block->ms.size.y, ms.size.y + BLOCK_OUTLINE_SIZE * 4);
+        if (placement == PLACEMENT_VERTICAL) {
+            ms.size.y += BLOCK_OUTLINE_SIZE * 2;
+            block->ms.size.x = MAX(block->ms.size.x, ms.size.x + BLOCK_PADDING * 2);
+            block->ms.size.y += ms.size.y;
+        } else {
+            ms.size.x += BLOCK_PADDING;
+            block->ms.size.x += ms.size.x;
+            block->ms.size.y = MAX(block->ms.size.y, ms.size.y + BLOCK_OUTLINE_SIZE * 4);
+        }
     }
 
-    if (block->parent) update_measurements(vm, block->parent);
+    if (block->ms.size.x > 1000 && block->ms.placement == PLACEMENT_HORIZONTAL) {
+        update_measurements(vm, block, PLACEMENT_VERTICAL);
+        return;
+    }
+
+    if (block->parent) update_measurements(vm, block->parent, PLACEMENT_HORIZONTAL);
 }
 
 void block_update_collisions(Vector2 position, ScrBlock* block) {
@@ -370,6 +385,7 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
 
     Vector2 cursor = position;
     cursor.x += BLOCK_PADDING;
+    if (block->ms.placement == PLACEMENT_VERTICAL) cursor.y += BLOCK_OUTLINE_SIZE * 2;
 
     ScrBlockdef blockdef = vm.blockdefs[block->id];
     int arg_id = 0;
@@ -377,12 +393,14 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
         if (hover_info.argument) return;
         int width = 0;
+        int height = 0;
         ScrBlockInput cur = blockdef.inputs[i];
         Rectangle arg_size;
 
         switch (cur.type) {
         case INPUT_TEXT_DISPLAY:
             width = cur.data.stext.ms.size.x;
+            height = cur.data.stext.ms.size.y;
             break;
         case INPUT_ARGUMENT:
             width = block->arguments[arg_id].ms.size.x;
@@ -391,9 +409,10 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
             case ARGUMENT_CONST_STRING:
             case ARGUMENT_TEXT:
                 arg_size.x = cursor.x;
-                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
+                arg_size.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5);
                 arg_size.width = block->arguments[arg_id].ms.size.x;
                 arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
+                height = arg_size.height;
 
                 if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
                     hover_info.argument = &block->arguments[arg_id];
@@ -404,12 +423,13 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
             case ARGUMENT_BLOCK:
                 Vector2 block_pos;
                 block_pos.x = cursor.x;
-                block_pos.y = cursor.y + block_size.height / 2 - block->arguments[arg_id].ms.size.y / 2; 
+                block_pos.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height / 2 - block->arguments[arg_id].ms.size.y / 2); 
 
                 arg_size.x = block_pos.x;
                 arg_size.y = block_pos.y;
                 arg_size.width = block->arguments[arg_id].ms.size.x;
                 arg_size.height = block->arguments[arg_id].ms.size.y;
+                height = arg_size.height;
 
                 if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
                     hover_info.prev_argument = &block->arguments[arg_id];
@@ -429,9 +449,10 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
             switch (block->arguments[arg_id].type) {
             case ARGUMENT_CONST_STRING:
                 arg_size.x = cursor.x;
-                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
+                arg_size.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5);
                 arg_size.width = block->arguments[arg_id].ms.size.x;
                 arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
+                height = arg_size.height;
 
                 if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
                     hover_info.argument = &block->arguments[arg_id];
@@ -453,12 +474,19 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
             break;
         case INPUT_IMAGE_DISPLAY:
             width = cur.data.simage.ms.size.x;
+            height = cur.data.simage.ms.size.y;
             break;
         default:
-            width = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0).x;
+            Vector2 size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
+            width = size.x;
+            height = size.y;
             break;
         }
-        cursor.x += width + BLOCK_PADDING;
+        if (block->ms.placement == PLACEMENT_VERTICAL) {
+            cursor.y += height + BLOCK_OUTLINE_SIZE * 2;
+        } else {
+            cursor.x += width + BLOCK_PADDING;
+        }
     }
 }
 
@@ -514,22 +542,25 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
         }
     }
     cursor.x += BLOCK_PADDING;
+    if (block->ms.placement == PLACEMENT_VERTICAL) cursor.y += BLOCK_OUTLINE_SIZE * 2;
 
     int arg_id = 0;
     for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
         int width = 0;
+        int height = 0;
         ScrBlockInput cur = blockdef.inputs[i];
 
         switch (cur.type) {
         case INPUT_TEXT_DISPLAY:
             width = cur.data.stext.ms.size.x;
+            height = cur.data.stext.ms.size.y;
+            Vector2 pos;
+            pos.x = cursor.x;
+            pos.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5);
             draw_text_shadow(
                 font_cond, 
                 cur.data.stext.text, 
-                (Vector2) { 
-                    cursor.x, 
-                    cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
-                },
+                pos,
                 BLOCK_TEXT_SIZE,
                 0.0,
                 WHITE,
@@ -544,9 +575,10 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
             case ARGUMENT_TEXT:
                 Rectangle arg_size;
                 arg_size.x = cursor.x;
-                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
+                arg_size.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5);
                 arg_size.width = width;
                 arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
+                height = arg_size.height;
 
                 bool hovered = &block->arguments[arg_id] == hover_info.argument;
                 bool selected = &block->arguments[arg_id] == hover_info.select_argument;
@@ -567,7 +599,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
                     block->arguments[arg_id].data.text,
                     (Vector2) { 
                         cursor.x + BLOCK_STRING_PADDING * 0.5, 
-                        cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
+                        cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? BLOCK_OUTLINE_SIZE : block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5), 
                     },
                     BLOCK_TEXT_SIZE,
                     0.0,
@@ -577,7 +609,8 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
             case ARGUMENT_BLOCK:
                 Vector2 block_pos;
                 block_pos.x = cursor.x;
-                block_pos.y = cursor.y + block_size.height * 0.5 - block->arguments[arg_id].ms.size.y * 0.5;
+                block_pos.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - block->arguments[arg_id].ms.size.y * 0.5);
+                height = block->arguments[arg_id].ms.size.y;
 
                 draw_block(block_pos, &block->arguments[arg_id].data.block, true, force_collision);
                 break;
@@ -589,12 +622,13 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
             break;
         case INPUT_DROPDOWN:
             width = block->arguments[arg_id].ms.size.x;
+            height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
 
             switch (block->arguments[arg_id].type) {
             case ARGUMENT_CONST_STRING:
                 Rectangle arg_size;
                 arg_size.x = cursor.x;
-                arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
+                arg_size.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5);
                 arg_size.width = width;
                 arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
 
@@ -609,7 +643,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
                     block->arguments[arg_id].data.text,
                     (Vector2) { 
                         cursor.x + BLOCK_STRING_PADDING * 0.5, 
-                        cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
+                        cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? BLOCK_OUTLINE_SIZE : block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5),
                     },
                     BLOCK_TEXT_SIZE,
                     0.0,
@@ -654,11 +688,12 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
         case INPUT_IMAGE_DISPLAY:
             Texture2D* image = cur.data.simage.image.image_ptr;
             width = cur.data.simage.ms.size.x;
+            height = cur.data.simage.ms.size.y;
             DrawTextureEx(
                 *image, 
                 (Vector2) { 
                     cursor.x + 1, 
-                    cursor.y + BLOCK_OUTLINE_SIZE * 2 + 1,
+                    cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : BLOCK_OUTLINE_SIZE * 2) + 1,
                 }, 
                 0.0, 
                 (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)image->height, 
@@ -668,7 +703,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
                 *image, 
                 (Vector2) { 
                     cursor.x, 
-                    cursor.y + BLOCK_OUTLINE_SIZE * 2,
+                    cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : BLOCK_OUTLINE_SIZE * 2),
                 }, 
                 0.0, 
                 (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)image->height, 
@@ -676,13 +711,15 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
             );
             break;
         default:
-            width = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0).x;
+            Vector2 size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
+            width = size.x;
+            height = size.y;
             DrawTextEx(
                 font_cond, 
                 "NODEF",
                 (Vector2) { 
                     cursor.x, 
-                    cursor.y + block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5, 
+                    cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5), 
                 },
                 BLOCK_TEXT_SIZE, 
                 0.0, 
@@ -691,7 +728,11 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
             break;
         }
 
-        cursor.x += width + BLOCK_PADDING;
+        if (block->ms.placement == PLACEMENT_VERTICAL) {
+            cursor.y += height + BLOCK_OUTLINE_SIZE * 2;
+        } else {
+            cursor.x += width + BLOCK_PADDING;
+        }
     }
 }
 
@@ -1440,7 +1481,7 @@ bool handle_mouse_click(void) {
 
             argument_set_const_string(hover_info.select_argument, list[hover_info.dropdown_hover_ind]);
             hover_info.select_argument->ms.size = as_scr_vec(MeasureTextEx(font_cond, list[hover_info.dropdown_hover_ind], BLOCK_TEXT_SIZE, 0.0));
-            update_measurements(&vm, hover_info.select_block);
+            update_measurements(&vm, hover_info.select_block, PLACEMENT_HORIZONTAL);
         }
 
         if (hover_info.block != hover_info.select_block) {
@@ -1472,7 +1513,7 @@ bool handle_mouse_click(void) {
                 if (hover_info.argument->type != ARGUMENT_TEXT) return true;
                 mouse_blockchain.blocks[0].parent = hover_info.block;
                 argument_set_block(hover_info.argument, mouse_blockchain.blocks[0]);
-                update_measurements(&vm, &hover_info.argument->data.block);
+                update_measurements(&vm, &hover_info.argument->data.block, PLACEMENT_HORIZONTAL);
                 vector_clear(mouse_blockchain.blocks);
             } else if (hover_info.prev_argument) {
                 // Swap argument
@@ -1484,7 +1525,7 @@ bool handle_mouse_click(void) {
                 mouse_blockchain.blocks[0].parent = NULL;
                 block_update_parent_links(&mouse_blockchain.blocks[0]);
                 argument_set_block(hover_info.prev_argument, temp);
-                update_measurements(&vm, temp.parent);
+                update_measurements(&vm, temp.parent, PLACEMENT_HORIZONTAL);
             }
         } else if (
             hover_info.block && 
@@ -1523,7 +1564,7 @@ bool handle_mouse_click(void) {
                 ScrBlock* parent = hover_info.prev_argument->data.block.parent;
                 argument_set_text(hover_info.prev_argument, "");
                 hover_info.prev_argument->ms.size = as_scr_vec(MeasureTextEx(font_cond, "", BLOCK_TEXT_SIZE, 0.0));
-                update_measurements(&vm, parent);
+                update_measurements(&vm, parent, PLACEMENT_HORIZONTAL);
             }
         } else if (hover_info.blockchain) {
             if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) {
@@ -1599,7 +1640,7 @@ void handle_key_press(void) {
         }
 
         vector_erase(arg_text, remove_pos, remove_size);
-        update_measurements(&vm, hover_info.select_block);
+        update_measurements(&vm, hover_info.select_block, PLACEMENT_HORIZONTAL);
         return;
     }
 
@@ -1612,7 +1653,7 @@ void handle_key_press(void) {
         for (int i = 0; i < utf_size; i++) {
             vector_insert(arg_text, vector_size(*arg_text) - 1, utf_char[i]);
         }
-        update_measurements(&vm, hover_info.select_block);
+        update_measurements(&vm, hover_info.select_block, PLACEMENT_HORIZONTAL);
     }
 }
 
@@ -1932,6 +1973,7 @@ void load_config(Config* config) {
 ScrMeasurement measure_text(char* text) {
     ScrMeasurement ms = {0};
     ms.size = as_scr_vec(MeasureTextEx(font_cond, text, BLOCK_TEXT_SIZE, 0.0));
+    ms.placement = PLACEMENT_HORIZONTAL;
     return ms;
 }
 
@@ -1940,6 +1982,7 @@ ScrMeasurement measure_argument(char* text) {
     ms.size = as_scr_vec(MeasureTextEx(font_cond, text, BLOCK_TEXT_SIZE, 0.0));
     ms.size.x += BLOCK_STRING_PADDING;
     ms.size.x = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, ms.size.x);
+    ms.placement = PLACEMENT_HORIZONTAL;
     return ms;
 }
 
@@ -1948,6 +1991,7 @@ ScrMeasurement measure_image(ScrImage image) {
     ScrMeasurement ms = {0};
     ms.size.x = (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)texture->height * (float)texture->width;
     ms.size.y = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
+    ms.placement = PLACEMENT_HORIZONTAL;
     return ms;
 }
 
