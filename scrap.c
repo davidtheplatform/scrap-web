@@ -2345,7 +2345,7 @@ ScrFuncArg block_random(ScrExec* exec, int argc, ScrFuncArg* argv) {
         min = max;
         max = temp;
     }
-    int val = rand() % (max - min + 1) + min;
+    int val = GetRandomValue(min, max);
     RETURN_INT(val);
 }
 
@@ -2567,8 +2567,6 @@ Texture2D load_svg(const char* path) {
 }
 
 void setup(void) {
-    srand(time(NULL)); // God seed 🙏🙏🙏
-
     run_tex = LoadTexture(DATA_PATH "run.png");
     SetTextureFilter(run_tex, TEXTURE_FILTER_BILINEAR);
     drop_tex = LoadTexture(DATA_PATH "drop.png");
