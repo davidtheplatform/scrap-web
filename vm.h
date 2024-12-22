@@ -311,6 +311,7 @@ void blockchain_clear_blocks(ScrBlockChain* chain);
 void blockchain_insert(ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
 // Splits off blockchain src in two at specified pos, placing lower half into blockchain dst
 void blockchain_detach(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
+void blockchain_detach_single(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
 void blockchain_free(ScrBlockChain* chain);
 
 ScrBlock block_new(ScrVm* vm, size_t id);
@@ -1145,12 +1146,44 @@ ScrBlockChain blockchain_new(void) {
     return chain;
 }
 
-ScrBlockChain blockchain_copy(ScrVm* vm, ScrBlockChain* chain, size_t pos) {
+ScrBlockChain blockchain_copy_single(ScrVm* vm, ScrBlockChain* chain, size_t pos) {
+    assert(pos < vector_size(chain->blocks) || pos == 0);
+
     ScrBlockChain new;
     new.pos = chain->pos;
     new.blocks = vector_create();
 
+    ScrBlockType block_type = vm->blockdefs[chain->blocks[pos].id].type;
+    if (block_type == BLOCKTYPE_END) return new;
+    if (block_type != BLOCKTYPE_CONTROL) {
+        vector_add(&new.blocks, block_copy(&chain->blocks[pos], NULL));
+        blockchain_update_parent_links(&new);
+        return new;
+    }
+
+    int size = 0;
+    int layer = 0;
+    for (size_t i = pos; i < vector_size(chain->blocks) && layer >= 0; i++) {
+        block_type = vm->blockdefs[chain->blocks[i].id].type;
+        vector_add(&new.blocks, block_copy(&chain->blocks[i], NULL));
+        if (block_type == BLOCKTYPE_CONTROL && i != pos) {
+            layer++;
+        } else if (block_type == BLOCKTYPE_END) {
+            layer--;
+        }
+        size++;
+    }
+
+    blockchain_update_parent_links(&new);
+    return new;
+}
+
+ScrBlockChain blockchain_copy(ScrVm* vm, ScrBlockChain* chain, size_t pos) {
     assert(pos < vector_size(chain->blocks) || pos == 0);
+
+    ScrBlockChain new;
+    new.pos = chain->pos;
+    new.blocks = vector_create();
 
     int pos_layer = 0;
     for (size_t i = 0; i < pos; i++) {
@@ -1211,6 +1244,37 @@ void blockchain_insert(ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {
     }
     blockchain_update_parent_links(dst);
     vector_clear(src->blocks);
+}
+
+void blockchain_detach_single(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {
+    assert(pos < vector_size(src->blocks));
+
+    ScrBlockType block_type = vm->blockdefs[src->blocks[pos].id].type;
+    if (block_type == BLOCKTYPE_END) return;
+    if (block_type != BLOCKTYPE_CONTROL) {
+        vector_add(&dst->blocks, src->blocks[pos]);
+        blockchain_update_parent_links(dst);
+        vector_remove(src->blocks, pos);
+        for (size_t i = pos; i < vector_size(src->blocks); i++) block_update_parent_links(&src->blocks[i]);
+        return;
+    }
+
+    int size = 0;
+    int layer = 0;
+    for (size_t i = pos; i < vector_size(src->blocks) && layer >= 0; i++) {
+        ScrBlockType block_type = vm->blockdefs[src->blocks[i].id].type;
+        vector_add(&dst->blocks, src->blocks[i]);
+        if (block_type == BLOCKTYPE_CONTROL && i != pos) {
+            layer++;
+        } else if (block_type == BLOCKTYPE_END) {
+            layer--;
+        }
+        size++;
+    }
+
+    blockchain_update_parent_links(dst);
+    vector_erase(src->blocks, pos, size);
+    for (size_t i = pos; i < vector_size(src->blocks); i++) block_update_parent_links(&src->blocks[i]);
 }
 
 void blockchain_detach(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {

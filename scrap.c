@@ -1575,18 +1575,36 @@ bool handle_mouse_click(void) {
             }
         } else if (hover_info.blockchain) {
             if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) {
-                // Copy chain
-                printf("Copy chain\n");
-                blockchain_free(&mouse_blockchain);
-                mouse_blockchain = blockchain_copy(&vm, hover_info.blockchain, hover_info.blockchain_index);
+                if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) {
+                    // Copy block
+                    printf("Copy block\n");
+                    blockchain_free(&mouse_blockchain);
+                    mouse_blockchain = blockchain_copy_single(&vm, hover_info.blockchain, hover_info.blockchain_index);
+                } else {
+                    // Copy chain
+                    printf("Copy chain\n");
+                    blockchain_free(&mouse_blockchain);
+                    mouse_blockchain = blockchain_copy(&vm, hover_info.blockchain, hover_info.blockchain_index);
+                }
             } else {
-                // Detach block
-                printf("Detach block\n");
-                blockchain_detach(&vm, &mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
-                if (hover_info.blockchain_index == 0) {
-                    blockchain_free(hover_info.blockchain);
-                    blockcode_remove_blockchain(&block_code, hover_info.blockchain - editor_code);
-                    hover_info.block = NULL;
+                if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) {
+                    // Detach block
+                    printf("Detach block\n");
+                    blockchain_detach_single(&vm, &mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
+                    if (vector_size(hover_info.blockchain->blocks) == 0) {
+                        blockchain_free(hover_info.blockchain);
+                        blockcode_remove_blockchain(&block_code, hover_info.blockchain - editor_code);
+                        hover_info.block = NULL;
+                    }
+                } else {
+                    // Detach chain
+                    printf("Detach chain\n");
+                    blockchain_detach(&vm, &mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
+                    if (hover_info.blockchain_index == 0) {
+                        blockchain_free(hover_info.blockchain);
+                        blockcode_remove_blockchain(&block_code, hover_info.blockchain - editor_code);
+                        hover_info.block = NULL;
+                    }
                 }
             }
         }
