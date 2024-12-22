@@ -232,7 +232,7 @@ const char* line_shader_fragment =
 void save_config(Config* config);
 void apply_config(Config* dst, Config* src);
 void set_default_config(Config* config);
-void update_measurements(ScrVm* vm, ScrBlock* block, ScrPlacementStrategy placement);
+void update_measurements(ScrBlock* block, ScrPlacementStrategy placement);
 void term_input_put_char(char ch);
 int term_print_str(const char* str);
 void term_clear(void);
@@ -278,12 +278,50 @@ void blockcode_remove_blockchain(BlockCode* blockcode, size_t ind) {
 }
 
 ScrBlock block_new_ms(ScrVm* vm, ScrBlockdef* blockdef) {
-    ScrBlock block = block_new(blockdef);
-    update_measurements(vm, &block, PLACEMENT_HORIZONTAL);
+    ScrBlock block = block_new(vm, blockdef);
+    update_measurements(&block, PLACEMENT_HORIZONTAL);
     return block;
 }
 
-void update_measurements(ScrVm* vm, ScrBlock* block, ScrPlacementStrategy placement) {
+void blockdef_update_measurements(ScrBlockdef* blockdef) {
+    blockdef->ms.size.x = BLOCK_PADDING;
+    blockdef->ms.placement = PLACEMENT_HORIZONTAL;
+    blockdef->ms.size.y = conf.font_size;
+
+    for (vec_size_t i = 0; i < vector_size(blockdef->inputs); i++) {
+        ScrMeasurement ms;
+        ms.placement = PLACEMENT_HORIZONTAL;
+
+        switch (blockdef->inputs[i].type) {
+        case INPUT_TEXT_DISPLAY:
+            ms = blockdef->inputs[i].data.stext.ms;
+            break;
+        case INPUT_IMAGE_DISPLAY:
+            ms = blockdef->inputs[i].data.simage.ms;
+            break;
+        case INPUT_ARGUMENT:
+            ms.size = as_scr_vec(MeasureTextEx(font_cond, "Arg name", BLOCK_TEXT_SIZE, 0.0));
+            ms.size.x += BLOCK_STRING_PADDING;
+            ms.size.y = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, ms.size.y);
+            break;
+        case INPUT_DROPDOWN:
+            ms.size = as_scr_vec(MeasureTextEx(font_cond, "Dropdown", BLOCK_TEXT_SIZE, 0.0));
+            break;
+        case INPUT_BLOCKDEF_EDITOR:
+            assert(false && "Unimplemented");
+            break;
+        default:
+            ms.size = as_scr_vec(MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0));
+            break;
+        }
+        ms.size.x += BLOCK_PADDING;
+
+        blockdef->ms.size.x += ms.size.x;
+        blockdef->ms.size.y = MAX(blockdef->ms.size.y, ms.size.y + BLOCK_OUTLINE_SIZE * 4);
+    }
+}
+
+void update_measurements(ScrBlock* block, ScrPlacementStrategy placement) {
     block->ms.size.x = BLOCK_PADDING;
     block->ms.placement = placement;
     block->ms.size.y = placement == PLACEMENT_HORIZONTAL ? conf.font_size : BLOCK_OUTLINE_SIZE * 2;
@@ -295,6 +333,9 @@ void update_measurements(ScrVm* vm, ScrBlock* block, ScrPlacementStrategy placem
         switch (block->blockdef->inputs[i].type) {
         case INPUT_TEXT_DISPLAY:
             ms = block->blockdef->inputs[i].data.stext.ms;
+            break;
+        case INPUT_IMAGE_DISPLAY:
+            ms = block->blockdef->inputs[i].data.simage.ms;
             break;
         case INPUT_ARGUMENT:
             switch (block->arguments[arg_id].type) {
@@ -343,8 +384,15 @@ void update_measurements(ScrVm* vm, ScrBlock* block, ScrPlacementStrategy placem
             }
             arg_id++;
             break;
-        case INPUT_IMAGE_DISPLAY:
-            ms = block->blockdef->inputs[i].data.simage.ms;
+        case INPUT_BLOCKDEF_EDITOR:
+            blockdef_update_measurements(&block->arguments[arg_id].data.blockdef);
+            ScrMeasurement editor_ms = block->arguments[arg_id].data.blockdef.ms;
+            editor_ms.size.x += conf.font_size + BLOCK_PADDING;
+            editor_ms.size.y = MAX(editor_ms.size.y, conf.font_size + BLOCK_OUTLINE_SIZE * 2);
+
+            block->arguments[arg_id].ms = editor_ms;
+            ms = editor_ms;
+            arg_id++;
             break;
         default:
             ms.size = as_scr_vec(MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0));
@@ -363,11 +411,11 @@ void update_measurements(ScrVm* vm, ScrBlock* block, ScrPlacementStrategy placem
     }
 
     if (block->ms.size.x > conf.block_size_threshold && block->ms.placement == PLACEMENT_HORIZONTAL) {
-        update_measurements(vm, block, PLACEMENT_VERTICAL);
+        update_measurements(block, PLACEMENT_VERTICAL);
         return;
     }
 
-    if (block->parent) update_measurements(vm, block->parent, PLACEMENT_HORIZONTAL);
+    if (block->parent) update_measurements(block->parent, PLACEMENT_HORIZONTAL);
 }
 
 void block_update_collisions(Vector2 position, ScrBlock* block) {
@@ -399,6 +447,10 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
         case INPUT_TEXT_DISPLAY:
             width = cur.data.stext.ms.size.x;
             height = cur.data.stext.ms.size.y;
+            break;
+        case INPUT_IMAGE_DISPLAY:
+            width = cur.data.simage.ms.size.x;
+            height = cur.data.simage.ms.size.y;
             break;
         case INPUT_ARGUMENT:
             width = block->arguments[arg_id].ms.size.x;
@@ -470,9 +522,11 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
             }
             arg_id++;
             break;
-        case INPUT_IMAGE_DISPLAY:
-            width = cur.data.simage.ms.size.x;
-            height = cur.data.simage.ms.size.y;
+        case INPUT_BLOCKDEF_EDITOR:
+            assert(block->arguments[arg_id].type == ARGUMENT_BLOCKDEF);
+            width = block->arguments[arg_id].ms.size.x;
+            height = block->arguments[arg_id].ms.size.y;
+            arg_id++;
             break;
         default:
             Vector2 size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
@@ -491,6 +545,182 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
 void draw_text_shadow(Font font, const char *text, Vector2 position, float font_size, float spacing, Color tint, Color shadow) {
     DrawTextEx(font, text, (Vector2) { position.x + 1, position.y + 1 }, font_size, spacing, shadow);
     DrawTextEx(font, text, position, font_size, spacing, tint);
+}
+
+void draw_blockdef(Vector2 position, ScrBlockdef* blockdef) {
+    Color color = as_rl_color(blockdef->color);
+    Color outline_color = ColorBrightness(color, -0.2);
+
+    Vector2 cursor = position;
+
+    Rectangle block_size;
+    block_size.x = position.x;
+    block_size.y = position.y;
+    block_size.width = blockdef->ms.size.x;
+    block_size.height = blockdef->ms.size.y;
+
+    if (!CheckCollisionRecs(block_size, (Rectangle) { 0, 0, GetScreenWidth(), GetScreenHeight() })) return;
+
+    if (blockdef->type == BLOCKTYPE_HAT) {
+        DrawRectangle(block_size.x, block_size.y, block_size.width - conf.font_size / 4.0, block_size.height, color);
+        DrawRectangle(block_size.x, block_size.y + conf.font_size / 4.0, block_size.width, block_size.height - conf.font_size / 4.0, color);
+        DrawTriangle(
+            (Vector2) { block_size.x + block_size.width - conf.font_size / 4.0 - 1, block_size.y }, 
+            (Vector2) { block_size.x + block_size.width - conf.font_size / 4.0 - 1, block_size.y + conf.font_size / 4.0 }, 
+            (Vector2) { block_size.x + block_size.width, block_size.y + conf.font_size / 4.0 }, 
+            color
+        );
+    } else {
+        DrawRectangleRec(block_size, color);
+    }
+
+    if (blockdef->type == BLOCKTYPE_HAT) {
+        DrawRectangle(block_size.x, block_size.y, block_size.width - conf.font_size / 4.0, BLOCK_OUTLINE_SIZE, outline_color);
+        DrawRectangle(block_size.x, block_size.y, BLOCK_OUTLINE_SIZE, block_size.height, outline_color);
+        DrawRectangle(block_size.x, block_size.y + block_size.height - BLOCK_OUTLINE_SIZE, block_size.width, BLOCK_OUTLINE_SIZE, outline_color);
+        DrawRectangle(block_size.x + block_size.width - BLOCK_OUTLINE_SIZE, block_size.y + conf.font_size / 4.0, BLOCK_OUTLINE_SIZE, block_size.height - conf.font_size / 4.0, outline_color);
+        DrawRectanglePro((Rectangle) {
+            block_size.x + block_size.width - conf.font_size / 4.0,
+            block_size.y,
+            sqrtf((conf.font_size / 4.0 * conf.font_size / 4.0) * 2),
+            BLOCK_OUTLINE_SIZE,
+        }, (Vector2) {0}, 45.0, outline_color);
+    } else {
+        DrawRectangleLinesEx(block_size, BLOCK_OUTLINE_SIZE, outline_color);
+    }
+    cursor.x += BLOCK_PADDING;
+    if (blockdef->ms.placement == PLACEMENT_VERTICAL) cursor.y += BLOCK_OUTLINE_SIZE * 2;
+
+    for (vec_size_t i = 0; i < vector_size(blockdef->inputs); i++) {
+        int width = 0;
+        int height = 0;
+        ScrBlockInput cur = blockdef->inputs[i];
+
+        Vector2 arg_size;
+        Rectangle rect;
+        switch (cur.type) {
+        case INPUT_TEXT_DISPLAY:
+            width = cur.data.stext.ms.size.x;
+            height = cur.data.stext.ms.size.y;
+            Vector2 pos;
+            pos.x = cursor.x;
+            pos.y = cursor.y + (blockdef->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5);
+            draw_text_shadow(
+                font_cond, 
+                cur.data.stext.text, 
+                pos,
+                BLOCK_TEXT_SIZE,
+                0.0,
+                WHITE,
+                (Color) { 0x00, 0x00, 0x00, 0x88 }
+            );
+            break;
+        case INPUT_IMAGE_DISPLAY:
+            Texture2D* image = cur.data.simage.image.image_ptr;
+            width = cur.data.simage.ms.size.x;
+            height = cur.data.simage.ms.size.y;
+            DrawTextureEx(
+                *image, 
+                (Vector2) { 
+                    cursor.x + 1, 
+                    cursor.y + (blockdef->ms.placement == PLACEMENT_VERTICAL ? 0 : BLOCK_OUTLINE_SIZE * 2) + 1,
+                }, 
+                0.0, 
+                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)image->height, 
+                (Color) { 0x00, 0x00, 0x00, 0x88 }
+            );
+            DrawTextureEx(
+                *image, 
+                (Vector2) { 
+                    cursor.x, 
+                    cursor.y + (blockdef->ms.placement == PLACEMENT_VERTICAL ? 0 : BLOCK_OUTLINE_SIZE * 2),
+                }, 
+                0.0, 
+                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)image->height, 
+                WHITE
+            );
+            break;
+        case INPUT_ARGUMENT:
+            arg_size = MeasureTextEx(font_cond, "Arg name", BLOCK_TEXT_SIZE, 0.0);
+            arg_size.x += BLOCK_STRING_PADDING;
+            arg_size.y = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, arg_size.y);
+            width = arg_size.x;
+            height = arg_size.y;
+
+            rect.x = cursor.x;
+            rect.y = cursor.y + (blockdef->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5);
+            rect.width = width;
+            rect.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
+
+            DrawRectangleRec(rect, color);
+            DrawRectangleLinesEx(rect, BLOCK_OUTLINE_SIZE, outline_color);
+            draw_text_shadow(
+                font_cond, 
+                "Arg name",
+                (Vector2) { 
+                    cursor.x + BLOCK_STRING_PADDING * 0.5, 
+                    cursor.y + (blockdef->ms.placement == PLACEMENT_VERTICAL ? BLOCK_OUTLINE_SIZE : block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5), 
+                },
+                BLOCK_TEXT_SIZE,
+                0.0,
+                WHITE,
+                BLACK
+            );
+            break;
+        case INPUT_DROPDOWN:
+            arg_size = MeasureTextEx(font_cond, "Dropdown", BLOCK_TEXT_SIZE, 0.0);
+            arg_size.y = MAX(conf.font_size - BLOCK_OUTLINE_SIZE * 4, arg_size.y);
+            width = arg_size.x;
+            height = arg_size.y;
+
+            rect.x = cursor.x;
+            rect.y = cursor.y + (blockdef->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5);
+            rect.width = width;
+            rect.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
+
+            DrawRectangleRec(rect, color);
+            DrawRectangleLinesEx(rect, BLOCK_OUTLINE_SIZE, outline_color);
+            draw_text_shadow(
+                font_cond, 
+                "Dropdown",
+                (Vector2) { 
+                    cursor.x + BLOCK_STRING_PADDING * 0.5, 
+                    cursor.y + (blockdef->ms.placement == PLACEMENT_VERTICAL ? BLOCK_OUTLINE_SIZE : block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5), 
+                },
+                BLOCK_TEXT_SIZE,
+                0.0,
+                WHITE,
+                BLACK
+            );
+            break;
+        case INPUT_BLOCKDEF_EDITOR:
+            assert(false && "Unimplemented");
+            break;
+        default:
+            Vector2 size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
+            width = size.x;
+            height = size.y;
+            DrawTextEx(
+                font_cond, 
+                "NODEF",
+                (Vector2) { 
+                    cursor.x, 
+                    cursor.y + (blockdef->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5), 
+                },
+                BLOCK_TEXT_SIZE, 
+                0.0, 
+                RED
+            );
+            break;
+        }
+
+        if (blockdef->ms.placement == PLACEMENT_VERTICAL) {
+            cursor.y += height + BLOCK_OUTLINE_SIZE * 2;
+        } else {
+            cursor.x += width + BLOCK_PADDING;
+        }
+    }
+    
 }
 
 void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool force_collision) {
@@ -562,6 +792,31 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
                 0.0,
                 WHITE,
                 (Color) { 0x00, 0x00, 0x00, 0x88 }
+            );
+            break;
+        case INPUT_IMAGE_DISPLAY:
+            Texture2D* image = cur.data.simage.image.image_ptr;
+            width = cur.data.simage.ms.size.x;
+            height = cur.data.simage.ms.size.y;
+            DrawTextureEx(
+                *image, 
+                (Vector2) { 
+                    cursor.x + 1, 
+                    cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : BLOCK_OUTLINE_SIZE * 2) + 1,
+                }, 
+                0.0, 
+                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)image->height, 
+                (Color) { 0x00, 0x00, 0x00, 0x88 }
+            );
+            DrawTextureEx(
+                *image, 
+                (Vector2) { 
+                    cursor.x, 
+                    cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : BLOCK_OUTLINE_SIZE * 2),
+                }, 
+                0.0, 
+                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)image->height, 
+                WHITE
             );
             break;
         case INPUT_ARGUMENT:
@@ -682,30 +937,48 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
             }
             arg_id++;
             break;
-        case INPUT_IMAGE_DISPLAY:
-            Texture2D* image = cur.data.simage.image.image_ptr;
-            width = cur.data.simage.ms.size.x;
-            height = cur.data.simage.ms.size.y;
-            DrawTextureEx(
-                *image, 
-                (Vector2) { 
-                    cursor.x + 1, 
-                    cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : BLOCK_OUTLINE_SIZE * 2) + 1,
-                }, 
-                0.0, 
-                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)image->height, 
-                (Color) { 0x00, 0x00, 0x00, 0x88 }
+        case INPUT_BLOCKDEF_EDITOR:
+            assert(block->arguments[arg_id].type == ARGUMENT_BLOCKDEF);
+            width = block->arguments[arg_id].ms.size.x;
+            height = block->arguments[arg_id].ms.size.y;
+
+            Vector2 blockdef_size = as_rl_vec(block->arguments[arg_id].data.blockdef.ms.size);
+            Vector2 editor_pos;
+            editor_pos.x = cursor.x;
+            editor_pos.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - height * 0.5);
+            DrawRectangle(editor_pos.x, editor_pos.y, width, height, (Color) { 0x00, 0x00, 0x00, 0x40 });
+
+            draw_blockdef(
+                (Vector2) {
+                    editor_pos.x + BLOCK_OUTLINE_SIZE, 
+                    editor_pos.y + height * 0.5 - blockdef_size.y * 0.5,
+                },
+                &block->arguments[arg_id].data.blockdef
             );
-            DrawTextureEx(
-                *image, 
-                (Vector2) { 
-                    cursor.x, 
-                    cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : BLOCK_OUTLINE_SIZE * 2),
-                }, 
-                0.0, 
-                (float)(conf.font_size - BLOCK_OUTLINE_SIZE * 4) / (float)image->height, 
+            editor_pos.x += blockdef_size.x;
+
+            Rectangle editor_button;
+            editor_button.x = editor_pos.x + conf.font_size * 0.2;
+            editor_button.y = editor_pos.y + height * 0.5 - conf.font_size * 0.4;
+            editor_button.width = conf.font_size * 0.8;
+            editor_button.height = conf.font_size * 0.8;
+            DrawRectangleRec(editor_button, (Color) { 0xff, 0xff, 0xff, 0x40 });
+            DrawRectangleLinesEx(editor_button, BLOCK_OUTLINE_SIZE, (Color) { 0xff, 0xff, 0xff, 0x20 });
+            DrawRectangle(
+                editor_button.x + editor_button.width * 0.5 - BLOCK_OUTLINE_SIZE * 0.5,
+                editor_button.y + BLOCK_OUTLINE_SIZE * 2,
+                BLOCK_OUTLINE_SIZE,
+                editor_button.height - BLOCK_OUTLINE_SIZE * 4,
                 WHITE
             );
+            DrawRectangle(
+                editor_button.x + BLOCK_OUTLINE_SIZE * 2,
+                editor_button.y + editor_button.height * 0.5 - BLOCK_OUTLINE_SIZE * 0.5,
+                editor_button.width - BLOCK_OUTLINE_SIZE * 4,
+                BLOCK_OUTLINE_SIZE,
+                WHITE
+            );
+            arg_id++;
             break;
         default:
             Vector2 size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
@@ -1117,7 +1390,7 @@ void draw_sidebar(void) {
     int pos_y = conf.font_size * 2.2 + SIDE_BAR_PADDING - sidebar.scroll_amount;
     for (vec_size_t i = 0; i < vector_size(sidebar.blocks); i++) {
         draw_block((Vector2){ SIDE_BAR_PADDING, pos_y }, &sidebar.blocks[i], true, false);
-        pos_y += conf.font_size + SIDE_BAR_PADDING;
+        pos_y += sidebar.blocks[i].ms.size.y + SIDE_BAR_PADDING;
     }
 
     if (sidebar.max_y > GetScreenHeight()) {
@@ -1483,7 +1756,7 @@ bool handle_mouse_click(void) {
 
             argument_set_const_string(hover_info.select_argument, list[hover_info.dropdown_hover_ind]);
             hover_info.select_argument->ms.size = as_scr_vec(MeasureTextEx(font_cond, list[hover_info.dropdown_hover_ind], BLOCK_TEXT_SIZE, 0.0));
-            update_measurements(&vm, hover_info.select_block, PLACEMENT_HORIZONTAL);
+            update_measurements(hover_info.select_block, PLACEMENT_HORIZONTAL);
         }
 
         if (hover_info.block != hover_info.select_block) {
@@ -1515,7 +1788,7 @@ bool handle_mouse_click(void) {
                 if (hover_info.argument->type != ARGUMENT_TEXT) return true;
                 mouse_blockchain.blocks[0].parent = hover_info.block;
                 argument_set_block(hover_info.argument, mouse_blockchain.blocks[0]);
-                update_measurements(&vm, &hover_info.argument->data.block, PLACEMENT_HORIZONTAL);
+                update_measurements(&hover_info.argument->data.block, PLACEMENT_HORIZONTAL);
                 vector_clear(mouse_blockchain.blocks);
             } else if (hover_info.prev_argument) {
                 // Swap argument
@@ -1527,7 +1800,7 @@ bool handle_mouse_click(void) {
                 mouse_blockchain.blocks[0].parent = NULL;
                 block_update_parent_links(&mouse_blockchain.blocks[0]);
                 argument_set_block(hover_info.prev_argument, temp);
-                update_measurements(&vm, temp.parent, PLACEMENT_HORIZONTAL);
+                update_measurements(temp.parent, PLACEMENT_HORIZONTAL);
             }
         } else if (
             hover_info.block && 
@@ -1566,7 +1839,7 @@ bool handle_mouse_click(void) {
                 ScrBlock* parent = hover_info.prev_argument->data.block.parent;
                 argument_set_text(hover_info.prev_argument, "");
                 hover_info.prev_argument->ms.size = as_scr_vec(MeasureTextEx(font_cond, "", BLOCK_TEXT_SIZE, 0.0));
-                update_measurements(&vm, parent, PLACEMENT_HORIZONTAL);
+                update_measurements(parent, PLACEMENT_HORIZONTAL);
             }
         } else if (hover_info.blockchain) {
             if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) {
@@ -1660,7 +1933,7 @@ void handle_key_press(void) {
         }
 
         vector_erase(arg_text, remove_pos, remove_size);
-        update_measurements(&vm, hover_info.select_block, PLACEMENT_HORIZONTAL);
+        update_measurements(hover_info.select_block, PLACEMENT_HORIZONTAL);
         return;
     }
 
@@ -1673,7 +1946,7 @@ void handle_key_press(void) {
         for (int i = 0; i < utf_size; i++) {
             vector_insert(arg_text, vector_size(*arg_text) - 1, utf_char[i]);
         }
-        update_measurements(&vm, hover_info.select_block, PLACEMENT_HORIZONTAL);
+        update_measurements(hover_info.select_block, PLACEMENT_HORIZONTAL);
     }
 }
 
@@ -2681,246 +2954,305 @@ void setup(void) {
 
     vm = vm_new(measure_text, measure_argument, measure_image);
 
-    int on_start = block_register(&vm, "on_start", BLOCKTYPE_HAT, (ScrColor) { 0xff, 0x77, 0x00, 0xFF }, block_noop);
-    block_add_text(&vm, on_start, "When");
-    block_add_image(&vm, on_start, (ScrImage) { .image_ptr = &run_tex });
-    block_add_text(&vm, on_start, "clicked");
+    ScrBlockdef on_start = blockdef_new("on_start", BLOCKTYPE_HAT, (ScrColor) { 0xff, 0x77, 0x00, 0xFF }, block_noop);
+    blockdef_add_text(&vm, &on_start, "When");
+    blockdef_add_image(&vm, &on_start, (ScrImage) { .image_ptr = &run_tex });
+    blockdef_add_text(&vm, &on_start, "clicked");
+    blockdef_register(&vm, on_start);
 
-    int sc_input = block_register(&vm, "input", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xff }, block_input);
-    block_add_text(&vm, sc_input, "Get input");
+    ScrBlockdef sc_input = blockdef_new("input", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xff }, block_input);
+    blockdef_add_text(&vm, &sc_input, "Get input");
+    blockdef_register(&vm, sc_input);
 
-    int sc_char = block_register(&vm, "get_char", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xff }, block_get_char);
-    block_add_text(&vm, sc_char, "Get char");
+    ScrBlockdef sc_char = blockdef_new("get_char", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xff }, block_get_char);
+    blockdef_add_text(&vm, &sc_char, "Get char");
+    blockdef_register(&vm, sc_char);
 
-    int sc_print = block_register(&vm, "print", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_print);
-    block_add_text(&vm, sc_print, "Print");
-    block_add_argument(&vm, sc_print, "Привет, мусороид!", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_print = blockdef_new("print", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_print);
+    blockdef_add_text(&vm, &sc_print, "Print");
+    blockdef_add_argument(&vm, &sc_print, "Привет, мусороид!", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_print);
 
-    int sc_println = block_register(&vm, "println", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_println);
-    block_add_text(&vm, sc_println, "Print line");
-    block_add_argument(&vm, sc_println, "Привет, мусороид!", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_println = blockdef_new("println", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_println);
+    blockdef_add_text(&vm, &sc_println, "Print line");
+    blockdef_add_argument(&vm, &sc_println, "Привет, мусороид!", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_println);
 
-    int sc_cursor_x = block_register(&vm, "cursor_x", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_x);
-    block_add_text(&vm, sc_cursor_x, "Cursor X");
+    ScrBlockdef sc_cursor_x = blockdef_new("cursor_x", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_x);
+    blockdef_add_text(&vm, &sc_cursor_x, "Cursor X");
+    blockdef_register(&vm, sc_cursor_x);
 
-    int sc_cursor_y = block_register(&vm, "cursor_y", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_y);
-    block_add_text(&vm, sc_cursor_y, "Cursor Y");
+    ScrBlockdef sc_cursor_y = blockdef_new("cursor_y", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_y);
+    blockdef_add_text(&vm, &sc_cursor_y, "Cursor Y");
+    blockdef_register(&vm, sc_cursor_y);
 
-    int sc_cursor_max_x = block_register(&vm, "cursor_max_x", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_max_x);
-    block_add_text(&vm, sc_cursor_max_x, "Terminal width");
+    ScrBlockdef sc_cursor_max_x = blockdef_new("cursor_max_x", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_max_x);
+    blockdef_add_text(&vm, &sc_cursor_max_x, "Terminal width");
+    blockdef_register(&vm, sc_cursor_max_x);
 
-    int sc_cursor_max_y = block_register(&vm, "cursor_max_y", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_max_y);
-    block_add_text(&vm, sc_cursor_max_y, "Terminal height");
+    ScrBlockdef sc_cursor_max_y = blockdef_new("cursor_max_y", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_cursor_max_y);
+    blockdef_add_text(&vm, &sc_cursor_max_y, "Terminal height");
+    blockdef_register(&vm, sc_cursor_max_y);
 
-    int sc_set_cursor = block_register(&vm, "set_cursor", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_set_cursor);
-    block_add_text(&vm, sc_set_cursor, "Set cursor X:");
-    block_add_argument(&vm, sc_set_cursor, "0", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_set_cursor, "Y:");
-    block_add_argument(&vm, sc_set_cursor, "0", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_set_cursor = blockdef_new("set_cursor", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_set_cursor);
+    blockdef_add_text(&vm, &sc_set_cursor, "Set cursor X:");
+    blockdef_add_argument(&vm, &sc_set_cursor, "0", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_set_cursor, "Y:");
+    blockdef_add_argument(&vm, &sc_set_cursor, "0", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_set_cursor);
 
-    int sc_term_clear = block_register(&vm, "term_clear", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_term_clear);
-    block_add_text(&vm, sc_term_clear, "Clear terminal");
+    ScrBlockdef sc_term_clear = blockdef_new("term_clear", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xaa, 0x44, 0xFF }, block_term_clear);
+    blockdef_add_text(&vm, &sc_term_clear, "Clear terminal");
+    blockdef_register(&vm, sc_term_clear);
 
-    int sc_loop = block_register(&vm, "loop", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_loop);
-    block_add_text(&vm, sc_loop, "Loop");
+    ScrBlockdef sc_loop = blockdef_new("loop", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_loop);
+    blockdef_add_text(&vm, &sc_loop, "Loop");
+    blockdef_register(&vm, sc_loop);
 
-    int sc_repeat = block_register(&vm, "repeat", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_repeat);
-    block_add_text(&vm, sc_repeat, "Repeat");
-    block_add_argument(&vm, sc_repeat, "10", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_repeat, "times");
+    ScrBlockdef sc_repeat = blockdef_new("repeat", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_repeat);
+    blockdef_add_text(&vm, &sc_repeat, "Repeat");
+    blockdef_add_argument(&vm, &sc_repeat, "10", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_repeat, "times");
+    blockdef_register(&vm, sc_repeat);
 
-    int sc_while = block_register(&vm, "while", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_while);
-    block_add_text(&vm, sc_while, "While");
-    block_add_argument(&vm, sc_while, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_while = blockdef_new("while", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_while);
+    blockdef_add_text(&vm, &sc_while, "While");
+    blockdef_add_argument(&vm, &sc_while, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_while);
 
-    int sc_if = block_register(&vm, "if", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_if);
-    block_add_text(&vm, sc_if, "If");
-    block_add_argument(&vm, sc_if, "", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_if, ", then");
+    ScrBlockdef sc_if = blockdef_new("if", BLOCKTYPE_CONTROL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_if);
+    blockdef_add_text(&vm, &sc_if, "If");
+    blockdef_add_argument(&vm, &sc_if, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_if, ", then");
+    blockdef_register(&vm, sc_if);
 
-    int sc_else_if = block_register(&vm, "else_if", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_else_if);
-    block_add_text(&vm, sc_else_if, "Else if");
-    block_add_argument(&vm, sc_else_if, "", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_else_if, ", then");
+    ScrBlockdef sc_else_if = blockdef_new("else_if", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_else_if);
+    blockdef_add_text(&vm, &sc_else_if, "Else if");
+    blockdef_add_argument(&vm, &sc_else_if, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_else_if, ", then");
+    blockdef_register(&vm, sc_else_if);
 
-    int sc_else = block_register(&vm, "else", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_else);
-    block_add_text(&vm, sc_else, "Else");
+    ScrBlockdef sc_else = blockdef_new("else", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_else);
+    blockdef_add_text(&vm, &sc_else, "Else");
+    blockdef_register(&vm, sc_else);
 
-    int sc_sleep = block_register(&vm, "sleep", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_sleep);
-    block_add_text(&vm, sc_sleep, "Sleep");
-    block_add_argument(&vm, sc_sleep, "", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_sleep, "us");
+    ScrBlockdef sc_sleep = blockdef_new("sleep", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_sleep);
+    blockdef_add_text(&vm, &sc_sleep, "Sleep");
+    blockdef_add_argument(&vm, &sc_sleep, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_sleep, "us");
+    blockdef_register(&vm, sc_sleep);
 
-    int sc_end = block_register(&vm, "end", BLOCKTYPE_END, (ScrColor) { 0x77, 0x77, 0x77, 0xff }, block_noop);
-    block_add_text(&vm, sc_end, "End");
+    ScrBlockdef sc_end = blockdef_new("end", BLOCKTYPE_END, (ScrColor) { 0x77, 0x77, 0x77, 0xff }, block_noop);
+    blockdef_add_text(&vm, &sc_end, "End");
+    blockdef_register(&vm, sc_end);
 
-    int sc_plus = block_register(&vm, "plus", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_plus);
-    block_add_argument(&vm, sc_plus, "9", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_plus, "+");
-    block_add_argument(&vm, sc_plus, "10", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_plus = blockdef_new("plus", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_plus);
+    blockdef_add_argument(&vm, &sc_plus, "9", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_plus, "+");
+    blockdef_add_argument(&vm, &sc_plus, "10", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_plus);
 
-    int sc_minus = block_register(&vm, "minus", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_minus);
-    block_add_argument(&vm, sc_minus, "9", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_minus, "-");
-    block_add_argument(&vm, sc_minus, "10", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_minus = blockdef_new("minus", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_minus);
+    blockdef_add_argument(&vm, &sc_minus, "9", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_minus, "-");
+    blockdef_add_argument(&vm, &sc_minus, "10", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_minus);
 
-    int sc_mult = block_register(&vm, "mult", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_mult);
-    block_add_argument(&vm, sc_mult, "9", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_mult, "*");
-    block_add_argument(&vm, sc_mult, "10", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_mult = blockdef_new("mult", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_mult);
+    blockdef_add_argument(&vm, &sc_mult, "9", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_mult, "*");
+    blockdef_add_argument(&vm, &sc_mult, "10", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_mult);
 
-    int sc_div = block_register(&vm, "div", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_div);
-    block_add_argument(&vm, sc_div, "39", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_div, "/");
-    block_add_argument(&vm, sc_div, "5", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_div = blockdef_new("div", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_div);
+    blockdef_add_argument(&vm, &sc_div, "39", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_div, "/");
+    blockdef_add_argument(&vm, &sc_div, "5", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_div);
 
-    int sc_pow = block_register(&vm, "pow", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_pow);
-    block_add_text(&vm, sc_pow, "Pow");
-    block_add_argument(&vm, sc_pow, "5", BLOCKCONSTR_UNLIMITED);
-    block_add_argument(&vm, sc_pow, "5", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_pow = blockdef_new("pow", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_pow);
+    blockdef_add_text(&vm, &sc_pow, "Pow");
+    blockdef_add_argument(&vm, &sc_pow, "5", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_argument(&vm, &sc_pow, "5", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_pow);
 
-    int sc_bit_not = block_register(&vm, "bit_not", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_not);
-    block_add_text(&vm, sc_bit_not, "~");
-    block_add_argument(&vm, sc_bit_not, "39", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_bit_not = blockdef_new("bit_not", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_not);
+    blockdef_add_text(&vm, &sc_bit_not, "~");
+    blockdef_add_argument(&vm, &sc_bit_not, "39", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_bit_not);
 
-    int sc_bit_and = block_register(&vm, "bit_and", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_and);
-    block_add_argument(&vm, sc_bit_and, "39", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_bit_and, "&");
-    block_add_argument(&vm, sc_bit_and, "5", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_bit_and = blockdef_new("bit_and", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_and);
+    blockdef_add_argument(&vm, &sc_bit_and, "39", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_bit_and, "&");
+    blockdef_add_argument(&vm, &sc_bit_and, "5", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_bit_and);
 
-    int sc_bit_or = block_register(&vm, "bit_or", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_or);
-    block_add_argument(&vm, sc_bit_or, "39", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_bit_or, "|");
-    block_add_argument(&vm, sc_bit_or, "5", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_bit_or = blockdef_new("bit_or", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_or);
+    blockdef_add_argument(&vm, &sc_bit_or, "39", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_bit_or, "|");
+    blockdef_add_argument(&vm, &sc_bit_or, "5", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_bit_or);
 
-    int sc_bit_xor = block_register(&vm, "bit_xor", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_xor);
-    block_add_argument(&vm, sc_bit_xor, "39", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_bit_xor, "^");
-    block_add_argument(&vm, sc_bit_xor, "5", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_bit_xor = blockdef_new("bit_xor", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_xor);
+    blockdef_add_argument(&vm, &sc_bit_xor, "39", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_bit_xor, "^");
+    blockdef_add_argument(&vm, &sc_bit_xor, "5", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_bit_xor);
 
-    int sc_rem = block_register(&vm, "rem", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_rem);
-    block_add_argument(&vm, sc_rem, "39", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_rem, "%");
-    block_add_argument(&vm, sc_rem, "5", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_rem = blockdef_new("rem", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_rem);
+    blockdef_add_argument(&vm, &sc_rem, "39", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_rem, "%");
+    blockdef_add_argument(&vm, &sc_rem, "5", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_rem);
 
-    int sc_less = block_register(&vm, "less", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_less);
-    block_add_argument(&vm, sc_less, "9", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_less, "<");
-    block_add_argument(&vm, sc_less, "11", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_less = blockdef_new("less", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_less);
+    blockdef_add_argument(&vm, &sc_less, "9", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_less, "<");
+    blockdef_add_argument(&vm, &sc_less, "11", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_less);
 
-    int sc_less_eq = block_register(&vm, "less_eq", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_less_eq);
-    block_add_argument(&vm, sc_less_eq, "9", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_less_eq, "<=");
-    block_add_argument(&vm, sc_less_eq, "11", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_less_eq = blockdef_new("less_eq", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_less_eq);
+    blockdef_add_argument(&vm, &sc_less_eq, "9", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_less_eq, "<=");
+    blockdef_add_argument(&vm, &sc_less_eq, "11", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_less_eq);
 
-    int sc_eq = block_register(&vm, "eq", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_eq);
-    block_add_argument(&vm, sc_eq, "", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_eq, "=");
-    block_add_argument(&vm, sc_eq, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_eq = blockdef_new("eq", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_eq);
+    blockdef_add_argument(&vm, &sc_eq, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_eq, "=");
+    blockdef_add_argument(&vm, &sc_eq, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_eq);
 
-    int sc_not_eq = block_register(&vm, "not_eq", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_not_eq);
-    block_add_argument(&vm, sc_not_eq, "", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_not_eq, "!=");
-    block_add_argument(&vm, sc_not_eq, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_not_eq = blockdef_new("not_eq", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_not_eq);
+    blockdef_add_argument(&vm, &sc_not_eq, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_not_eq, "!=");
+    blockdef_add_argument(&vm, &sc_not_eq, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_not_eq);
 
-    int sc_more_eq = block_register(&vm, "more_eq", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_more_eq);
-    block_add_argument(&vm, sc_more_eq, "9", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_more_eq, ">=");
-    block_add_argument(&vm, sc_more_eq, "11", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_more_eq = blockdef_new("more_eq", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_more_eq);
+    blockdef_add_argument(&vm, &sc_more_eq, "9", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_more_eq, ">=");
+    blockdef_add_argument(&vm, &sc_more_eq, "11", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_more_eq);
 
-    int sc_more = block_register(&vm, "more", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_more);
-    block_add_argument(&vm, sc_more, "9", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_more, ">");
-    block_add_argument(&vm, sc_more, "11", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_more = blockdef_new("more", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_more);
+    blockdef_add_argument(&vm, &sc_more, "9", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_more, ">");
+    blockdef_add_argument(&vm, &sc_more, "11", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_more);
 
-    int sc_not = block_register(&vm, "not", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_not);
-    block_add_text(&vm, sc_not, "Not");
-    block_add_argument(&vm, sc_not, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_not = blockdef_new("not", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_not);
+    blockdef_add_text(&vm, &sc_not, "Not");
+    blockdef_add_argument(&vm, &sc_not, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_not);
 
-    int sc_and = block_register(&vm, "and", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_and);
-    block_add_argument(&vm, sc_and, "", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_and, "and");
-    block_add_argument(&vm, sc_and, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_and = blockdef_new("and", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_and);
+    blockdef_add_argument(&vm, &sc_and, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_and, "and");
+    blockdef_add_argument(&vm, &sc_and, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_and);
 
-    int sc_or = block_register(&vm, "or", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_or);
-    block_add_argument(&vm, sc_or, "", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_or, "or");
-    block_add_argument(&vm, sc_or, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_or = blockdef_new("or", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_or);
+    blockdef_add_argument(&vm, &sc_or, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_or, "or");
+    blockdef_add_argument(&vm, &sc_or, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_or);
 
-    int sc_true = block_register(&vm, "true", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_true);
-    block_add_text(&vm, sc_true, "True");
+    ScrBlockdef sc_true = blockdef_new("true", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_true);
+    blockdef_add_text(&vm, &sc_true, "True");
+    blockdef_register(&vm, sc_true);
 
-    int sc_false = block_register(&vm, "false", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_false);
-    block_add_text(&vm, sc_false, "False");
+    ScrBlockdef sc_false = blockdef_new("false", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_false);
+    blockdef_add_text(&vm, &sc_false, "False");
+    blockdef_register(&vm, sc_false);
 
-    int sc_random = block_register(&vm, "random", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_random);
-    block_add_text(&vm, sc_random, "Random");
-    block_add_argument(&vm, sc_random, "0", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_random, "to");
-    block_add_argument(&vm, sc_random, "10", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_random = blockdef_new("random", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_random);
+    blockdef_add_text(&vm, &sc_random, "Random");
+    blockdef_add_argument(&vm, &sc_random, "0", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_random, "to");
+    blockdef_add_argument(&vm, &sc_random, "10", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_random);
 
-    int sc_join = block_register(&vm, "join", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_join);
-    block_add_text(&vm, sc_join, "Join");
-    block_add_argument(&vm, sc_join, "абоба ", BLOCKCONSTR_UNLIMITED);
-    block_add_argument(&vm, sc_join, "мусор", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_join = blockdef_new("join", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_join);
+    blockdef_add_text(&vm, &sc_join, "Join");
+    blockdef_add_argument(&vm, &sc_join, "абоба ", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_argument(&vm, &sc_join, "мусор", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_join);
 
-    int sc_length = block_register(&vm, "length", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_length);
-    block_add_text(&vm, sc_length, "Length");
-    block_add_argument(&vm, sc_length, "мусорка", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_length = blockdef_new("length", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_length);
+    blockdef_add_text(&vm, &sc_length, "Length");
+    blockdef_add_argument(&vm, &sc_length, "мусорка", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_length);
 
-    int sc_unix_time = block_register(&vm, "unix_time", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_unix_time);
-    block_add_text(&vm, sc_unix_time, "Time since 1970");
+    ScrBlockdef sc_unix_time = blockdef_new("unix_time", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_unix_time);
+    blockdef_add_text(&vm, &sc_unix_time, "Time since 1970");
+    blockdef_register(&vm, sc_unix_time);
 
-    int sc_int = block_register(&vm, "convert_int", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_convert_int);
-    block_add_text(&vm, sc_int, "Int");
-    block_add_argument(&vm, sc_int, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_int = blockdef_new("convert_int", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_convert_int);
+    blockdef_add_text(&vm, &sc_int, "Int");
+    blockdef_add_argument(&vm, &sc_int, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_int);
 
-    int sc_str = block_register(&vm, "convert_str", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_convert_str);
-    block_add_text(&vm, sc_str, "Str");
-    block_add_argument(&vm, sc_str, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_str = blockdef_new("convert_str", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_convert_str);
+    blockdef_add_text(&vm, &sc_str, "Str");
+    blockdef_add_argument(&vm, &sc_str, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_str);
 
-    int sc_bool = block_register(&vm, "convert_bool", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_convert_bool);
-    block_add_text(&vm, sc_bool, "Bool");
-    block_add_argument(&vm, sc_bool, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_bool = blockdef_new("convert_bool", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_convert_bool);
+    blockdef_add_text(&vm, &sc_bool, "Bool");
+    blockdef_add_argument(&vm, &sc_bool, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_bool);
 
-    int sc_decl_var = block_register(&vm, "decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xff }, block_declare_var);
-    block_add_text(&vm, sc_decl_var, "Declare");
-    block_add_argument(&vm, sc_decl_var, "my variable", BLOCKCONSTR_STRING);
-    block_add_text(&vm, sc_decl_var, "=");
-    block_add_argument(&vm, sc_decl_var, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_decl_var = blockdef_new("decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xff }, block_declare_var);
+    blockdef_add_text(&vm, &sc_decl_var, "Declare");
+    blockdef_add_argument(&vm, &sc_decl_var, "my variable", BLOCKCONSTR_STRING);
+    blockdef_add_text(&vm, &sc_decl_var, "=");
+    blockdef_add_argument(&vm, &sc_decl_var, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_decl_var);
 
-    int sc_get_var = block_register(&vm, "get_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xff }, block_get_var);
-    block_add_text(&vm, sc_get_var, "Get");
-    block_add_argument(&vm, sc_get_var, "my variable", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_get_var = blockdef_new("get_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xff }, block_get_var);
+    blockdef_add_text(&vm, &sc_get_var, "Get");
+    blockdef_add_argument(&vm, &sc_get_var, "my variable", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_get_var);
 
-    int sc_set_var = block_register(&vm, "set_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xff }, block_set_var);
-    block_add_text(&vm, sc_set_var, "Set");
-    block_add_argument(&vm, sc_set_var, "my variable", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_set_var, "=");
-    block_add_argument(&vm, sc_set_var, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_set_var = blockdef_new("set_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xff }, block_set_var);
+    blockdef_add_text(&vm, &sc_set_var, "Set");
+    blockdef_add_argument(&vm, &sc_set_var, "my variable", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_set_var, "=");
+    blockdef_add_argument(&vm, &sc_set_var, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_set_var);
 
-    int sc_create_list = block_register(&vm, "create_list", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_create_list);
-    block_add_text(&vm, sc_create_list, "Empty list");
+    ScrBlockdef sc_create_list = blockdef_new("create_list", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_create_list);
+    blockdef_add_text(&vm, &sc_create_list, "Empty list");
+    blockdef_register(&vm, sc_create_list);
 
-    int sc_list_add = block_register(&vm, "list_add", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_add);
-    block_add_text(&vm, sc_list_add, "Add to list");
-    block_add_argument(&vm, sc_list_add, "my variable", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_list_add, "value");
-    block_add_argument(&vm, sc_list_add, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_list_add = blockdef_new("list_add", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_add);
+    blockdef_add_text(&vm, &sc_list_add, "Add to list");
+    blockdef_add_argument(&vm, &sc_list_add, "my variable", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_list_add, "value");
+    blockdef_add_argument(&vm, &sc_list_add, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_list_add);
 
-    int sc_list_get = block_register(&vm, "list_get", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_get);
-    block_add_text(&vm, sc_list_get, "List");
-    block_add_argument(&vm, sc_list_get, "my variable", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_list_get, "get at");
-    block_add_argument(&vm, sc_list_get, "0", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_list_get = blockdef_new("list_get", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_get);
+    blockdef_add_text(&vm, &sc_list_get, "List");
+    blockdef_add_argument(&vm, &sc_list_get, "my variable", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_list_get, "get at");
+    blockdef_add_argument(&vm, &sc_list_get, "0", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_list_get);
 
-    int sc_list_set = block_register(&vm, "list_set", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_set);
-    block_add_text(&vm, sc_list_set, "List");
-    block_add_argument(&vm, sc_list_set, "my variable", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_list_set, "set at");
-    block_add_argument(&vm, sc_list_set, "0", BLOCKCONSTR_UNLIMITED);
-    block_add_text(&vm, sc_list_set, "=");
-    block_add_argument(&vm, sc_list_set, "", BLOCKCONSTR_UNLIMITED);
+    ScrBlockdef sc_list_set = blockdef_new("list_set", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_set);
+    blockdef_add_text(&vm, &sc_list_set, "List");
+    blockdef_add_argument(&vm, &sc_list_set, "my variable", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_list_set, "set at");
+    blockdef_add_argument(&vm, &sc_list_set, "0", BLOCKCONSTR_UNLIMITED);
+    blockdef_add_text(&vm, &sc_list_set, "=");
+    blockdef_add_argument(&vm, &sc_list_set, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_list_set);
+
+    ScrBlockdef sc_define_block = blockdef_new("define_block", BLOCKTYPE_HAT, (ScrColor) { 0x99, 0x00, 0xff, 0xff }, block_noop);
+    blockdef_add_text(&vm, &sc_define_block, "Define");
+    blockdef_add_blockdef_editor(&sc_define_block);
+    blockdef_register(&vm, sc_define_block);
 
     mouse_blockchain = blockchain_new();
     draw_stack = vector_create();
@@ -2938,6 +3270,11 @@ void setup(void) {
     for (vec_size_t i = 0; i < vector_size(vm.blockdefs); i++) {
         if (vm.blockdefs[i].hidden) continue;
         vector_add(&sidebar.blocks, block_new_ms(&vm, &vm.blockdefs[i]));
+    }
+
+    sidebar.max_y = conf.font_size * 2.2 + SIDE_BAR_PADDING;
+    for (vec_size_t i = 0; i < vector_size(sidebar.blocks); i++) {
+        sidebar.max_y += sidebar.blocks[i].ms.size.y + SIDE_BAR_PADDING;
     }
 
     font_eb_nuc = LoadFontIntoNuklear(font_eb, conf.font_size);
@@ -3113,7 +3450,6 @@ int main(void) {
             term_resize();
         }
 
-        sidebar.max_y = conf.font_size * 2.2 + SIDE_BAR_PADDING + (conf.font_size + SIDE_BAR_PADDING) * vector_size(sidebar.blocks);
         if (sidebar.max_y > GetScreenHeight()) {
             sidebar.scroll_amount = MIN(sidebar.scroll_amount, sidebar.max_y - GetScreenHeight());
         } else {
