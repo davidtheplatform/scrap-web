@@ -77,9 +77,11 @@ typedef enum {
 } ScrBlockType;
 
 struct ScrBlockArgument;
+typedef struct ScrBlockdef ScrBlockdef;
 
 typedef struct ScrBlock {
-    size_t id;
+    ScrBlockdef* blockdef;
+    //size_t id;
     struct ScrBlockArgument* arguments;
     ScrMeasurement ms;
     struct ScrBlock* parent;
@@ -160,14 +162,14 @@ typedef struct ScrExec ScrExec;
 
 typedef ScrFuncArg (*ScrBlockFunc)(ScrExec* exec, int argc, ScrFuncArg* argv);
 
-typedef struct {
+struct ScrBlockdef {
     const char* id;
     ScrColor color;
     ScrBlockType type;
     bool hidden;
     ScrBlockInput* inputs;
     ScrBlockFunc func;
-} ScrBlockdef;
+};
 
 typedef enum {
     ARGUMENT_TEXT,
@@ -223,7 +225,7 @@ struct ScrExec {
 
 struct ScrVm {
     ScrBlockdef* blockdefs;
-    size_t end_block_id;
+    ScrBlockdef* end_blockdef;
     bool is_running;
     ScrTextMeasureFunc text_measure;
     ScrTextArgMeasureFunc arg_measure;
@@ -305,16 +307,16 @@ void block_unregister(ScrVm* vm, size_t block_id);
 void block_update_parent_links(ScrBlock* block);
 
 ScrBlockChain blockchain_new(void);
-ScrBlockChain blockchain_copy(ScrVm* vm, ScrBlockChain* chain, size_t ind);
+ScrBlockChain blockchain_copy(ScrBlockChain* chain, size_t ind);
 void blockchain_add_block(ScrBlockChain* chain, ScrBlock block);
 void blockchain_clear_blocks(ScrBlockChain* chain);
 void blockchain_insert(ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
 // Splits off blockchain src in two at specified pos, placing lower half into blockchain dst
-void blockchain_detach(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
-void blockchain_detach_single(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
+void blockchain_detach(ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
+void blockchain_detach_single(ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
 void blockchain_free(ScrBlockChain* chain);
 
-ScrBlock block_new(ScrVm* vm, size_t id);
+ScrBlock block_new(ScrBlockdef* blockdef);
 ScrBlock block_copy(ScrBlock* block, ScrBlock* parent);
 void block_free(ScrBlock* block);
 
@@ -633,7 +635,7 @@ void func_arg_free(ScrFuncArg arg);
 ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure) {
     ScrVm vm = (ScrVm) {
         .blockdefs = vector_create(),
-        .end_block_id = (size_t)-1,
+        .end_blockdef = NULL,
         .is_running = false,
         .text_measure = text_measure,
         .arg_measure = arg_measure,
@@ -674,7 +676,7 @@ void exec_free(ScrExec* exec) {
 void exec_copy_code(ScrVm* vm, ScrExec* exec, ScrBlockChain* code) {
     if (vm->is_running) return;
     for (vec_size_t i = 0; i < vector_size(code); i++) {
-        exec_add_chain(vm, exec, blockchain_copy(vm, &code[i], 0));
+        exec_add_chain(vm, exec, blockchain_copy(&code[i], 0));
     }
 }
 
@@ -689,12 +691,11 @@ void exec_remove_chain(ScrVm* vm, ScrExec* exec, size_t ind) {
 }
 
 bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_return, bool from_end, bool omit_args, ScrFuncArg control_arg) {
-    ScrBlockdef blockdef = vm->blockdefs[block.id];
-    ScrBlockFunc execute_block = blockdef.func;
+    ScrBlockFunc execute_block = block.blockdef->func;
     if (!execute_block) return false;
 
     int stack_begin = exec->arg_stack_len;
-    if (blockdef.type == BLOCKTYPE_CONTROL || blockdef.type == BLOCKTYPE_CONTROLEND) {
+    if (block.blockdef->type == BLOCKTYPE_CONTROL || block.blockdef->type == BLOCKTYPE_CONTROLEND) {
         arg_stack_push_arg(exec, (ScrFuncArg) {
             .type = FUNC_ARG_CONTROL,
             .storage = FUNC_STORAGE_STATIC,
@@ -702,7 +703,7 @@ bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_retu
                 .control_arg = from_end ? CONTROL_ARG_END : CONTROL_ARG_BEGIN,
             },
         });
-        if (!from_end && blockdef.type == BLOCKTYPE_CONTROLEND) {
+        if (!from_end && block.blockdef->type == BLOCKTYPE_CONTROLEND) {
             arg_stack_push_arg(exec, control_arg);
         }
     }
@@ -737,7 +738,7 @@ bool exec_block(ScrVm* vm, ScrExec* exec, ScrBlock block, ScrFuncArg* block_retu
     return true;
 }
 
-#define BLOCKDEF vm->blockdefs[chain.blocks[exec->running_ind].id]
+#define BLOCKDEF chain.blocks[exec->running_ind].blockdef
 bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
     int skip_layer = -1;
     exec->skip_block = false;
@@ -750,8 +751,8 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
         bool omit_args = false;
         bool return_used = false;
 
-        if (BLOCKDEF.type == BLOCKTYPE_END || BLOCKDEF.type == BLOCKTYPE_CONTROLEND) {
-            if (BLOCKDEF.type == BLOCKTYPE_CONTROLEND && exec->layer == 0) continue;
+        if (BLOCKDEF->type == BLOCKTYPE_END || BLOCKDEF->type == BLOCKTYPE_CONTROLEND) {
+            if (BLOCKDEF->type == BLOCKTYPE_CONTROLEND && exec->layer == 0) continue;
             variable_stack_pop_layer(exec);
             exec->layer--;
             control_stack_pop_data(block_ind, size_t)
@@ -767,12 +768,12 @@ bool exec_run_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain) {
         if (!exec->skip_block) {
             if (!exec_block(vm, exec, chain.blocks[block_ind], &block_return, from_end, omit_args, (ScrFuncArg){0})) return false;
         }
-        if (BLOCKDEF.type == BLOCKTYPE_CONTROLEND && block_ind != exec->running_ind) {
+        if (BLOCKDEF->type == BLOCKTYPE_CONTROLEND && block_ind != exec->running_ind) {
             from_end = false;
             if (!exec_block(vm, exec, chain.blocks[exec->running_ind], &block_return, from_end, false, block_return)) return false;
             return_used = true;
         }
-        if (BLOCKDEF.type == BLOCKTYPE_CONTROL || BLOCKDEF.type == BLOCKTYPE_CONTROLEND) {
+        if (BLOCKDEF->type == BLOCKTYPE_CONTROL || BLOCKDEF->type == BLOCKTYPE_CONTROLEND) {
             control_stack_push_data(block_return, ScrFuncArg)
             control_stack_push_data(exec->running_ind, size_t)
             if (exec->skip_block && skip_layer == -1) skip_layer = exec->layer;
@@ -802,7 +803,7 @@ void* exec_thread_entry(void* thread_exec) {
     exec->arg_stack_len = 0;
     exec->control_stack_len = 0;
     for (exec->running_chain_ind = 0; exec->running_chain_ind < vector_size(exec->code); exec->running_chain_ind++) {
-        if (exec->vm->blockdefs[exec->code[exec->running_chain_ind].blocks[0].id].type != BLOCKTYPE_HAT) continue;
+        if (exec->code[exec->running_chain_ind].blocks[0].blockdef->type != BLOCKTYPE_HAT) continue;
         if (!exec_run_chain(exec->vm, exec, exec->code[exec->running_chain_ind])) {
             pthread_exit((void*)0);
         }
@@ -1021,24 +1022,23 @@ void string_free(ScrString string) {
     free(string.str);
 }
 
-ScrBlock block_new(ScrVm* vm, size_t id) {
+ScrBlock block_new(ScrBlockdef* blockdef) {
     ScrBlock block;
-    block.id = id;
+    block.blockdef = blockdef;
     block.ms = (ScrMeasurement) {0};
     block.arguments = vector_create();
     block.parent = NULL;
 
-    ScrBlockdef blockdef = vm->blockdefs[block.id];
-    for (size_t i = 0; i < vector_size(blockdef.inputs); i++) {
-        if (blockdef.inputs[i].type != INPUT_ARGUMENT && blockdef.inputs[i].type != INPUT_DROPDOWN) continue;
+    for (size_t i = 0; i < vector_size(block.blockdef->inputs); i++) {
+        if (block.blockdef->inputs[i].type != INPUT_ARGUMENT && block.blockdef->inputs[i].type != INPUT_DROPDOWN) continue;
         ScrBlockArgument* arg = vector_add_dst((ScrBlockArgument**)&block.arguments);
         arg->data.text = vector_create();
         arg->input_id = i;
 
-        switch (blockdef.inputs[i].type) {
+        switch (block.blockdef->inputs[i].type) {
         case INPUT_ARGUMENT:
-            arg->ms = blockdef.inputs[i].data.arg.ms;
-            switch (blockdef.inputs[i].data.arg.constr) {
+            arg->ms = block.blockdef->inputs[i].data.arg.ms;
+            switch (block.blockdef->inputs[i].data.arg.constr) {
             case BLOCKCONSTR_UNLIMITED:
                 arg->type = ARGUMENT_TEXT;
                 break;
@@ -1050,7 +1050,7 @@ ScrBlock block_new(ScrVm* vm, size_t id) {
                 break;
             }
 
-            for (char* pos = blockdef.inputs[i].data.arg.text; *pos; pos++) {
+            for (char* pos = block.blockdef->inputs[i].data.arg.text; *pos; pos++) {
                 vector_add(&arg->data.text, *pos);
             }
             break;
@@ -1059,7 +1059,7 @@ ScrBlock block_new(ScrVm* vm, size_t id) {
             arg->ms = (ScrMeasurement) {0};
 
             size_t list_len = 0;
-            char** list = blockdef.inputs[i].data.drop.list(&block, &list_len);
+            char** list = block.blockdef->inputs[i].data.drop.list(&block, &list_len);
             if (!list || list_len == 0) break;
 
             for (char* pos = list[0]; *pos; pos++) {
@@ -1079,7 +1079,7 @@ ScrBlock block_copy(ScrBlock* block, ScrBlock* parent) {
     if (!block->arguments) return *block;
 
     ScrBlock new;
-    new.id = block->id;
+    new.blockdef = block->blockdef;
     new.ms = block->ms;
     new.parent = parent;
     new.arguments = vector_create();
@@ -1146,14 +1146,14 @@ ScrBlockChain blockchain_new(void) {
     return chain;
 }
 
-ScrBlockChain blockchain_copy_single(ScrVm* vm, ScrBlockChain* chain, size_t pos) {
+ScrBlockChain blockchain_copy_single(ScrBlockChain* chain, size_t pos) {
     assert(pos < vector_size(chain->blocks) || pos == 0);
 
     ScrBlockChain new;
     new.pos = chain->pos;
     new.blocks = vector_create();
 
-    ScrBlockType block_type = vm->blockdefs[chain->blocks[pos].id].type;
+    ScrBlockType block_type = chain->blocks[pos].blockdef->type;
     if (block_type == BLOCKTYPE_END) return new;
     if (block_type != BLOCKTYPE_CONTROL) {
         vector_add(&new.blocks, block_copy(&chain->blocks[pos], NULL));
@@ -1164,7 +1164,7 @@ ScrBlockChain blockchain_copy_single(ScrVm* vm, ScrBlockChain* chain, size_t pos
     int size = 0;
     int layer = 0;
     for (size_t i = pos; i < vector_size(chain->blocks) && layer >= 0; i++) {
-        block_type = vm->blockdefs[chain->blocks[i].id].type;
+        block_type = chain->blocks[i].blockdef->type;
         vector_add(&new.blocks, block_copy(&chain->blocks[i], NULL));
         if (block_type == BLOCKTYPE_CONTROL && i != pos) {
             layer++;
@@ -1178,7 +1178,7 @@ ScrBlockChain blockchain_copy_single(ScrVm* vm, ScrBlockChain* chain, size_t pos
     return new;
 }
 
-ScrBlockChain blockchain_copy(ScrVm* vm, ScrBlockChain* chain, size_t pos) {
+ScrBlockChain blockchain_copy(ScrBlockChain* chain, size_t pos) {
     assert(pos < vector_size(chain->blocks) || pos == 0);
 
     ScrBlockChain new;
@@ -1187,7 +1187,7 @@ ScrBlockChain blockchain_copy(ScrVm* vm, ScrBlockChain* chain, size_t pos) {
 
     int pos_layer = 0;
     for (size_t i = 0; i < pos; i++) {
-        ScrBlockType block_type = vm->blockdefs[chain->blocks[i].id].type;
+        ScrBlockType block_type = chain->blocks[i].blockdef->type;
         if (block_type == BLOCKTYPE_CONTROL) {
             pos_layer++;
         } else if (block_type == BLOCKTYPE_END) {
@@ -1199,7 +1199,7 @@ ScrBlockChain blockchain_copy(ScrVm* vm, ScrBlockChain* chain, size_t pos) {
 
     vector_reserve(&new.blocks, vector_size(chain->blocks) - pos);
     for (vec_size_t i = pos; i < vector_size(chain->blocks); i++) {
-        ScrBlockType block_type = vm->blockdefs[chain->blocks[i].id].type;
+        ScrBlockType block_type = chain->blocks[i].blockdef->type;
         if ((block_type == BLOCKTYPE_END || (block_type == BLOCKTYPE_CONTROLEND && i != pos)) &&
             pos_layer == current_layer &&
             current_layer != 0) break;
@@ -1246,10 +1246,10 @@ void blockchain_insert(ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {
     vector_clear(src->blocks);
 }
 
-void blockchain_detach_single(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {
+void blockchain_detach_single(ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {
     assert(pos < vector_size(src->blocks));
 
-    ScrBlockType block_type = vm->blockdefs[src->blocks[pos].id].type;
+    ScrBlockType block_type = src->blocks[pos].blockdef->type;
     if (block_type == BLOCKTYPE_END) return;
     if (block_type != BLOCKTYPE_CONTROL) {
         vector_add(&dst->blocks, src->blocks[pos]);
@@ -1262,7 +1262,7 @@ void blockchain_detach_single(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src,
     int size = 0;
     int layer = 0;
     for (size_t i = pos; i < vector_size(src->blocks) && layer >= 0; i++) {
-        ScrBlockType block_type = vm->blockdefs[src->blocks[i].id].type;
+        ScrBlockType block_type = src->blocks[i].blockdef->type;
         vector_add(&dst->blocks, src->blocks[i]);
         if (block_type == BLOCKTYPE_CONTROL && i != pos) {
             layer++;
@@ -1277,12 +1277,12 @@ void blockchain_detach_single(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src,
     for (size_t i = pos; i < vector_size(src->blocks); i++) block_update_parent_links(&src->blocks[i]);
 }
 
-void blockchain_detach(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {
+void blockchain_detach(ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {
     assert(pos < vector_size(src->blocks));
 
     int pos_layer = 0;
     for (size_t i = 0; i < pos; i++) {
-        ScrBlockType block_type = vm->blockdefs[src->blocks[i].id].type;
+        ScrBlockType block_type = src->blocks[i].blockdef->type;
         if (block_type == BLOCKTYPE_CONTROL) {
             pos_layer++;
         } else if (block_type == BLOCKTYPE_END) {
@@ -1296,7 +1296,7 @@ void blockchain_detach(ScrVm* vm, ScrBlockChain* dst, ScrBlockChain* src, size_t
 
     vector_reserve(&dst->blocks, vector_size(dst->blocks) + vector_size(src->blocks) - pos);
     for (size_t i = pos; i < vector_size(src->blocks); i++) {
-        ScrBlockType block_type = vm->blockdefs[src->blocks[i].id].type;
+        ScrBlockType block_type = src->blocks[i].blockdef->type;
         if ((block_type == BLOCKTYPE_END || (block_type == BLOCKTYPE_CONTROLEND && i != pos)) && pos_layer == current_layer && current_layer != 0) break;
         vector_add(&dst->blocks, src->blocks[i]);
         if (block_type == BLOCKTYPE_CONTROL) {
@@ -1360,8 +1360,8 @@ size_t block_register(ScrVm* vm, const char* id, ScrBlockType type, ScrColor col
 
     if (!func) printf("[VM] WARNING: Block \"%s\" has not defined its implementation!\n", id);
 
-    if (type == BLOCKTYPE_END && vm->end_block_id == (size_t)-1) {
-        vm->end_block_id = vector_size(vm->blockdefs) - 1;
+    if (type == BLOCKTYPE_END && !vm->end_blockdef) {
+        vm->end_blockdef = &vm->blockdefs[vector_size(vm->blockdefs) - 1];
         blockdef->hidden = true;
     }
 

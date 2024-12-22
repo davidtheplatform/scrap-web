@@ -277,26 +277,24 @@ void blockcode_remove_blockchain(BlockCode* blockcode, size_t ind) {
     blockcode_update_measurments(blockcode);
 }
 
-ScrBlock block_new_ms(ScrVm* vm, int id) {
-    ScrBlock block = block_new(vm, id);
+ScrBlock block_new_ms(ScrVm* vm, ScrBlockdef* blockdef) {
+    ScrBlock block = block_new(blockdef);
     update_measurements(vm, &block, PLACEMENT_HORIZONTAL);
     return block;
 }
 
 void update_measurements(ScrVm* vm, ScrBlock* block, ScrPlacementStrategy placement) {
-    ScrBlockdef blockdef = vm->blockdefs[block->id];
-
     block->ms.size.x = BLOCK_PADDING;
     block->ms.placement = placement;
     block->ms.size.y = placement == PLACEMENT_HORIZONTAL ? conf.font_size : BLOCK_OUTLINE_SIZE * 2;
 
     int arg_id = 0;
-    for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
+    for (vec_size_t i = 0; i < vector_size(block->blockdef->inputs); i++) {
         ScrMeasurement ms;
 
-        switch (blockdef.inputs[i].type) {
+        switch (block->blockdef->inputs[i].type) {
         case INPUT_TEXT_DISPLAY:
-            ms = blockdef.inputs[i].data.stext.ms;
+            ms = block->blockdef->inputs[i].data.stext.ms;
             break;
         case INPUT_ARGUMENT:
             switch (block->arguments[arg_id].type) {
@@ -346,7 +344,7 @@ void update_measurements(ScrVm* vm, ScrBlock* block, ScrPlacementStrategy placem
             arg_id++;
             break;
         case INPUT_IMAGE_DISPLAY:
-            ms = blockdef.inputs[i].data.simage.ms;
+            ms = block->blockdef->inputs[i].data.simage.ms;
             break;
         default:
             ms.size = as_scr_vec(MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0));
@@ -388,14 +386,13 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
     cursor.x += BLOCK_PADDING;
     if (block->ms.placement == PLACEMENT_VERTICAL) cursor.y += BLOCK_OUTLINE_SIZE * 2;
 
-    ScrBlockdef blockdef = vm.blockdefs[block->id];
     int arg_id = 0;
 
-    for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
+    for (vec_size_t i = 0; i < vector_size(block->blockdef->inputs); i++) {
         if (hover_info.argument) return;
         int width = 0;
         int height = 0;
-        ScrBlockInput cur = blockdef.inputs[i];
+        ScrBlockInput cur = block->blockdef->inputs[i];
         Rectangle arg_size;
 
         switch (cur.type) {
@@ -498,8 +495,7 @@ void draw_text_shadow(Font font, const char *text, Vector2 position, float font_
 
 void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool force_collision) {
     bool collision = hover_info.block == block || force_collision;
-    ScrBlockdef blockdef = vm.blockdefs[block->id];
-    Color color = as_rl_color(blockdef.color);
+    Color color = as_rl_color(block->blockdef->color);
     Color outline_color = force_collision ? YELLOW : ColorBrightness(color, collision ? 0.5 : -0.2);
     Color block_color = ColorBrightness(color, collision ? 0.3 : 0.0);
 
@@ -513,7 +509,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
 
     if (!CheckCollisionRecs(block_size, (Rectangle) { 0, 0, GetScreenWidth(), GetScreenHeight() })) return;
 
-    if (blockdef.type == BLOCKTYPE_HAT) {
+    if (block->blockdef->type == BLOCKTYPE_HAT) {
         DrawRectangle(block_size.x, block_size.y, block_size.width - conf.font_size / 4.0, block_size.height, block_color);
         DrawRectangle(block_size.x, block_size.y + conf.font_size / 4.0, block_size.width, block_size.height - conf.font_size / 4.0, block_color);
         DrawTriangle(
@@ -526,8 +522,8 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
         DrawRectangleRec(block_size, block_color);
     }
 
-    if (force_outline || (blockdef.type != BLOCKTYPE_CONTROL && blockdef.type != BLOCKTYPE_CONTROLEND)) {
-        if (blockdef.type == BLOCKTYPE_HAT) {
+    if (force_outline || (block->blockdef->type != BLOCKTYPE_CONTROL && block->blockdef->type != BLOCKTYPE_CONTROLEND)) {
+        if (block->blockdef->type == BLOCKTYPE_HAT) {
             DrawRectangle(block_size.x, block_size.y, block_size.width - conf.font_size / 4.0, BLOCK_OUTLINE_SIZE, outline_color);
             DrawRectangle(block_size.x, block_size.y, BLOCK_OUTLINE_SIZE, block_size.height, outline_color);
             DrawRectangle(block_size.x, block_size.y + block_size.height - BLOCK_OUTLINE_SIZE, block_size.width, BLOCK_OUTLINE_SIZE, outline_color);
@@ -546,10 +542,10 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
     if (block->ms.placement == PLACEMENT_VERTICAL) cursor.y += BLOCK_OUTLINE_SIZE * 2;
 
     int arg_id = 0;
-    for (vec_size_t i = 0; i < vector_size(blockdef.inputs); i++) {
+    for (vec_size_t i = 0; i < vector_size(block->blockdef->inputs); i++) {
         int width = 0;
         int height = 0;
-        ScrBlockInput cur = blockdef.inputs[i];
+        ScrBlockInput cur = block->blockdef->inputs[i];
 
         switch (cur.type) {
         case INPUT_TEXT_DISPLAY:
@@ -752,7 +748,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
 //         5
 
 void draw_controlend_outline(DrawStack* block, Vector2 end_pos, Color color) {
-    ScrBlockType blocktype = vm.blockdefs[block->block->id].type;
+    ScrBlockType blocktype = block->block->blockdef->type;
     Vector2 block_size = as_rl_vec(block->block->ms.size);
     
     if (blocktype == BLOCKTYPE_CONTROL) {
@@ -767,7 +763,7 @@ void draw_controlend_outline(DrawStack* block, Vector2 end_pos, Color color) {
 }
 
 void draw_control_outline(DrawStack* block, Vector2 end_pos, Color color, bool draw_end) {
-    ScrBlockType blocktype = vm.blockdefs[block->block->id].type;
+    ScrBlockType blocktype = block->block->blockdef->type;
     Vector2 block_size = as_rl_vec(block->block->ms.size);
 
     if (blocktype == BLOCKTYPE_CONTROL) {
@@ -802,11 +798,11 @@ void blockchain_check_collisions(ScrBlockChain* chain, Vector2 camera_pos) {
         hover_info.blockchain_layer = vector_size(draw_stack);
         hover_info.blockchain_index = i;
 
-        ScrBlockdef blockdef = vm.blockdefs[chain->blocks[i].id];
-        if ((blockdef.type == BLOCKTYPE_END || blockdef.type == BLOCKTYPE_CONTROLEND) && vector_size(draw_stack) > 0) {
+        ScrBlockdef* blockdef = chain->blocks[i].blockdef;
+        if ((blockdef->type == BLOCKTYPE_END || blockdef->type == BLOCKTYPE_CONTROLEND) && vector_size(draw_stack) > 0) {
             pos.x -= BLOCK_CONTROL_INDENT;
 
-            if (blockdef.type == BLOCKTYPE_END) {
+            if (blockdef->type == BLOCKTYPE_END) {
                 DrawStack prev_block = draw_stack[vector_size(draw_stack) - 1];
                 Rectangle rect;
                 rect.x = pos.x;
@@ -817,7 +813,7 @@ void blockchain_check_collisions(ScrBlockChain* chain, Vector2 camera_pos) {
                 if (CheckCollisionPointRec(GetMousePosition(), rect)) {
                     hover_info.block = &hover_info.blockchain->blocks[i];
                 }
-            } else if (blockdef.type == BLOCKTYPE_CONTROLEND) {
+            } else if (blockdef->type == BLOCKTYPE_CONTROLEND) {
                 block_update_collisions(pos, &hover_info.blockchain->blocks[i]);
             }
             vector_pop(draw_stack);
@@ -825,7 +821,7 @@ void blockchain_check_collisions(ScrBlockChain* chain, Vector2 camera_pos) {
             block_update_collisions(pos, &hover_info.blockchain->blocks[i]);
         }
 
-        if (blockdef.type == BLOCKTYPE_CONTROL || blockdef.type == BLOCKTYPE_CONTROLEND) {
+        if (blockdef->type == BLOCKTYPE_CONTROL || blockdef->type == BLOCKTYPE_CONTROLEND) {
             DrawStack stack_item;
             stack_item.pos = as_scr_vec(pos);
             stack_item.block = &chain->blocks[i];
@@ -844,27 +840,27 @@ void draw_block_chain(ScrBlockChain* chain, Vector2 camera_pos, bool chain_highl
     pos.y -= camera_pos.y;
     for (vec_size_t i = 0; i < vector_size(chain->blocks); i++) {
         bool exec_highlight = hover_info.exec_ind == i && chain_highlight;
-        ScrBlockdef blockdef = vm.blockdefs[chain->blocks[i].id];
+        ScrBlockdef* blockdef = chain->blocks[i].blockdef;
 
-        if ((blockdef.type == BLOCKTYPE_END || blockdef.type == BLOCKTYPE_CONTROLEND) && vector_size(draw_stack) > 0) {
+        if ((blockdef->type == BLOCKTYPE_END || blockdef->type == BLOCKTYPE_CONTROLEND) && vector_size(draw_stack) > 0) {
             pos.x -= BLOCK_CONTROL_INDENT;
             DrawStack prev_block = draw_stack[vector_size(draw_stack) - 1];
-            ScrBlockdef prev_blockdef = vm.blockdefs[prev_block.block->id];
+            ScrBlockdef* prev_blockdef = prev_block.block->blockdef;
 
             Rectangle rect;
             rect.x = prev_block.pos.x;
             rect.y = prev_block.pos.y + prev_block.block->ms.size.y;
             rect.width = BLOCK_CONTROL_INDENT;
             rect.height = pos.y - (prev_block.pos.y + prev_block.block->ms.size.y);
-            DrawRectangleRec(rect, as_rl_color(prev_blockdef.color));
+            DrawRectangleRec(rect, as_rl_color(prev_blockdef->color));
 
             bool touching_block = hover_info.block == &chain->blocks[i];
-            Color outline_color = ColorBrightness(as_rl_color(prev_blockdef.color), hover_info.block == prev_block.block || touching_block ? 0.5 : -0.2);
-            if (blockdef.type == BLOCKTYPE_END) {
-                Color end_color = ColorBrightness(as_rl_color(prev_blockdef.color), exec_highlight || touching_block ? 0.3 : 0.0);
+            Color outline_color = ColorBrightness(as_rl_color(prev_blockdef->color), hover_info.block == prev_block.block || touching_block ? 0.5 : -0.2);
+            if (blockdef->type == BLOCKTYPE_END) {
+                Color end_color = ColorBrightness(as_rl_color(prev_blockdef->color), exec_highlight || touching_block ? 0.3 : 0.0);
                 DrawRectangle(pos.x, pos.y, prev_block.block->ms.size.x, conf.font_size, end_color);
                 draw_control_outline(&prev_block, pos, outline_color, true);
-            } else if (blockdef.type == BLOCKTYPE_CONTROLEND) {
+            } else if (blockdef->type == BLOCKTYPE_CONTROLEND) {
                 draw_block(pos, &chain->blocks[i], false, exec_highlight);
                 draw_controlend_outline(&prev_block, pos, outline_color);
             }
@@ -873,7 +869,7 @@ void draw_block_chain(ScrBlockChain* chain, Vector2 camera_pos, bool chain_highl
         } else {
             draw_block(pos, &chain->blocks[i], false, exec_highlight);
         }
-        if (blockdef.type == BLOCKTYPE_CONTROL || blockdef.type == BLOCKTYPE_CONTROLEND) {
+        if (blockdef->type == BLOCKTYPE_CONTROL || blockdef->type == BLOCKTYPE_CONTROLEND) {
             DrawStack stack_item;
             stack_item.pos = as_scr_vec(pos);
             stack_item.block = &chain->blocks[i];
@@ -887,7 +883,7 @@ void draw_block_chain(ScrBlockChain* chain, Vector2 camera_pos, bool chain_highl
     Rectangle rect;
     for (vec_size_t i = 0; i < vector_size(draw_stack); i++) {
         DrawStack prev_block = draw_stack[i];
-        ScrBlockdef prev_blockdef = vm.blockdefs[prev_block.block->id];
+        ScrBlockdef* prev_blockdef = prev_block.block->blockdef;
 
         pos.x = prev_block.pos.x;
 
@@ -896,8 +892,8 @@ void draw_block_chain(ScrBlockChain* chain, Vector2 camera_pos, bool chain_highl
         rect.width = BLOCK_CONTROL_INDENT;
         rect.height = pos.y - (prev_block.pos.y + prev_block.block->ms.size.y);
 
-        DrawRectangleRec(rect, as_rl_color(prev_blockdef.color));
-        draw_control_outline(&prev_block, pos, ColorBrightness(as_rl_color(prev_blockdef.color), hover_info.block == prev_block.block ? 0.5 : -0.2), false);
+        DrawRectangleRec(rect, as_rl_color(prev_blockdef->color));
+        draw_control_outline(&prev_block, pos, ColorBrightness(as_rl_color(prev_blockdef->color), hover_info.block == prev_block.block ? 0.5 : -0.2), false);
     }
 }
 
@@ -1021,8 +1017,8 @@ void draw_tooltip(void) {
 void draw_dropdown_list(void) {
     if (!hover_info.select_argument) return;
 
-    ScrBlockdef blockdef = vm.blockdefs[hover_info.select_block->id];
-    ScrBlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
+    ScrBlockdef* blockdef = hover_info.select_block->blockdef;
+    ScrBlockInput block_input = blockdef->inputs[hover_info.select_argument->input_id];
 
     if (block_input.type != INPUT_DROPDOWN) return;
     
@@ -1030,9 +1026,9 @@ void draw_dropdown_list(void) {
     pos = hover_info.select_argument_pos;
     pos.y += hover_info.select_block->ms.size.y;
 
-    DrawRectangle(pos.x, pos.y, dropdown.ms.size.x, dropdown.ms.size.y, ColorBrightness(as_rl_color(blockdef.color), -0.3));
+    DrawRectangle(pos.x, pos.y, dropdown.ms.size.x, dropdown.ms.size.y, ColorBrightness(as_rl_color(blockdef->color), -0.3));
     if (hover_info.dropdown_hover_ind != -1) {
-        DrawRectangle(pos.x, pos.y + (hover_info.dropdown_hover_ind - dropdown.scroll_amount) * conf.font_size, dropdown.ms.size.x, conf.font_size, as_rl_color(blockdef.color));
+        DrawRectangle(pos.x, pos.y + (hover_info.dropdown_hover_ind - dropdown.scroll_amount) * conf.font_size, dropdown.ms.size.x, conf.font_size, as_rl_color(blockdef->color));
     }
 
     pos.x += 5.0;
@@ -1463,9 +1459,9 @@ bool handle_mouse_click(void) {
         }
         if (mouse_empty && hover_info.block) {
             // Pickup block
-            blockchain_add_block(&mouse_blockchain, block_new_ms(&vm, hover_info.block->id));
-            if (vm.blockdefs[hover_info.block->id].type == BLOCKTYPE_CONTROL && vm.end_block_id != (size_t)-1) {
-                blockchain_add_block(&mouse_blockchain, block_new_ms(&vm, vm.end_block_id));
+            blockchain_add_block(&mouse_blockchain, block_new_ms(&vm, hover_info.block->blockdef));
+            if (hover_info.block->blockdef->type == BLOCKTYPE_CONTROL && vm.end_blockdef) {
+                blockchain_add_block(&mouse_blockchain, block_new_ms(&vm, vm.end_blockdef));
             }
             return true;
         } else if (!mouse_empty) {
@@ -1478,8 +1474,7 @@ bool handle_mouse_click(void) {
 
     if (mouse_empty) {
         if (hover_info.dropdown_hover_ind != -1) {
-            ScrBlockdef blockdef = vm.blockdefs[hover_info.select_block->id];
-            ScrBlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
+            ScrBlockInput block_input = hover_info.select_block->blockdef->inputs[hover_info.select_argument->input_id];
             assert(block_input.type == INPUT_DROPDOWN);
             
             size_t list_len = 0;
@@ -1511,8 +1506,8 @@ bool handle_mouse_click(void) {
         mouse_blockchain.pos = as_scr_vec(GetMousePosition());
         if (hover_info.argument || hover_info.prev_argument) {
             if (vector_size(mouse_blockchain.blocks) > 1) return true;
-            if (vm.blockdefs[mouse_blockchain.blocks[0].id].type == BLOCKTYPE_CONTROLEND) return true;
-            if (vm.blockdefs[mouse_blockchain.blocks[0].id].type == BLOCKTYPE_HAT) return true;
+            if (mouse_blockchain.blocks[0].blockdef->type == BLOCKTYPE_CONTROLEND) return true;
+            if (mouse_blockchain.blocks[0].blockdef->type == BLOCKTYPE_HAT) return true;
 
             if (hover_info.argument) {
                 // Attach to argument
@@ -1541,7 +1536,7 @@ bool handle_mouse_click(void) {
         ) {
             // Attach block
             printf("Attach block\n");
-            if (vm.blockdefs[mouse_blockchain.blocks[0].id].type == BLOCKTYPE_HAT) return true;
+            if (mouse_blockchain.blocks[0].blockdef->type == BLOCKTYPE_HAT) return true;
             blockchain_insert(hover_info.blockchain, &mouse_blockchain, hover_info.blockchain_index);
             // Update block link to make valgrind happy
             hover_info.block = &hover_info.blockchain->blocks[hover_info.blockchain_index];
@@ -1579,18 +1574,18 @@ bool handle_mouse_click(void) {
                     // Copy block
                     printf("Copy block\n");
                     blockchain_free(&mouse_blockchain);
-                    mouse_blockchain = blockchain_copy_single(&vm, hover_info.blockchain, hover_info.blockchain_index);
+                    mouse_blockchain = blockchain_copy_single(hover_info.blockchain, hover_info.blockchain_index);
                 } else {
                     // Copy chain
                     printf("Copy chain\n");
                     blockchain_free(&mouse_blockchain);
-                    mouse_blockchain = blockchain_copy(&vm, hover_info.blockchain, hover_info.blockchain_index);
+                    mouse_blockchain = blockchain_copy(hover_info.blockchain, hover_info.blockchain_index);
                 }
             } else {
                 if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) {
                     // Detach block
                     printf("Detach block\n");
-                    blockchain_detach_single(&vm, &mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
+                    blockchain_detach_single(&mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
                     if (vector_size(hover_info.blockchain->blocks) == 0) {
                         blockchain_free(hover_info.blockchain);
                         blockcode_remove_blockchain(&block_code, hover_info.blockchain - editor_code);
@@ -1599,7 +1594,7 @@ bool handle_mouse_click(void) {
                 } else {
                     // Detach chain
                     printf("Detach chain\n");
-                    blockchain_detach(&vm, &mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
+                    blockchain_detach(&mouse_blockchain, hover_info.blockchain, hover_info.blockchain_index);
                     if (hover_info.blockchain_index == 0) {
                         blockchain_free(hover_info.blockchain);
                         blockcode_remove_blockchain(&block_code, hover_info.blockchain - editor_code);
@@ -1650,7 +1645,7 @@ void handle_key_press(void) {
         return;
     };
     assert(hover_info.select_argument->type == ARGUMENT_TEXT || hover_info.select_argument->type == ARGUMENT_CONST_STRING);
-    if (vm.blockdefs[hover_info.select_block->id].inputs[hover_info.select_argument->input_id].type == INPUT_DROPDOWN) return;
+    if (hover_info.select_block->blockdef->inputs[hover_info.select_argument->input_id].type == INPUT_DROPDOWN) return;
 
     if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
         char* arg_text = hover_info.select_argument->data.text;
@@ -1703,8 +1698,7 @@ void handle_mouse_drag(void) {
 void dropdown_check_collisions(void) {
     if (!hover_info.select_argument) return;
 
-    ScrBlockdef blockdef = vm.blockdefs[hover_info.select_block->id];
-    ScrBlockInput block_input = blockdef.inputs[hover_info.select_argument->input_id];
+    ScrBlockInput block_input = hover_info.select_block->blockdef->inputs[hover_info.select_argument->input_id];
 
     if (block_input.type != INPUT_DROPDOWN) return;
 
@@ -2943,7 +2937,7 @@ void setup(void) {
     sidebar.blocks = vector_create();
     for (vec_size_t i = 0; i < vector_size(vm.blockdefs); i++) {
         if (vm.blockdefs[i].hidden) continue;
-        vector_add(&sidebar.blocks, block_new_ms(&vm, i));
+        vector_add(&sidebar.blocks, block_new_ms(&vm, &vm.blockdefs[i]));
     }
 
     font_eb_nuc = LoadFontIntoNuklear(font_eb, conf.font_size);
