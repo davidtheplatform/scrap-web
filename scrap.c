@@ -50,6 +50,7 @@ typedef struct {
     int font_size;
     int side_bar_size;
     int fps_limit;
+    int block_size_threshold;
     char font_symbols[FONT_SYMBOLS_MAX_SIZE];
     char font_path[FONT_PATH_MAX_SIZE];
     char font_bold_path[FONT_PATH_MAX_SIZE];
@@ -363,7 +364,7 @@ void update_measurements(ScrVm* vm, ScrBlock* block, ScrPlacementStrategy placem
         }
     }
 
-    if (block->ms.size.x > 1000 && block->ms.placement == PLACEMENT_HORIZONTAL) {
+    if (block->ms.size.x > conf.block_size_threshold && block->ms.placement == PLACEMENT_HORIZONTAL) {
         update_measurements(vm, block, PLACEMENT_VERTICAL);
         return;
     }
@@ -1290,6 +1291,12 @@ void handle_gui(void) {
             nk_spacer(gui.ctx);
 
             nk_spacer(gui.ctx);
+            nk_label(gui.ctx, "Block size threshold", NK_TEXT_RIGHT);
+            nk_spacer(gui.ctx);
+            nk_property_int(gui.ctx, "#", 200, &gui_conf.block_size_threshold, 8000, 10, 10.0);
+            nk_spacer(gui.ctx);
+
+            nk_spacer(gui.ctx);
             nk_label(gui.ctx, "Font path", NK_TEXT_RIGHT);
             gui_restart_warning();
             nk_edit_string_zero_terminated(gui.ctx, NK_EDIT_FIELD, gui_conf.font_path, FONT_PATH_MAX_SIZE, nk_filter_default);
@@ -1880,6 +1887,7 @@ void set_default_config(Config* config) {
     config->font_size = 32;
     config->side_bar_size = 300;
     config->fps_limit = 60;
+    config->block_size_threshold = 1000;
     strncpy(config->font_symbols, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?", sizeof(config->font_symbols) - 1);
     strncpy(config->font_path, DATA_PATH "nk57-cond.otf", sizeof(config->font_path) - 1);
     strncpy(config->font_bold_path, DATA_PATH "nk57-eb.otf", sizeof(config->font_bold_path) - 1);
@@ -1889,6 +1897,7 @@ void set_default_config(Config* config) {
 void apply_config(Config* dst, Config* src) {
     dst->fps_limit = src->fps_limit;
     SetTargetFPS(dst->fps_limit);
+    dst->block_size_threshold = src->block_size_threshold;
     dst->side_bar_size = src->side_bar_size;
 }
 
@@ -1898,6 +1907,7 @@ void save_config(Config* config) {
     file_size += ARRLEN("UI_SIZE") + 10 + 1;
     file_size += ARRLEN("SIDE_BAR_SIZE") + 10 + 1;
     file_size += ARRLEN("FPS_LIMIT") + 10 + 1;
+    file_size += ARRLEN("BLOCK_SIZE_THRESHOLD") + 10 + 1;
     file_size += ARRLEN("FONT_SYMBOLS") + strlen(config->font_symbols) + 1;
     file_size += ARRLEN("FONT_PATH") + strlen(config->font_path) + 1;
     file_size += ARRLEN("FONT_BOLD_PATH") + strlen(config->font_bold_path) + 1;
@@ -1909,6 +1919,7 @@ void save_config(Config* config) {
     cursor += sprintf(file_str + cursor, "UI_SIZE=%u\n", config->font_size);
     cursor += sprintf(file_str + cursor, "SIDE_BAR_SIZE=%u\n", config->side_bar_size);
     cursor += sprintf(file_str + cursor, "FPS_LIMIT=%u\n", config->fps_limit);
+    cursor += sprintf(file_str + cursor, "BLOCK_SIZE_THRESHOLD=%u\n", config->block_size_threshold);
     cursor += sprintf(file_str + cursor, "FONT_SYMBOLS=%s\n", config->font_symbols);
     cursor += sprintf(file_str + cursor, "FONT_PATH=%s\n", config->font_path);
     cursor += sprintf(file_str + cursor, "FONT_BOLD_PATH=%s\n", config->font_bold_path);
@@ -1954,6 +1965,9 @@ void load_config(Config* config) {
         } else if (!strcmp(field, "FPS_LIMIT")) {
             int val = atoi(value);
             config->fps_limit = val ? val : config->fps_limit;
+        } else if (!strcmp(field, "BLOCK_SIZE_THRESHOLD")) {
+            int val = atoi(value);
+            config->block_size_threshold = val ? val : config->block_size_threshold;
         } else if (!strcmp(field, "FONT_SYMBOLS")) {
             strncpy(config->font_symbols, value, sizeof(config->font_symbols) - 1);
         } else if (!strcmp(field, "FONT_PATH")) {
