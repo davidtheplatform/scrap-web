@@ -8,111 +8,156 @@
 #define VM_CONTROL_STACK_SIZE 1024
 #define VM_VARIABLE_STACK_SIZE 1024
 
-typedef struct {
+typedef struct ScrString ScrString;
+typedef struct ScrVec ScrVec;
+typedef struct ScrColor ScrColor;
+typedef enum ScrPlacementStrategy ScrPlacementStrategy;
+typedef struct ScrMeasurement ScrMeasurement;
+typedef enum ScrBlockArgumentConstraint ScrBlockArgumentConstraint;
+typedef enum ScrBlockDropdownSource ScrBlockDropdownSource;
+typedef struct ScrInputStaticText ScrInputStaticText;
+typedef struct ScrInputStaticImage ScrInputStaticImage;
+typedef struct ScrInputArgument ScrInputArgument;
+typedef struct ScrImage ScrImage;
+typedef enum ScrBlockType ScrBlockType;
+typedef struct ScrBlock ScrBlock;
+typedef struct ScrInputDropdown ScrInputDropdown;
+typedef enum ScrBlockInputType ScrBlockInputType;
+typedef union ScrBlockInputData ScrBlockInputData;
+typedef struct ScrBlockInput ScrBlockInput;
+typedef enum ScrControlArgType ScrControlArgType;
+typedef enum ScrFuncArgType ScrFuncArgType;
+typedef enum ScrFuncArgStorageType ScrFuncArgStorageType;
+typedef struct ScrFuncArgList ScrFuncArgList;
+typedef union ScrFuncArgData ScrFuncArgData;
+typedef struct ScrFuncArgStorage ScrFuncArgStorage;
+typedef enum ScrBlockArgumentType ScrBlockArgumentType;
+typedef union ScrBlockArgumentData ScrBlockArgumentData;
+typedef struct ScrBlockChain ScrBlockChain;
+typedef struct ScrVariable ScrVariable;
+typedef struct ScrBlockdef ScrBlockdef;
+typedef struct ScrBlockArgument ScrBlockArgument;
+typedef struct ScrFuncArg ScrFuncArg;
+typedef struct ScrExec ScrExec;
+typedef struct ScrVm ScrVm;
+
+typedef char** (*ScrListAccessor)(ScrBlock* block, size_t* list_len);
+typedef ScrFuncArg (*ScrBlockFunc)(ScrExec* exec, int argc, ScrFuncArg* argv);
+typedef ScrMeasurement (*ScrTextMeasureFunc)(char* text);
+typedef ScrMeasurement (*ScrTextArgMeasureFunc)(char* text);
+typedef ScrMeasurement (*ScrImageMeasureFunc)(ScrImage image);
+
+struct ScrString {
     char* str;
     size_t len;
     size_t cap;
-} ScrString;
+};
 
-typedef struct {
+struct ScrVec {
     float x, y;
-} ScrVec;
+};
 
-typedef struct {
+struct ScrColor {
     unsigned char r, g, b, a;
-} ScrColor;
+};
 
-typedef enum {
+enum ScrPlacementStrategy {
     PLACEMENT_HORIZONTAL = 0,
     PLACEMENT_VERTICAL,
-} ScrPlacementStrategy;
+};
 
-typedef struct {
+struct ScrMeasurement {
     ScrVec size;
     ScrPlacementStrategy placement;
-} ScrMeasurement;
+};
 
-typedef enum {
-    BLOCKCONSTR_UNLIMITED, // Can put anything as argument
-    BLOCKCONSTR_STRING, // Can only put strings as argument
-} ScrBlockArgumentConstraint;
-
-typedef enum {
-    DROPDOWN_SOURCE_LISTREF,
-} ScrBlockDropdownSource;
-
-typedef struct {
-    ScrMeasurement ms;
-    char* text;
-} ScrInputStaticText;
-
-typedef struct {
-    ScrBlockArgumentConstraint constr;
-    ScrMeasurement ms;
-    char* text;
-} ScrInputArgument;
-
-typedef struct {
-    void* image_ptr;
-} ScrImage;
-
-typedef struct {
-    ScrMeasurement ms;
-    ScrImage image;
-} ScrInputStaticImage;
-
-typedef enum {
-    INPUT_TEXT_DISPLAY,
-    INPUT_ARGUMENT,
-    INPUT_DROPDOWN,
-    INPUT_BLOCKDEF_EDITOR,
-    INPUT_IMAGE_DISPLAY,
-} ScrBlockInputType;
-
-typedef enum {
+enum ScrBlockType {
     BLOCKTYPE_NORMAL,
     BLOCKTYPE_CONTROL,
     BLOCKTYPE_CONTROLEND,
     BLOCKTYPE_END,
     BLOCKTYPE_HAT,
-} ScrBlockType;
+};
 
-struct ScrBlockArgument;
-typedef struct ScrBlockdef ScrBlockdef;
+struct ScrBlockdef {
+    const char* id;
+    ScrColor color;
+    ScrBlockType type;
+    // TODO: Maybe remove hidden from here
+    bool hidden;
+    ScrMeasurement ms;
+    ScrBlockInput* inputs;
+    ScrBlockFunc func;
+};
 
-typedef struct ScrBlock {
+enum ScrBlockArgumentConstraint {
+    BLOCKCONSTR_UNLIMITED, // Can put anything as argument
+    BLOCKCONSTR_STRING, // Can only put strings as argument
+};
+
+enum ScrBlockDropdownSource {
+    DROPDOWN_SOURCE_LISTREF,
+};
+
+struct ScrInputStaticText {
+    ScrMeasurement ms;
+    char* text;
+};
+
+struct ScrInputArgument {
+    ScrBlockdef blockdef;
+    ScrBlockArgumentConstraint constr;
+    ScrMeasurement ms;
+    char* text;
+};
+
+struct ScrImage {
+    void* image_ptr;
+};
+
+struct ScrInputStaticImage {
+    ScrMeasurement ms;
+    ScrImage image;
+};
+
+struct ScrBlock {
     ScrBlockdef* blockdef;
-    //size_t id;
     struct ScrBlockArgument* arguments;
     ScrMeasurement ms;
     struct ScrBlock* parent;
-} ScrBlock;
+};
 
-typedef char** (*ScrListAccessor)(ScrBlock* block, size_t* list_len);
-
-typedef struct {
+struct ScrInputDropdown {
     ScrBlockDropdownSource source;
     ScrListAccessor list;
-} ScrInputDropdown;
+};
 
-typedef union {
+enum ScrBlockInputType {
+    INPUT_TEXT_DISPLAY,
+    INPUT_ARGUMENT,
+    INPUT_DROPDOWN,
+    INPUT_BLOCKDEF_EDITOR,
+    INPUT_IMAGE_DISPLAY,
+};
+
+union ScrBlockInputData {
     ScrInputStaticText stext;
     ScrInputStaticImage simage;
     ScrInputArgument arg;
     ScrInputDropdown drop;
-} ScrBlockInputData;
+};
 
-typedef struct {
+struct ScrBlockInput {
     ScrBlockInputType type;
     ScrBlockInputData data;
-} ScrBlockInput;
+};
 
-typedef enum {
+enum ScrControlArgType {
     CONTROL_ARG_BEGIN,
     CONTROL_ARG_END,
-} ScrControlArgType;
+};
 
-typedef enum {
+enum ScrFuncArgType {
     FUNC_ARG_INT,
     FUNC_ARG_STR,
     FUNC_ARG_BOOL,
@@ -120,9 +165,9 @@ typedef enum {
     FUNC_ARG_CONTROL,
     FUNC_ARG_NOTHING,
     FUNC_ARG_OMIT_ARGS, // Marker for vm used in C-blocks that do not require argument recomputation
-} ScrFuncArgType;
+};
 
-typedef enum {
+enum ScrFuncArgStorageType {
     // Data that is contained within arg or lives for the entire lifetime of exec
     FUNC_STORAGE_STATIC,
     // Data that is allocated on heap and should be cleaned up by exec.
@@ -131,27 +176,25 @@ typedef enum {
     // Data that is allocated on heap and should be cleaned up manually.
     // Exec may free this memory for you if it's necessary
     FUNC_STORAGE_UNMANAGED,
-} ScrFuncArgStorageType;
+};
 
-typedef struct ScrFuncArg ScrFuncArg;
-
-typedef struct {
+struct ScrFuncArgList {
     ScrFuncArg* items;
     size_t len; // Length is NOT in bytes, if you want length in bytes, use func_arg.storage.storage_len
-} ScrFuncArgList;
+};
 
-typedef union {
+union ScrFuncArgData {
     int int_arg;
     const char* str_arg;
     ScrFuncArgList list_arg;
     ScrControlArgType control_arg;
     const void* custom_arg;
-} ScrFuncArgData;
+};
 
-typedef struct {
+struct ScrFuncArgStorage {
     ScrFuncArgStorageType type;
     size_t storage_len; // Length is in bytes, so to make copy function work correctly. Only applicable if you don't use FUNC_STORAGE_STATIC
-} ScrFuncArgStorage;
+};
 
 struct ScrFuncArg {
     ScrFuncArgType type;
@@ -159,56 +202,36 @@ struct ScrFuncArg {
     ScrFuncArgData data;
 };
 
-typedef struct ScrExec ScrExec;
-
-typedef ScrFuncArg (*ScrBlockFunc)(ScrExec* exec, int argc, ScrFuncArg* argv);
-
-struct ScrBlockdef {
-    const char* id;
-    ScrColor color;
-    ScrBlockType type;
-    bool hidden;
-    ScrMeasurement ms;
-    ScrBlockInput* inputs;
-    ScrBlockFunc func;
-};
-
-typedef enum {
+enum ScrBlockArgumentType {
     ARGUMENT_TEXT,
     ARGUMENT_BLOCK,
     ARGUMENT_CONST_STRING,
     ARGUMENT_BLOCKDEF,
-} ScrBlockArgumentType;
+};
 
-typedef union {
+union ScrBlockArgumentData {
     char* text;
     ScrBlock block;
     ScrBlockdef blockdef;
-} ScrBlockArgumentData;
+};
 
-typedef struct ScrBlockArgument {
+struct ScrBlockArgument {
     ScrMeasurement ms;
     size_t input_id;
     ScrBlockArgumentType type;
     ScrBlockArgumentData data;
-} ScrBlockArgument;
+};
 
-typedef struct {
+struct ScrBlockChain {
     ScrVec pos;
     ScrBlock* blocks;
-} ScrBlockChain;
+};
 
-typedef ScrMeasurement (*ScrTextMeasureFunc)(char* text);
-typedef ScrMeasurement (*ScrTextArgMeasureFunc)(char* text);
-typedef ScrMeasurement (*ScrImageMeasureFunc)(ScrImage image);
-
-typedef struct {
+struct ScrVariable{
     const char* name;
     ScrFuncArg value;
     int layer;
-} ScrVariable;
-
-typedef struct ScrVm ScrVm;
+};
 
 struct ScrExec {
     ScrBlockChain* code;
@@ -229,6 +252,7 @@ struct ScrExec {
 
 struct ScrVm {
     ScrBlockdef* blockdefs;
+    // TODO: Maybe remove end_blockdef from here
     ScrBlockdef* end_blockdef;
     bool is_running;
     ScrTextMeasureFunc text_measure;
@@ -309,6 +333,7 @@ void blockdef_add_argument(ScrVm* vm, ScrBlockdef* blockdef, char* defualt_data,
 void blockdef_add_dropdown(ScrBlockdef* blockdef, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor);
 void blockdef_add_image(ScrVm* vm, ScrBlockdef* blockdef, ScrImage image);
 void blockdef_add_blockdef_editor(ScrBlockdef* blockdef);
+void blockdef_input_set_name(ScrBlockdef* blockdef, size_t input, char* name);
 void blockdef_unregister(ScrVm* vm, size_t id);
 void block_update_parent_links(ScrBlock* block);
 
@@ -1400,10 +1425,13 @@ void blockdef_add_text(ScrVm* vm, ScrBlockdef* blockdef, char* text) {
     input->type = INPUT_TEXT_DISPLAY;
     input->data = (ScrBlockInputData) {
         .stext = {
-            .text = text,
+            .text = vector_create(),
             .ms = vm->text_measure(text),
         },
     };
+
+    for (char* str = text; *str; str++) vector_add(&input->data.stext.text, *str);
+    vector_add(&input->data.stext.text, 0);
 }
 
 void blockdef_add_argument(ScrVm* vm, ScrBlockdef* blockdef, char* defualt_data, ScrBlockArgumentConstraint constraint) {
@@ -1411,11 +1439,13 @@ void blockdef_add_argument(ScrVm* vm, ScrBlockdef* blockdef, char* defualt_data,
     input->type = INPUT_ARGUMENT;
     input->data = (ScrBlockInputData) {
         .arg = {
+            .blockdef = blockdef_new(NULL, BLOCKTYPE_NORMAL, blockdef->color, NULL),
             .text = defualt_data,
             .constr = constraint,
             .ms = vm->arg_measure(defualt_data),
         },
     };
+    blockdef_add_text(vm, &input->data.arg.blockdef, "some arg");
 }
 
 void blockdef_add_blockdef_editor(ScrBlockdef* blockdef) {
@@ -1447,6 +1477,18 @@ void blockdef_add_image(ScrVm* vm, ScrBlockdef* blockdef, ScrImage image) {
 }
 
 void blockdef_free(ScrBlockdef* blockdef) {
+    for (vec_size_t i = 0; i < vector_size(blockdef->inputs); i++) {
+        switch (blockdef->inputs[i].type) {
+        case INPUT_TEXT_DISPLAY:
+            vector_free(blockdef->inputs[i].data.stext.text);
+            break;
+        case INPUT_ARGUMENT:
+            blockdef_free(&blockdef->inputs[i].data.arg.blockdef);
+            break;
+        default:
+            break;
+        }
+    }
     vector_free(blockdef->inputs);
 }
 
