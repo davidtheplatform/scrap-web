@@ -43,9 +43,6 @@ typedef struct ScrVm ScrVm;
 
 typedef char** (*ScrListAccessor)(ScrBlock* block, size_t* list_len);
 typedef ScrFuncArg (*ScrBlockFunc)(ScrExec* exec, int argc, ScrFuncArg* argv);
-typedef ScrMeasurement (*ScrTextMeasureFunc)(char* text);
-typedef ScrMeasurement (*ScrTextArgMeasureFunc)(char* text);
-typedef ScrMeasurement (*ScrImageMeasureFunc)(ScrImage image);
 
 struct ScrString {
     char* str;
@@ -255,9 +252,6 @@ struct ScrVm {
     // TODO: Maybe remove end_blockdef from here
     ScrBlockdef* end_blockdef;
     bool is_running;
-    ScrTextMeasureFunc text_measure;
-    ScrTextArgMeasureFunc arg_measure;
-    ScrImageMeasureFunc img_measure;
 };
 
 // Public macros
@@ -306,7 +300,7 @@ struct ScrVm {
     data = *(type*)(exec->control_stack + exec->control_stack_len);
 
 // Public functions
-ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure);
+ScrVm vm_new(void);
 void vm_free(ScrVm* vm);
 
 ScrExec exec_new(ScrVm* vm);
@@ -328,10 +322,10 @@ const char* func_arg_to_str(ScrFuncArg arg);
 
 ScrBlockdef blockdef_new(const char* id, ScrBlockType type, ScrColor color, ScrBlockFunc func);
 size_t blockdef_register(ScrVm* vm, ScrBlockdef blockdef);
-void blockdef_add_text(ScrVm* vm, ScrBlockdef* blockdef, char* text);
-void blockdef_add_argument(ScrVm* vm, ScrBlockdef* blockdef, char* defualt_data, ScrBlockArgumentConstraint constraint);
+void blockdef_add_text(ScrBlockdef* blockdef, char* text);
+void blockdef_add_argument(ScrBlockdef* blockdef, char* defualt_data, ScrBlockArgumentConstraint constraint);
 void blockdef_add_dropdown(ScrBlockdef* blockdef, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor);
-void blockdef_add_image(ScrVm* vm, ScrBlockdef* blockdef, ScrImage image);
+void blockdef_add_image(ScrBlockdef* blockdef, ScrImage image);
 void blockdef_add_blockdef_editor(ScrBlockdef* blockdef);
 void blockdef_input_set_name(ScrBlockdef* blockdef, size_t input, char* name);
 void blockdef_unregister(ScrVm* vm, size_t id);
@@ -347,7 +341,7 @@ void blockchain_detach(ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
 void blockchain_detach_single(ScrBlockChain* dst, ScrBlockChain* src, size_t pos);
 void blockchain_free(ScrBlockChain* chain);
 
-ScrBlock block_new(ScrVm* vm, ScrBlockdef* blockdef);
+ScrBlock block_new(ScrBlockdef* blockdef);
 ScrBlock block_copy(ScrBlock* block, ScrBlock* parent);
 void block_free(ScrBlock* block);
 
@@ -664,14 +658,11 @@ void variable_stack_cleanup(ScrExec* exec);
 void func_arg_free(ScrFuncArg arg);
 void blockdef_free(ScrBlockdef* blockdef);
 
-ScrVm vm_new(ScrTextMeasureFunc text_measure, ScrTextArgMeasureFunc arg_measure, ScrImageMeasureFunc img_measure) {
+ScrVm vm_new(void) {
     ScrVm vm = (ScrVm) {
         .blockdefs = vector_create(),
         .end_blockdef = NULL,
         .is_running = false,
-        .text_measure = text_measure,
-        .arg_measure = arg_measure,
-        .img_measure = img_measure,
     };
     return vm;
 }
@@ -1054,7 +1045,7 @@ void string_free(ScrString string) {
     free(string.str);
 }
 
-ScrBlock block_new(ScrVm* vm, ScrBlockdef* blockdef) {
+ScrBlock block_new(ScrBlockdef* blockdef) {
     ScrBlock block;
     block.blockdef = blockdef;
     block.ms = (ScrMeasurement) {0};
@@ -1106,8 +1097,8 @@ ScrBlock block_new(ScrVm* vm, ScrBlockdef* blockdef) {
             arg->type = ARGUMENT_BLOCKDEF;
             arg->ms = (ScrMeasurement) {0};
             arg->data.blockdef = blockdef_new(NULL, BLOCKTYPE_NORMAL, blockdef->color, NULL);
-            blockdef_add_text(vm, &arg->data.blockdef, "My block");
-            blockdef_add_argument(vm, &arg->data.blockdef, "arg", BLOCKCONSTR_UNLIMITED);
+            blockdef_add_text(&arg->data.blockdef, "My block");
+            blockdef_add_argument(&arg->data.blockdef, "arg", BLOCKCONSTR_UNLIMITED);
             break;
         default:
             assert(false && "Unreachable");
@@ -1420,13 +1411,14 @@ size_t blockdef_register(ScrVm* vm, ScrBlockdef blockdef) {
     return vector_size(vm->blockdefs) - 1;
 }
 
-void blockdef_add_text(ScrVm* vm, ScrBlockdef* blockdef, char* text) {
+void blockdef_add_text(ScrBlockdef* blockdef, char* text) {
     ScrBlockInput* input = vector_add_dst(&blockdef->inputs);
+    ScrMeasurement ms = (ScrMeasurement) {0};
     input->type = INPUT_TEXT_DISPLAY;
     input->data = (ScrBlockInputData) {
         .stext = {
             .text = vector_create(),
-            .ms = vm->text_measure(text),
+            .ms = ms,
         },
     };
 
@@ -1434,18 +1426,19 @@ void blockdef_add_text(ScrVm* vm, ScrBlockdef* blockdef, char* text) {
     vector_add(&input->data.stext.text, 0);
 }
 
-void blockdef_add_argument(ScrVm* vm, ScrBlockdef* blockdef, char* defualt_data, ScrBlockArgumentConstraint constraint) {
+void blockdef_add_argument(ScrBlockdef* blockdef, char* defualt_data, ScrBlockArgumentConstraint constraint) {
     ScrBlockInput* input = vector_add_dst(&blockdef->inputs);
+    ScrMeasurement ms = (ScrMeasurement) {0};
     input->type = INPUT_ARGUMENT;
     input->data = (ScrBlockInputData) {
         .arg = {
             .blockdef = blockdef_new(NULL, BLOCKTYPE_NORMAL, blockdef->color, NULL),
             .text = defualt_data,
             .constr = constraint,
-            .ms = vm->arg_measure(defualt_data),
+            .ms = ms,
         },
     };
-    blockdef_add_text(vm, &input->data.arg.blockdef, "some arg");
+    blockdef_add_text(&input->data.arg.blockdef, "some arg");
 }
 
 void blockdef_add_blockdef_editor(ScrBlockdef* blockdef) {
@@ -1465,13 +1458,14 @@ void blockdef_add_dropdown(ScrBlockdef* blockdef, ScrBlockDropdownSource dropdow
     };
 }
 
-void blockdef_add_image(ScrVm* vm, ScrBlockdef* blockdef, ScrImage image) {
+void blockdef_add_image(ScrBlockdef* blockdef, ScrImage image) {
     ScrBlockInput* input = vector_add_dst(&blockdef->inputs);
+    ScrMeasurement ms = (ScrMeasurement) {0};
     input->type = INPUT_IMAGE_DISPLAY;
     input->data = (ScrBlockInputData) {
         .simage = {
             .image = image,
-            .ms = vm->img_measure(image),
+            .ms = ms,
         }
     };
 }
