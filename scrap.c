@@ -73,12 +73,15 @@ typedef enum {
     EDITOR_BLOCKDEF,
     EDITOR_EDIT,
     EDITOR_ADD_ARG,
+    EDITOR_DEL_ARG,
+    EDITOR_ADD_TEXT,
 } EditorHoverPart;
 
 typedef struct {
     EditorHoverPart part;
     bool is_editing;
     ScrBlockdef* blockdef;
+    size_t blockdef_input;
 } EditorHoverInfo;
 
 typedef struct {
@@ -195,6 +198,9 @@ Texture2D warn_tex;
 Texture2D edit_tex;
 Texture2D close_tex;
 Texture2D term_tex;
+Texture2D add_arg_tex;
+Texture2D del_arg_tex;
+Texture2D add_text_tex;
 struct nk_image logo_tex_nuc;
 struct nk_image warn_tex_nuc;
 
@@ -341,9 +347,18 @@ ScrMeasurement measure_input_box(const char* input) {
     return ms;
 }
 
+ScrMeasurement measure_block_button(void) {
+    ScrMeasurement ms;
+    ms.size.x = conf.font_size;
+    ms.size.y = conf.font_size;
+    ms.placement = PLACEMENT_HORIZONTAL;
+    return ms;
+}
+
 ScrMeasurement measure_group(ScrMeasurement left, ScrMeasurement right, float padding) {
     ScrMeasurement ms = left;
     ms.size.x += right.size.x + padding;
+    ms.size.y = MAX(left.size.y, right.size.y);
     return ms;
 }
 
@@ -351,6 +366,31 @@ void draw_image(Vector2 position, ScrImage image, float size) {
     Texture2D* img = image.image_ptr;
     DrawTextureEx(*img, (Vector2) { position.x + 1, position.y + 1 }, 0.0, size / (float)img->height, (Color) { 0x00, 0x00, 0x00, 0x88 });
     DrawTextureEx(*img, position, 0.0, size / (float)img->height, WHITE);
+}
+
+bool block_button_update_collisions(Vector2 position, EditorHoverPart part) {
+    Rectangle rect;
+    rect.x = position.x + conf.font_size * 0.1;
+    rect.y = position.y + conf.font_size * 0.1;
+    rect.width = conf.font_size * 0.8;
+    rect.height = conf.font_size * 0.8;
+
+    if (CheckCollisionPointRec(GetMousePosition(), rect)) {
+        hover_info.editor.part = part;
+        return true;
+    }
+
+    return false;
+}
+
+void draw_block_button(Vector2 position, Texture2D image, bool hovered) {
+    Rectangle rect;
+    rect.x = position.x + conf.font_size * 0.1;
+    rect.y = position.y + conf.font_size * 0.1;
+    rect.width = conf.font_size * 0.8;
+    rect.height = conf.font_size * 0.8;
+    DrawRectangleRec(rect, (Color) { 0xff, 0xff, 0xff, hovered ? 0x80 : 0x40 });
+    DrawTextureEx(image, (Vector2) { rect.x, rect.y }, 0.0, 0.8, WHITE);
 }
 
 void draw_input_box(Vector2 position, ScrMeasurement ms, char** input, bool rounded) {
@@ -425,6 +465,7 @@ void blockdef_update_measurements(ScrBlockdef* blockdef) {
         case INPUT_TEXT_DISPLAY:
             if (hover_info.editor.is_editing) {
                 ms = measure_input_box(blockdef->inputs[i].data.stext.text);
+                ms = measure_group(ms, measure_block_button(), BLOCK_PADDING);
             } else {
                 ms = measure_text(blockdef->inputs[i].data.stext.text);
             }
@@ -468,7 +509,7 @@ void blockdef_update_collisions(Vector2 position, ScrBlockdef* blockdef) {
     cursor.x += BLOCK_PADDING;
 
     for (vec_size_t i = 0; i < vector_size(blockdef->inputs); i++) {
-        if (hover_info.input) return;
+        if (hover_info.input || hover_info.editor.part != EDITOR_BLOCKDEF) return;
         int width = 0;
         ScrBlockInput* cur = &blockdef->inputs[i];
         Rectangle arg_size;
@@ -479,11 +520,17 @@ void blockdef_update_collisions(Vector2 position, ScrBlockdef* blockdef) {
             if (hover_info.editor.is_editing) {
                 arg_size.x = cursor.x;
                 arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
-                arg_size.width = ms.size.x;
+                arg_size.width = ms.size.x - conf.font_size - BLOCK_PADDING;
                 arg_size.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
 
                 if (CheckCollisionPointRec(GetMousePosition(), arg_size)) {
                     hover_info.input = &cur->data.stext.text;
+                    break;
+                }
+
+                Vector2 arg_pos = (Vector2) { cursor.x + arg_size.width, cursor.y + block_size.height * 0.5 - conf.font_size * 0.5 };
+                if (block_button_update_collisions(arg_pos, EDITOR_DEL_ARG)) {
+                    hover_info.editor.blockdef_input = i;
                     break;
                 }
             }
@@ -502,6 +549,7 @@ void blockdef_update_collisions(Vector2 position, ScrBlockdef* blockdef) {
             blockdef_rect.height = cur->data.arg.blockdef.ms.size.y;
             if (CheckCollisionPointRec(GetMousePosition(), blockdef_rect)) {
                 blockdef_update_collisions((Vector2) { blockdef_rect.x, blockdef_rect.y }, &cur->data.arg.blockdef);
+                hover_info.editor.blockdef_input = i;
             }
             break;
         default:
@@ -546,7 +594,11 @@ void draw_blockdef(Vector2 position, ScrBlockdef* blockdef) {
             arg_pos.y += block_size.height * 0.5 - cur->data.stext.ms.size.y * 0.5;
 
             if (hover_info.editor.is_editing) {
-                draw_input_box(arg_pos, cur->data.stext.ms, &cur->data.stext.text, false);
+                ScrMeasurement input_ms = cur->data.stext.ms;
+                input_ms.size.x -= conf.font_size + BLOCK_PADDING;
+                draw_input_box(arg_pos, input_ms, &cur->data.stext.text, false);
+                arg_pos.x += input_ms.size.x + BLOCK_PADDING * 0.5;
+                draw_block_button(arg_pos, del_arg_tex, hover_info.editor.part == EDITOR_DEL_ARG && hover_info.editor.blockdef == blockdef);
             } else {
                 draw_text_shadow(font_cond, cur->data.stext.text, arg_pos, BLOCK_TEXT_SIZE, 0.0, WHITE, (Color) { 0x00, 0x00, 0x00, 0x88 });
             }
@@ -627,10 +679,14 @@ void update_measurements(ScrBlock* block, ScrPlacementStrategy placement) {
         case INPUT_BLOCKDEF_EDITOR:
             blockdef_update_measurements(&block->arguments[arg_id].data.blockdef);
             ScrMeasurement editor_ms = block->arguments[arg_id].data.blockdef.ms;
-            editor_ms.size.x += conf.font_size + BLOCK_PADDING;
+            ScrMeasurement button_ms = measure_block_button();
+            if (hover_info.editor.is_editing) {
+                button_ms = measure_group(button_ms, measure_block_button(), BLOCK_PADDING);
+                button_ms = measure_group(button_ms, measure_block_button(), BLOCK_PADDING);
+            }
 
-            block->arguments[arg_id].ms = editor_ms;
-            ms = editor_ms;
+            ms = measure_group(editor_ms, button_ms, BLOCK_PADDING);
+            block->arguments[arg_id].ms = ms;
             arg_id++;
             break;
         default:
@@ -768,10 +824,10 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
             height = block->arguments[arg_id].ms.size.y;
 
             Vector2 blockdef_size = as_rl_vec(block->arguments[arg_id].data.blockdef.ms.size);
-            Vector2 editor_pos;
-            editor_pos.x = cursor.x;
-            editor_pos.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - height * 0.5);
-            if (!CheckCollisionPointRec(GetMousePosition(), (Rectangle) { editor_pos.x, editor_pos.y, width, height })) {
+            Vector2 arg_pos;
+            arg_pos.x = cursor.x;
+            arg_pos.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - height * 0.5);
+            if (!CheckCollisionPointRec(GetMousePosition(), (Rectangle) { arg_pos.x, arg_pos.y, width, height })) {
                 arg_id++;
                 break;
             }
@@ -780,8 +836,8 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
             hover_info.argument_pos = cursor;
 
             Rectangle blockdef_rect;
-            blockdef_rect.x = editor_pos.x + BLOCK_OUTLINE_SIZE;
-            blockdef_rect.y = editor_pos.y + height * 0.5 - blockdef_size.y * 0.5;
+            blockdef_rect.x = arg_pos.x + BLOCK_OUTLINE_SIZE;
+            blockdef_rect.y = arg_pos.y + height * 0.5 - blockdef_size.y * 0.5;
             blockdef_rect.width = blockdef_size.x;
             blockdef_rect.height = blockdef_size.y;
 
@@ -791,17 +847,23 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
                 arg_id++;
                 break;
             }
+            arg_pos.x += blockdef_size.x + BLOCK_PADDING * 0.5;
+            
+            if (hover_info.editor.is_editing) {
+                if (block_button_update_collisions((Vector2) {arg_pos.x, arg_pos.y + height * 0.5 - conf.font_size * 0.5 }, EDITOR_ADD_ARG)) {
+                    arg_id++;
+                    break;
+                }
+                arg_pos.x += conf.font_size + BLOCK_PADDING * 0.5;
 
-            editor_pos.x += blockdef_size.x;
+                if (block_button_update_collisions((Vector2) {arg_pos.x, arg_pos.y + height * 0.5 - conf.font_size * 0.5 }, EDITOR_ADD_TEXT)) {
+                    arg_id++;
+                    break;
+                }
+                arg_pos.x += conf.font_size + BLOCK_PADDING * 0.5;
+            }
 
-            Rectangle editor_button;
-            editor_button.x = editor_pos.x + conf.font_size * 0.2;
-            editor_button.y = editor_pos.y + height * 0.5 - conf.font_size * 0.4;
-            editor_button.width = conf.font_size * 0.8;
-            editor_button.height = conf.font_size * 0.8;
-
-            if (CheckCollisionPointRec(GetMousePosition(), editor_button)) {
-                hover_info.editor.part = EDITOR_EDIT;
+            if (block_button_update_collisions((Vector2) {arg_pos.x, arg_pos.y + height * 0.5 - conf.font_size * 0.5 }, EDITOR_EDIT)) {
                 arg_id++;
                 break;
             }
@@ -932,29 +994,51 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
             assert(block->arguments[arg_id].type == ARGUMENT_BLOCKDEF);
             width = block->arguments[arg_id].ms.size.x;
             height = block->arguments[arg_id].ms.size.y;
+            arg_pos.y += block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - height * 0.5;
+
+            DrawRectangle(arg_pos.x, arg_pos.y, width, height, (Color) { 0x00, 0x00, 0x00, 0x40 });
 
             Vector2 blockdef_size = as_rl_vec(block->arguments[arg_id].data.blockdef.ms.size);
-            Vector2 editor_pos;
-            editor_pos.x = cursor.x;
-            editor_pos.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height * 0.5 - height * 0.5);
-            DrawRectangle(editor_pos.x, editor_pos.y, width, height, (Color) { 0x00, 0x00, 0x00, 0x40 });
-
             draw_blockdef(
                 (Vector2) {
-                    editor_pos.x, 
-                    editor_pos.y + height * 0.5 - blockdef_size.y * 0.5,
+                    arg_pos.x, 
+                    arg_pos.y + height * 0.5 - blockdef_size.y * 0.5,
                 },
                 &block->arguments[arg_id].data.blockdef
             );
-            editor_pos.x += blockdef_size.x;
+            arg_pos.x += blockdef_size.x + BLOCK_PADDING * 0.5;
 
-            Rectangle editor_button;
-            editor_button.x = editor_pos.x + BLOCK_PADDING;
-            editor_button.y = editor_pos.y + height * 0.5 - conf.font_size * 0.4;
-            editor_button.width = conf.font_size * 0.8;
-            editor_button.height = conf.font_size * 0.8;
-            DrawRectangleRec(editor_button, (Color) { 0xff, 0xff, 0xff, hover_info.editor.part == EDITOR_EDIT && hover_info.block == block ? 0x80 : 0x40 });
-            DrawTexture(hover_info.editor.is_editing ? close_tex : edit_tex, editor_pos.x + BLOCK_PADDING * 0.5, editor_pos.y + height * 0.5 - edit_tex.width * 0.5, WHITE);
+            if (hover_info.editor.is_editing) {
+                draw_block_button(
+                    (Vector2) {
+                        arg_pos.x,
+                        arg_pos.y + height * 0.5 - conf.font_size * 0.5,
+                    }, 
+                    add_arg_tex,
+                    hover_info.editor.part == EDITOR_ADD_ARG && hover_info.block == block
+                );
+                arg_pos.x += conf.font_size + BLOCK_PADDING * 0.5;
+
+                draw_block_button(
+                    (Vector2) {
+                        arg_pos.x,
+                        arg_pos.y + height * 0.5 - conf.font_size * 0.5,
+                    }, 
+                    add_text_tex,
+                    hover_info.editor.part == EDITOR_ADD_TEXT && hover_info.block == block
+                );
+                arg_pos.x += conf.font_size + BLOCK_PADDING * 0.5;
+            }
+
+            draw_block_button(
+                (Vector2) {
+                    arg_pos.x,
+                    arg_pos.y + height * 0.5 - conf.font_size * 0.5,
+                }, 
+                hover_info.editor.is_editing ? close_tex : edit_tex,
+                hover_info.editor.part == EDITOR_EDIT && hover_info.block == block
+            );
+
             arg_id++;
             break;
         default:
@@ -1711,10 +1795,27 @@ bool handle_sidebar_click(bool mouse_empty) {
 }
 
 bool handle_blockdef_editor_click(void) {
+    size_t last_input = vector_size(hover_info.argument->data.blockdef.inputs);
+    char str[32];
     switch (hover_info.editor.part) {
     case EDITOR_ADD_ARG:
         // TODO: Update block arguments when new argument is added
         blockdef_add_argument(&hover_info.argument->data.blockdef, "", BLOCKCONSTR_UNLIMITED);
+        sprintf(str, "arg%zu", last_input);
+        blockdef_add_text(&hover_info.argument->data.blockdef.inputs[last_input].data.arg.blockdef, str);
+        update_measurements(hover_info.block, PLACEMENT_HORIZONTAL);
+        deselect_all();
+        return true;
+    case EDITOR_ADD_TEXT:
+        // TODO: Update block arguments when new argument is added
+        sprintf(str, "text%zu", last_input);
+        blockdef_add_text(&hover_info.argument->data.blockdef, str);
+        update_measurements(hover_info.block, PLACEMENT_HORIZONTAL);
+        deselect_all();
+        return true;
+    case EDITOR_DEL_ARG:
+        assert(hover_info.editor.blockdef_input != (size_t)-1);
+        blockdef_delete_input(&hover_info.argument->data.blockdef, hover_info.editor.blockdef_input);
         update_measurements(hover_info.block, PLACEMENT_HORIZONTAL);
         deselect_all();
         return true;
@@ -2922,6 +3023,9 @@ void setup(void) {
     edit_tex = load_svg(DATA_PATH "edit.svg");
     close_tex = load_svg(DATA_PATH "close.svg");
     term_tex = load_svg(DATA_PATH "term.svg");
+    add_arg_tex = load_svg(DATA_PATH "add_arg.svg");
+    del_arg_tex = load_svg(DATA_PATH "del_arg.svg");
+    add_text_tex = load_svg(DATA_PATH "add_text.svg");
     logo_tex_nuc = TextureToNuklear(logo_tex);
     warn_tex_nuc = TextureToNuklear(warn_tex);
 
@@ -3406,6 +3510,7 @@ int main(void) {
         hover_info.exec_chain_ind = -1;
         hover_info.editor.part = EDITOR_NONE;
         hover_info.editor.blockdef = NULL;
+        hover_info.editor.blockdef_input = -1;
 
         Vector2 mouse_pos = GetMousePosition();
         if ((int)hover_info.last_mouse_pos.x == (int)mouse_pos.x && (int)hover_info.last_mouse_pos.y == (int)mouse_pos.y) {
@@ -3536,7 +3641,7 @@ int main(void) {
                     "Bar: %d, Ind: %d\n"
                     "Min: (%.3f, %.3f), Max: (%.3f, %.3f)\n"
                     "Sidebar scroll: %d, Max: %d\n"
-                    "Editor: %d, Blockdef: %p",
+                    "Editor: %d, Blockdef: %p, input: %zu\n",
                     hover_info.blockchain,
                     hover_info.blockchain_index,
                     hover_info.blockchain_layer,
@@ -3557,7 +3662,7 @@ int main(void) {
                     hover_info.top_bars.type, hover_info.top_bars.ind,
                     block_code.min_pos.x, block_code.min_pos.y, block_code.max_pos.x, block_code.max_pos.y,
                     sidebar.scroll_amount, sidebar.max_y,
-                    hover_info.editor.part, hover_info.editor.blockdef
+                    hover_info.editor.part, hover_info.editor.blockdef, hover_info.editor.blockdef_input
                 ), 
                 (Vector2){ 
                     conf.side_bar_size + 5, 

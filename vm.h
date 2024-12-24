@@ -327,7 +327,7 @@ void blockdef_add_argument(ScrBlockdef* blockdef, char* defualt_data, ScrBlockAr
 void blockdef_add_dropdown(ScrBlockdef* blockdef, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor);
 void blockdef_add_image(ScrBlockdef* blockdef, ScrImage image);
 void blockdef_add_blockdef_editor(ScrBlockdef* blockdef);
-void blockdef_input_set_name(ScrBlockdef* blockdef, size_t input, char* name);
+void blockdef_delete_input(ScrBlockdef* blockdef, size_t input);
 void blockdef_unregister(ScrVm* vm, size_t id);
 void block_update_parent_links(ScrBlock* block);
 
@@ -1098,7 +1098,6 @@ ScrBlock block_new(ScrBlockdef* blockdef) {
             arg->ms = (ScrMeasurement) {0};
             arg->data.blockdef = blockdef_new(NULL, BLOCKTYPE_NORMAL, blockdef->color, NULL);
             blockdef_add_text(&arg->data.blockdef, "My block");
-            blockdef_add_argument(&arg->data.blockdef, "arg", BLOCKCONSTR_UNLIMITED);
             break;
         default:
             assert(false && "Unreachable");
@@ -1438,7 +1437,6 @@ void blockdef_add_argument(ScrBlockdef* blockdef, char* defualt_data, ScrBlockAr
             .ms = ms,
         },
     };
-    blockdef_add_text(&input->data.arg.blockdef, "some arg");
 }
 
 void blockdef_add_blockdef_editor(ScrBlockdef* blockdef) {
@@ -1468,6 +1466,23 @@ void blockdef_add_image(ScrBlockdef* blockdef, ScrImage image) {
             .ms = ms,
         }
     };
+}
+
+void blockdef_delete_input(ScrBlockdef* blockdef, size_t input) {
+    assert(input < vector_size(blockdef->inputs));
+
+    switch (blockdef->inputs[input].type) {
+    case INPUT_TEXT_DISPLAY:
+        vector_free(blockdef->inputs[input].data.stext.text);
+        break;
+    case INPUT_ARGUMENT:
+        blockdef_free(&blockdef->inputs[input].data.arg.blockdef);
+        break;
+    default:
+        assert(false && "Unimplemented input delete");
+        break;
+    }
+    vector_remove(blockdef->inputs, input);
 }
 
 void blockdef_free(ScrBlockdef* blockdef) {
