@@ -1,6 +1,5 @@
 // TODO:
 // - Add code saving
-// - Add custom blocks
 // - Add string manipulation
 // - Add license
 
@@ -79,7 +78,8 @@ typedef enum {
 
 typedef struct {
     EditorHoverPart part;
-    bool is_editing;
+    ScrBlockdef* edit_blockdef;
+    ScrBlock* edit_block;
     ScrBlockdef* blockdef;
     size_t blockdef_input;
 } EditorHoverInfo;
@@ -110,7 +110,7 @@ typedef struct {
 
     int dropdown_hover_ind;
 
-    size_t exec_chain_ind;
+    ScrBlockChain* exec_chain;
     size_t exec_ind;
 
     TopBars top_bars;
@@ -201,6 +201,8 @@ Texture2D term_tex;
 Texture2D add_arg_tex;
 Texture2D del_arg_tex;
 Texture2D add_text_tex;
+Texture2D special_tex;
+Texture2D list_tex;
 struct nk_image logo_tex_nuc;
 struct nk_image warn_tex_nuc;
 
@@ -269,6 +271,8 @@ void update_measurements(ScrBlock* block, ScrPlacementStrategy placement);
 void term_input_put_char(char ch);
 int term_print_str(const char* str);
 void term_clear(void);
+ScrFuncArg block_exec_custom(ScrExec* exec, int argc, ScrFuncArg* argv);
+ScrFuncArg block_custom_arg(ScrExec* exec, int argc, ScrFuncArg* argv);
 
 ScrVec as_scr_vec(Vector2 vec) {
     return (ScrVec) { vec.x, vec.y };
@@ -312,6 +316,10 @@ void blockcode_remove_blockchain(BlockCode* blockcode, size_t ind) {
 
 ScrBlock block_new_ms(ScrBlockdef* blockdef) {
     ScrBlock block = block_new(blockdef);
+    for (size_t i = 0; i < vector_size(block.arguments); i++) {
+        if (block.arguments[i].type != ARGUMENT_BLOCKDEF) continue;
+        block.arguments[i].data.blockdef.func = block_exec_custom;
+    }
     update_measurements(&block, PLACEMENT_HORIZONTAL);
     return block;
 }
@@ -398,7 +406,7 @@ void draw_input_box(Vector2 position, ScrMeasurement ms, char** input, bool roun
     rect.x = position.x;
     rect.y = position.y;
     rect.width = ms.size.x;
-    rect.height = ms.size.y;
+    rect.height = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
 
     bool hovered = input == hover_info.input;
     bool selected = input == hover_info.select_input;
@@ -452,7 +460,7 @@ void draw_block_base(Rectangle block_size, ScrBlockdef* blockdef, Color block_co
     }
 }
 
-void blockdef_update_measurements(ScrBlockdef* blockdef) {
+void blockdef_update_measurements(ScrBlockdef* blockdef, bool editing) {
     blockdef->ms.size.x = BLOCK_PADDING;
     blockdef->ms.placement = PLACEMENT_HORIZONTAL;
     blockdef->ms.size.y = conf.font_size;
@@ -463,20 +471,20 @@ void blockdef_update_measurements(ScrBlockdef* blockdef) {
 
         switch (blockdef->inputs[i].type) {
         case INPUT_TEXT_DISPLAY:
-            if (hover_info.editor.is_editing) {
+            if (editing) {
                 ms = measure_input_box(blockdef->inputs[i].data.stext.text);
                 ms = measure_group(ms, measure_block_button(), BLOCK_PADDING);
             } else {
                 ms = measure_text(blockdef->inputs[i].data.stext.text);
             }
-            blockdef->inputs[i].data.stext.ms = ms;
+            blockdef->inputs[i].data.stext.editor_ms = ms;
             break;
         case INPUT_IMAGE_DISPLAY:
             ms = measure_image(blockdef->inputs[i].data.simage.image, BLOCK_IMAGE_SIZE);
             blockdef->inputs[i].data.simage.ms = ms;
             break;
         case INPUT_ARGUMENT:
-            blockdef_update_measurements(&blockdef->inputs[i].data.arg.blockdef);
+            blockdef_update_measurements(&blockdef->inputs[i].data.arg.blockdef, editing);
             ms = blockdef->inputs[i].data.arg.blockdef.ms;
             break;
         case INPUT_DROPDOWN:
@@ -496,7 +504,7 @@ void blockdef_update_measurements(ScrBlockdef* blockdef) {
     }
 }
 
-void blockdef_update_collisions(Vector2 position, ScrBlockdef* blockdef) {
+void blockdef_update_collisions(Vector2 position, ScrBlockdef* blockdef, bool editing) {
     Rectangle block_size;
     block_size.x = position.x;
     block_size.y = position.y;
@@ -516,8 +524,8 @@ void blockdef_update_collisions(Vector2 position, ScrBlockdef* blockdef) {
 
         switch (cur->type) {
         case INPUT_TEXT_DISPLAY:
-            ScrMeasurement ms = cur->data.stext.ms;
-            if (hover_info.editor.is_editing) {
+            ScrMeasurement ms = cur->data.stext.editor_ms;
+            if (editing) {
                 arg_size.x = cursor.x;
                 arg_size.y = cursor.y + block_size.height * 0.5 - (conf.font_size - BLOCK_OUTLINE_SIZE * 4) * 0.5;
                 arg_size.width = ms.size.x - conf.font_size - BLOCK_PADDING;
@@ -548,7 +556,7 @@ void blockdef_update_collisions(Vector2 position, ScrBlockdef* blockdef) {
             blockdef_rect.width = cur->data.arg.blockdef.ms.size.x;
             blockdef_rect.height = cur->data.arg.blockdef.ms.size.y;
             if (CheckCollisionPointRec(GetMousePosition(), blockdef_rect)) {
-                blockdef_update_collisions((Vector2) { blockdef_rect.x, blockdef_rect.y }, &cur->data.arg.blockdef);
+                blockdef_update_collisions((Vector2) { blockdef_rect.x, blockdef_rect.y }, &cur->data.arg.blockdef, editing);
                 hover_info.editor.blockdef_input = i;
             }
             break;
@@ -562,7 +570,7 @@ void blockdef_update_collisions(Vector2 position, ScrBlockdef* blockdef) {
     }
 }
 
-void draw_blockdef(Vector2 position, ScrBlockdef* blockdef) {
+void draw_blockdef(Vector2 position, ScrBlockdef* blockdef, bool editing) {
     bool collision = hover_info.editor.blockdef == blockdef;
 
     Color color = as_rl_color(blockdef->color);
@@ -580,6 +588,7 @@ void draw_blockdef(Vector2 position, ScrBlockdef* blockdef) {
     if (!CheckCollisionRecs(block_size, (Rectangle) { 0, 0, GetScreenWidth(), GetScreenHeight() })) return;
 
     draw_block_base(block_size, blockdef, block_color, outline_color);
+    //DrawTextEx(font_cond, TextFormat("%zu", blockdef->ref_count), (Vector2) { block_size.x, block_size.y - conf.font_size }, BLOCK_TEXT_SIZE, 0.0, WHITE);
 
     cursor.x += BLOCK_PADDING;
 
@@ -590,13 +599,14 @@ void draw_blockdef(Vector2 position, ScrBlockdef* blockdef) {
 
         switch (cur->type) {
         case INPUT_TEXT_DISPLAY:
-            width = cur->data.stext.ms.size.x;
-            arg_pos.y += block_size.height * 0.5 - cur->data.stext.ms.size.y * 0.5;
+            width = cur->data.stext.editor_ms.size.x;
+            arg_pos.y += block_size.height * 0.5 - cur->data.stext.editor_ms.size.y * 0.5;
 
-            if (hover_info.editor.is_editing) {
-                ScrMeasurement input_ms = cur->data.stext.ms;
+            if (editing) {
+                ScrMeasurement input_ms = cur->data.stext.editor_ms;
                 input_ms.size.x -= conf.font_size + BLOCK_PADDING;
-                draw_input_box(arg_pos, input_ms, &cur->data.stext.text, false);
+                input_ms.size.y = conf.font_size - BLOCK_OUTLINE_SIZE * 4;
+                draw_input_box((Vector2) { arg_pos.x, cursor.y + block_size.height * 0.5 - input_ms.size.y * 0.5}, input_ms, &cur->data.stext.text, false);
                 arg_pos.x += input_ms.size.x + BLOCK_PADDING * 0.5;
                 draw_block_button(arg_pos, del_arg_tex, hover_info.editor.part == EDITOR_DEL_ARG && hover_info.editor.blockdef == blockdef);
             } else {
@@ -613,7 +623,7 @@ void draw_blockdef(Vector2 position, ScrBlockdef* blockdef) {
             width = cur->data.arg.blockdef.ms.size.x;
             arg_pos.y += block_size.height * 0.5 - cur->data.arg.blockdef.ms.size.y * 0.5;
 
-            draw_blockdef(arg_pos, &cur->data.arg.blockdef);
+            draw_blockdef(arg_pos, &cur->data.arg.blockdef, editing);
             break;
         case INPUT_BLOCKDEF_EDITOR:
             assert(false && "Unimplemented");
@@ -677,10 +687,11 @@ void update_measurements(ScrBlock* block, ScrPlacementStrategy placement) {
             arg_id++;
             break;
         case INPUT_BLOCKDEF_EDITOR:
-            blockdef_update_measurements(&block->arguments[arg_id].data.blockdef);
+            ScrBlockdef* blockdef = &block->arguments[arg_id].data.blockdef;
+            blockdef_update_measurements(blockdef, hover_info.editor.edit_blockdef == blockdef);
             ScrMeasurement editor_ms = block->arguments[arg_id].data.blockdef.ms;
             ScrMeasurement button_ms = measure_block_button();
-            if (hover_info.editor.is_editing) {
+            if (hover_info.editor.edit_blockdef == &block->arguments[arg_id].data.blockdef) {
                 button_ms = measure_group(button_ms, measure_block_button(), BLOCK_PADDING);
                 button_ms = measure_group(button_ms, measure_block_button(), BLOCK_PADDING);
             }
@@ -843,13 +854,14 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
 
             if (CheckCollisionPointRec(GetMousePosition(), blockdef_rect)) {
                 hover_info.editor.part = EDITOR_BLOCKDEF;
-                blockdef_update_collisions((Vector2) { blockdef_rect.x, blockdef_rect.y }, &block->arguments[arg_id].data.blockdef);
+                ScrBlockdef* editor_blockdef = &block->arguments[arg_id].data.blockdef;
+                blockdef_update_collisions((Vector2) { blockdef_rect.x, blockdef_rect.y }, editor_blockdef, hover_info.editor.edit_blockdef == editor_blockdef);
                 arg_id++;
                 break;
             }
             arg_pos.x += blockdef_size.x + BLOCK_PADDING * 0.5;
             
-            if (hover_info.editor.is_editing) {
+            if (hover_info.editor.edit_blockdef == &block->arguments[arg_id].data.blockdef) {
                 if (block_button_update_collisions((Vector2) {arg_pos.x, arg_pos.y + height * 0.5 - conf.font_size * 0.5 }, EDITOR_ADD_ARG)) {
                     arg_id++;
                     break;
@@ -999,16 +1011,18 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
             DrawRectangle(arg_pos.x, arg_pos.y, width, height, (Color) { 0x00, 0x00, 0x00, 0x40 });
 
             Vector2 blockdef_size = as_rl_vec(block->arguments[arg_id].data.blockdef.ms.size);
+            ScrBlockdef* editor_blockdef = &block->arguments[arg_id].data.blockdef;
             draw_blockdef(
                 (Vector2) {
                     arg_pos.x, 
                     arg_pos.y + height * 0.5 - blockdef_size.y * 0.5,
                 },
-                &block->arguments[arg_id].data.blockdef
+                editor_blockdef,
+                hover_info.editor.edit_blockdef == editor_blockdef
             );
             arg_pos.x += blockdef_size.x + BLOCK_PADDING * 0.5;
 
-            if (hover_info.editor.is_editing) {
+            if (hover_info.editor.edit_blockdef == &block->arguments[arg_id].data.blockdef) {
                 draw_block_button(
                     (Vector2) {
                         arg_pos.x,
@@ -1035,7 +1049,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
                     arg_pos.x,
                     arg_pos.y + height * 0.5 - conf.font_size * 0.5,
                 }, 
-                hover_info.editor.is_editing ? close_tex : edit_tex,
+                hover_info.editor.edit_blockdef == &block->arguments[arg_id].data.blockdef ? close_tex : edit_tex,
                 hover_info.editor.part == EDITOR_EDIT && hover_info.block == block
             );
 
@@ -1747,7 +1761,7 @@ bool handle_top_bar_click(void) {
             out_win.buf_start = 0;
             out_win.buf_end = 0;
             term_clear();
-            exec = exec_new(&vm);
+            exec = exec_new();
             exec_copy_code(&vm, &exec, editor_code);
             if (exec_start(&vm, &exec)) {
                 actionbar_show("Started successfully!");
@@ -1774,6 +1788,46 @@ void deselect_all(void) {
     dropdown.scroll_amount = 0;
 }
 
+void block_delete_blockdef(ScrBlock* block, ScrBlockdef* blockdef) {
+    for (size_t i = 0; i < vector_size(block->arguments); i++) {
+        if (blockdef->ref_count == 0) break;
+        if (block->arguments[i].type != ARGUMENT_BLOCK) continue;
+        if (block->arguments[i].data.block.blockdef == blockdef) {
+            block_free(&block->arguments[i].data.block);
+            argument_set_text(&block->arguments[i], "");
+            continue;
+        }
+        block_delete_blockdef(&block->arguments[i].data.block, blockdef);
+    }
+    update_measurements(block, PLACEMENT_HORIZONTAL);
+}
+
+void blockchain_delete_blockdef(ScrBlockChain* chain, ScrBlockdef* blockdef) {
+    for (size_t i = 0; i < vector_size(chain->blocks); i++) {
+        if (blockdef->ref_count == 0) break;
+        if (chain->blocks[i].blockdef == blockdef) {
+            block_free(&chain->blocks[i]);
+            vector_remove(chain->blocks, i);
+            i--;
+            continue;
+        }
+        block_delete_blockdef(&chain->blocks[i], blockdef);
+    }
+    blockchain_update_parent_links(chain);
+}
+
+void editor_code_remove_blockdef(ScrBlockdef* blockdef) {
+    for (size_t i = 0; i < vector_size(editor_code); i++) {
+        if (blockdef->ref_count == 0) break;
+        blockchain_delete_blockdef(&editor_code[i], blockdef);
+        if (vector_size(editor_code[i].blocks) == 0) {
+            blockchain_free(&editor_code[i]);
+            blockcode_remove_blockchain(&block_code, i);
+            i--;
+        }
+    }
+}
+
 bool handle_sidebar_click(bool mouse_empty) {
     if (hover_info.select_argument) {
         deselect_all();
@@ -1783,11 +1837,23 @@ bool handle_sidebar_click(bool mouse_empty) {
         // Pickup block
         blockchain_add_block(&mouse_blockchain, block_new_ms(hover_info.block->blockdef));
         if (hover_info.block->blockdef->type == BLOCKTYPE_CONTROL && vm.end_blockdef) {
-            blockchain_add_block(&mouse_blockchain, block_new_ms(vm.end_blockdef));
+            blockchain_add_block(&mouse_blockchain, block_new_ms(&vm.blockdefs[vm.end_blockdef]));
         }
         return true;
     } else if (!mouse_empty) {
         // Drop block
+        for (size_t i = 0; i < vector_size(mouse_blockchain.blocks); i++) {
+            for (size_t j = 0; j < vector_size(mouse_blockchain.blocks[i].arguments); j++) {
+                ScrBlockArgument* arg = &mouse_blockchain.blocks[i].arguments[j];
+                if (arg->type != ARGUMENT_BLOCKDEF) continue;
+                if (arg->data.blockdef.ref_count > 0) editor_code_remove_blockdef(&arg->data.blockdef);
+                for (size_t k = 0; k < vector_size(arg->data.blockdef.inputs); k++) {
+                    ScrBlockInput* input = &arg->data.blockdef.inputs[k];
+                    if (input->type != INPUT_ARGUMENT) continue;
+                    if (input->data.arg.blockdef.ref_count > 0) editor_code_remove_blockdef(&input->data.arg.blockdef);
+                }
+            }
+        }
         blockchain_clear_blocks(&mouse_blockchain);
         return true;
     }
@@ -1795,19 +1861,51 @@ bool handle_sidebar_click(bool mouse_empty) {
 }
 
 bool handle_blockdef_editor_click(void) {
-    size_t last_input = vector_size(hover_info.argument->data.blockdef.inputs);
+    ScrBlockdef* blockdef = &hover_info.argument->data.blockdef;
+    size_t last_input = vector_size(blockdef->inputs);
     char str[32];
     switch (hover_info.editor.part) {
     case EDITOR_ADD_ARG:
         // TODO: Update block arguments when new argument is added
+        if (blockdef->ref_count > 0) {
+            deselect_all();
+            return true;
+        }
+        for (size_t i = 0; i < vector_size(blockdef->inputs); i++) {
+            if (blockdef->inputs[i].type != INPUT_ARGUMENT) continue;
+            if (blockdef->inputs[i].data.arg.blockdef.ref_count > 0) {
+                deselect_all();
+                return true;
+            }
+        }
         blockdef_add_argument(&hover_info.argument->data.blockdef, "", BLOCKCONSTR_UNLIMITED);
         sprintf(str, "arg%zu", last_input);
-        blockdef_add_text(&hover_info.argument->data.blockdef.inputs[last_input].data.arg.blockdef, str);
+        ScrBlockdef* arg_blockdef = &hover_info.argument->data.blockdef.inputs[last_input].data.arg.blockdef;
+        blockdef_add_text(arg_blockdef, str);
+        arg_blockdef->func = block_custom_arg;
+
+        size_t arg_count = 0;
+        for (size_t i = 0; i < vector_size(hover_info.argument->data.blockdef.inputs); i++) {
+            if (hover_info.argument->data.blockdef.inputs[i].type == INPUT_ARGUMENT) arg_count++;
+        }
+        arg_blockdef->arg_id = arg_count - 1;
+
         update_measurements(hover_info.block, PLACEMENT_HORIZONTAL);
         deselect_all();
         return true;
     case EDITOR_ADD_TEXT:
         // TODO: Update block arguments when new argument is added
+        if (blockdef->ref_count > 0) {
+            deselect_all();
+            return true;
+        }
+        for (size_t i = 0; i < vector_size(blockdef->inputs); i++) {
+            if (blockdef->inputs[i].type != INPUT_ARGUMENT) continue;
+            if (blockdef->inputs[i].data.arg.blockdef.ref_count > 0) {
+                deselect_all();
+                return true;
+            }
+        }
         sprintf(str, "text%zu", last_input);
         blockdef_add_text(&hover_info.argument->data.blockdef, str);
         update_measurements(hover_info.block, PLACEMENT_HORIZONTAL);
@@ -1815,17 +1913,44 @@ bool handle_blockdef_editor_click(void) {
         return true;
     case EDITOR_DEL_ARG:
         assert(hover_info.editor.blockdef_input != (size_t)-1);
-        blockdef_delete_input(&hover_info.argument->data.blockdef, hover_info.editor.blockdef_input);
+        if (blockdef->ref_count > 0) {
+            deselect_all();
+            return true;
+        }
+        for (size_t i = 0; i < vector_size(blockdef->inputs); i++) {
+            if (blockdef->inputs[i].type != INPUT_ARGUMENT) continue;
+            if (blockdef->inputs[i].data.arg.blockdef.ref_count > 0) {
+                deselect_all();
+                return true;
+            }
+        }
+
+        bool is_arg = blockdef->inputs[hover_info.editor.blockdef_input].type == INPUT_ARGUMENT;
+        blockdef_delete_input(blockdef, hover_info.editor.blockdef_input);
+        if (is_arg) {
+            for (size_t i = 0; i < vector_size(blockdef->inputs); i++) {
+                if (blockdef->inputs[i].type != INPUT_ARGUMENT) continue;
+                blockdef->inputs[i].data.arg.blockdef.arg_id--;
+            }
+        }
+
         update_measurements(hover_info.block, PLACEMENT_HORIZONTAL);
         deselect_all();
         return true;
     case EDITOR_EDIT:
-        hover_info.editor.is_editing = !hover_info.editor.is_editing;
+        if (hover_info.editor.edit_blockdef == &hover_info.argument->data.blockdef) {
+            hover_info.editor.edit_blockdef = NULL;
+            hover_info.editor.edit_block = NULL;
+        } else {
+            hover_info.editor.edit_blockdef = &hover_info.argument->data.blockdef;
+            if (hover_info.editor.edit_block) update_measurements(hover_info.editor.edit_block, PLACEMENT_HORIZONTAL);
+            hover_info.editor.edit_block = hover_info.block;
+        }
         update_measurements(hover_info.block, PLACEMENT_HORIZONTAL);
         deselect_all();
         return true;
     case EDITOR_BLOCKDEF:
-        if (hover_info.editor.is_editing) return false;
+        if (hover_info.editor.edit_blockdef == &hover_info.argument->data.blockdef) return false;
         blockchain_add_block(&mouse_blockchain, block_new_ms(hover_info.editor.blockdef));
         deselect_all();
         return true;
@@ -1915,6 +2040,9 @@ bool handle_code_editor_click(bool mouse_empty) {
                     mouse_blockchain = blockchain_copy(hover_info.blockchain, hover_info.blockchain_index);
                 }
             } else {
+                hover_info.editor.edit_blockdef = NULL;
+                if (hover_info.editor.edit_block) update_measurements(hover_info.editor.edit_block, PLACEMENT_HORIZONTAL);
+                hover_info.editor.edit_block = NULL;
                 if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) {
                     // Detach block
                     printf("Detach block\n");
@@ -2391,10 +2519,10 @@ ScrFuncArg block_loop(ScrExec* exec, int argc, ScrFuncArg* argv) {
     if (argv[0].type != FUNC_ARG_CONTROL) RETURN_OMIT_ARGS;
 
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
-        control_stack_push_data(exec->running_ind, size_t)
+        control_stack_push_data(exec->chain_stack[exec->chain_stack_len - 1].running_ind, size_t)
     } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
-        control_stack_pop_data(exec->running_ind, size_t)
-        control_stack_push_data(exec->running_ind, size_t)
+        control_stack_pop_data(exec->chain_stack[exec->chain_stack_len - 1].running_ind, size_t)
+        control_stack_push_data(exec->chain_stack[exec->chain_stack_len - 1].running_ind, size_t)
     }
 
     RETURN_OMIT_ARGS;
@@ -2405,7 +2533,7 @@ ScrFuncArg block_if(ScrExec* exec, int argc, ScrFuncArg* argv) {
     if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(1);
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
         if (!func_arg_to_bool(argv[1])) {
-            exec->skip_block = true;
+            exec_set_skip_block(exec);
             control_stack_push_data((int)0, int)
         } else {
             control_stack_push_data((int)1, int)
@@ -2424,11 +2552,11 @@ ScrFuncArg block_else_if(ScrExec* exec, int argc, ScrFuncArg* argv) {
     if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(1);
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
         if (argc < 3 || func_arg_to_bool(argv[1])) {
-            exec->skip_block = true;
+            exec_set_skip_block(exec);
             control_stack_push_data((int)1, int)
         } else {
             int condition = func_arg_to_bool(argv[2]);
-            if (!condition) exec->skip_block = true;
+            if (!condition) exec_set_skip_block(exec);
             control_stack_push_data(condition, int)
         }
         RETURN_OMIT_ARGS;
@@ -2446,7 +2574,7 @@ ScrFuncArg block_else(ScrExec* exec, int argc, ScrFuncArg* argv) {
     if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(1);
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
         if (argc < 2 || func_arg_to_bool(argv[1])) {
-            exec->skip_block = true;
+            exec_set_skip_block(exec);
         }
         RETURN_OMIT_ARGS;
     } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
@@ -2469,11 +2597,11 @@ ScrFuncArg block_repeat(ScrExec* exec, int argc, ScrFuncArg* argv) {
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
         int cycles = func_arg_to_int(argv[1]);
         if (cycles <= 0) {
-            exec->skip_block = true;
+            exec_set_skip_block(exec);
             control_stack_push_data((int)0, int) // This indicates the end block that it should NOT loop
             RETURN_OMIT_ARGS;
         }
-        control_stack_push_data(exec->running_ind, size_t)
+        control_stack_push_data(exec->chain_stack[exec->chain_stack_len - 1].running_ind, size_t)
         control_stack_push_data(cycles - 1, int)
         control_stack_push_data((int)1, int) // This indicates the end block that it should loop
     } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
@@ -2490,8 +2618,8 @@ ScrFuncArg block_repeat(ScrExec* exec, int argc, ScrFuncArg* argv) {
             RETURN_BOOL(1);
         }
 
-        control_stack_pop_data(exec->running_ind, size_t)
-        control_stack_push_data(exec->running_ind, size_t)
+        control_stack_pop_data(exec->chain_stack[exec->chain_stack_len - 1].running_ind, size_t)
+        control_stack_push_data(exec->chain_stack[exec->chain_stack_len - 1].running_ind, size_t)
         control_stack_push_data(left - 1, int)
         control_stack_push_data((int)1, int)
     }
@@ -2505,10 +2633,10 @@ ScrFuncArg block_while(ScrExec* exec, int argc, ScrFuncArg* argv) {
 
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
         if (!func_arg_to_bool(argv[1])) {
-            exec->skip_block = true;
+            exec_set_skip_block(exec);
             RETURN_OMIT_ARGS;
         }
-        control_stack_push_data(exec->running_ind, size_t)
+        control_stack_push_data(exec->chain_stack[exec->chain_stack_len - 1].running_ind, size_t)
     } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
         if (!func_arg_to_bool(argv[1])) {
             size_t bin;
@@ -2517,8 +2645,8 @@ ScrFuncArg block_while(ScrExec* exec, int argc, ScrFuncArg* argv) {
             RETURN_BOOL(1);
         }
 
-        control_stack_pop_data(exec->running_ind, size_t)
-        control_stack_push_data(exec->running_ind, size_t)
+        control_stack_pop_data(exec->chain_stack[exec->chain_stack_len - 1].running_ind, size_t)
+        control_stack_push_data(exec->chain_stack[exec->chain_stack_len - 1].running_ind, size_t)
     }
 
     RETURN_NOTHING;
@@ -2995,10 +3123,31 @@ ScrFuncArg block_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
 }
 
 ScrFuncArg block_not_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
-    (void) exec;
     ScrFuncArg out = block_eq(exec, argc, argv);
     out.data.int_arg = !out.data.int_arg;
     return out;
+}
+
+ScrFuncArg block_exec_custom(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 1) RETURN_NOTHING;
+    if (argv[0].type != FUNC_ARG_CHAIN) RETURN_NOTHING;
+    ScrFuncArg return_val;
+    exec_run_custom(exec, argv[0].data.chain_arg, argc - 1, argv + 1, &return_val);
+    return return_val;
+}
+
+ScrFuncArg block_custom_arg(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 1) RETURN_NOTHING;
+    if (argv[0].type != FUNC_ARG_INT) RETURN_NOTHING;
+    if (argv[0].data.int_arg >= exec->chain_stack[exec->chain_stack_len - 1].custom_argc) RETURN_NOTHING;
+    return func_arg_copy(exec->chain_stack[exec->chain_stack_len - 1].custom_argv[argv[0].data.int_arg]);
+}
+
+ScrFuncArg block_return(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    if (argc < 1) RETURN_NOTHING;
+    exec->chain_stack[exec->chain_stack_len - 1].return_arg = func_arg_copy(argv[0]);
+    exec->chain_stack[exec->chain_stack_len - 1].is_returning = true;
+    RETURN_NOTHING;
 }
 
 Texture2D load_svg(const char* path) {
@@ -3026,6 +3175,8 @@ void setup(void) {
     add_arg_tex = load_svg(DATA_PATH "add_arg.svg");
     del_arg_tex = load_svg(DATA_PATH "del_arg.svg");
     add_text_tex = load_svg(DATA_PATH "add_text.svg");
+    special_tex = load_svg(DATA_PATH "special.svg");
+    list_tex = load_svg(DATA_PATH "list.svg");
     logo_tex_nuc = TextureToNuklear(logo_tex);
     warn_tex_nuc = TextureToNuklear(warn_tex);
 
@@ -3136,6 +3287,10 @@ void setup(void) {
     ScrBlockdef sc_else = blockdef_new("else", BLOCKTYPE_CONTROLEND, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_else);
     blockdef_add_text(&sc_else, "Else");
     blockdef_register(&vm, sc_else);
+
+    ScrBlockdef sc_do_nothing = blockdef_new("do_nothing", BLOCKTYPE_CONTROL, (ScrColor) { 0x77, 0x77, 0x77, 0xff }, block_noop);
+    blockdef_add_text(&sc_do_nothing, "Do nothing");
+    blockdef_register(&vm, sc_do_nothing);
 
     ScrBlockdef sc_sleep = blockdef_new("sleep", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x99, 0x00, 0xff }, block_sleep);
     blockdef_add_text(&sc_sleep, "Sleep");
@@ -3304,6 +3459,10 @@ void setup(void) {
     blockdef_add_argument(&sc_bool, "", BLOCKCONSTR_UNLIMITED);
     blockdef_register(&vm, sc_bool);
 
+    ScrBlockdef sc_nothing = blockdef_new("nothing", BLOCKTYPE_NORMAL, (ScrColor) { 0x77, 0x77, 0x77, 0xff }, block_noop);
+    blockdef_add_text(&sc_nothing, "Nothing");
+    blockdef_register(&vm, sc_nothing);
+
     ScrBlockdef sc_decl_var = blockdef_new("decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xff }, block_declare_var);
     blockdef_add_text(&sc_decl_var, "Declare");
     blockdef_add_argument(&sc_decl_var, "my variable", BLOCKCONSTR_STRING);
@@ -3324,25 +3483,27 @@ void setup(void) {
     blockdef_register(&vm, sc_set_var);
 
     ScrBlockdef sc_create_list = blockdef_new("create_list", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_create_list);
+    blockdef_add_image(&sc_create_list, (ScrImage) { .image_ptr = &list_tex });
     blockdef_add_text(&sc_create_list, "Empty list");
     blockdef_register(&vm, sc_create_list);
 
     ScrBlockdef sc_list_add = blockdef_new("list_add", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_add);
-    blockdef_add_text(&sc_list_add, "Add to list");
+    blockdef_add_image(&sc_list_add, (ScrImage) { .image_ptr = &list_tex });
+    blockdef_add_text(&sc_list_add, "Add");
     blockdef_add_argument(&sc_list_add, "my variable", BLOCKCONSTR_UNLIMITED);
     blockdef_add_text(&sc_list_add, "value");
     blockdef_add_argument(&sc_list_add, "", BLOCKCONSTR_UNLIMITED);
     blockdef_register(&vm, sc_list_add);
 
     ScrBlockdef sc_list_get = blockdef_new("list_get", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_get);
-    blockdef_add_text(&sc_list_get, "List");
+    blockdef_add_image(&sc_list_get, (ScrImage) { .image_ptr = &list_tex });
     blockdef_add_argument(&sc_list_get, "my variable", BLOCKCONSTR_UNLIMITED);
     blockdef_add_text(&sc_list_get, "get at");
     blockdef_add_argument(&sc_list_get, "0", BLOCKCONSTR_UNLIMITED);
     blockdef_register(&vm, sc_list_get);
 
     ScrBlockdef sc_list_set = blockdef_new("list_set", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x44, 0x00, 0xff }, block_list_set);
-    blockdef_add_text(&sc_list_set, "List");
+    blockdef_add_image(&sc_list_set, (ScrImage) { .image_ptr = &list_tex });
     blockdef_add_argument(&sc_list_set, "my variable", BLOCKCONSTR_UNLIMITED);
     blockdef_add_text(&sc_list_set, "set at");
     blockdef_add_argument(&sc_list_set, "0", BLOCKCONSTR_UNLIMITED);
@@ -3351,9 +3512,16 @@ void setup(void) {
     blockdef_register(&vm, sc_list_set);
 
     ScrBlockdef sc_define_block = blockdef_new("define_block", BLOCKTYPE_HAT, (ScrColor) { 0x99, 0x00, 0xff, 0xff }, block_noop);
+    blockdef_add_image(&sc_define_block, (ScrImage) { .image_ptr = &special_tex });
     blockdef_add_text(&sc_define_block, "Define");
     blockdef_add_blockdef_editor(&sc_define_block);
     blockdef_register(&vm, sc_define_block);
+
+    ScrBlockdef sc_return = blockdef_new("return", BLOCKTYPE_NORMAL, (ScrColor) { 0x99, 0x00, 0xff, 0xff }, block_return);
+    blockdef_add_image(&sc_return, (ScrImage) { .image_ptr = &special_tex });
+    blockdef_add_text(&sc_return, "Return");
+    blockdef_add_argument(&sc_return, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_return);
 
     mouse_blockchain = blockchain_new();
     draw_stack = vector_create();
@@ -3507,7 +3675,7 @@ int main(void) {
         hover_info.dropdown_hover_ind = -1;
         hover_info.top_bars.ind = -1;
         hover_info.exec_ind = -1;
-        hover_info.exec_chain_ind = -1;
+        hover_info.exec_chain = NULL;
         hover_info.editor.part = EDITOR_NONE;
         hover_info.editor.blockdef = NULL;
         hover_info.editor.blockdef_input = -1;
@@ -3590,8 +3758,8 @@ int main(void) {
             }
             exec_free(&exec);
         } else if (vm.is_running) {
-            hover_info.exec_chain_ind = exec.running_chain_ind;
-            hover_info.exec_ind = exec.running_ind;
+            hover_info.exec_chain = exec.running_chain;
+            hover_info.exec_ind = exec.chain_stack[exec.chain_stack_len - 1].running_ind;
         }
 
         BeginDrawing();
@@ -3609,7 +3777,7 @@ int main(void) {
             BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
                 draw_dots();
                 for (vec_size_t i = 0; i < vector_size(editor_code); i++) {
-                    draw_block_chain(&editor_code[i], camera_pos, hover_info.exec_chain_ind == i);
+                    draw_block_chain(&editor_code[i], camera_pos, hover_info.exec_chain == &editor_code[i]);
                 }
             EndScissorMode();
 
@@ -3641,7 +3809,7 @@ int main(void) {
                     "Bar: %d, Ind: %d\n"
                     "Min: (%.3f, %.3f), Max: (%.3f, %.3f)\n"
                     "Sidebar scroll: %d, Max: %d\n"
-                    "Editor: %d, Blockdef: %p, input: %zu\n",
+                    "Editor: %d, Editing: %p, Blockdef: %p, input: %zu\n",
                     hover_info.blockchain,
                     hover_info.blockchain_index,
                     hover_info.blockchain_layer,
@@ -3662,7 +3830,7 @@ int main(void) {
                     hover_info.top_bars.type, hover_info.top_bars.ind,
                     block_code.min_pos.x, block_code.min_pos.y, block_code.max_pos.x, block_code.max_pos.y,
                     sidebar.scroll_amount, sidebar.max_y,
-                    hover_info.editor.part, hover_info.editor.blockdef, hover_info.editor.blockdef_input
+                    hover_info.editor.part, hover_info.editor.edit_blockdef, hover_info.editor.blockdef, hover_info.editor.blockdef_input
                 ), 
                 (Vector2){ 
                     conf.side_bar_size + 5, 
