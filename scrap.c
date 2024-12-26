@@ -264,6 +264,11 @@ const char* line_shader_fragment =
     "    finalColor = vec4(fragColor.xyz, pow(diff, 2.0));\n"
     "}";
 
+#define MATH_LIST_LEN 2
+char* block_math_list[MATH_LIST_LEN] = {
+    "sin", "cos",
+};
+
 void save_config(Config* config);
 void apply_config(Config* dst, Config* src);
 void set_default_config(Config* config);
@@ -273,6 +278,12 @@ int term_print_str(const char* str);
 void term_clear(void);
 ScrFuncArg block_exec_custom(ScrExec* exec, int argc, ScrFuncArg* argv);
 ScrFuncArg block_custom_arg(ScrExec* exec, int argc, ScrFuncArg* argv);
+
+char** math_list_access(ScrBlock* block, size_t* list_len) {
+    (void) block;
+    *list_len = MATH_LIST_LEN;
+    return block_math_list;
+}
 
 ScrVec as_scr_vec(Vector2 vec) {
     return (ScrVec) { vec.x, vec.y };
@@ -993,7 +1004,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
             draw_image(
                 (Vector2) { 
                     cursor.x + ms.x + BLOCK_STRING_PADDING * 0.5,
-                    cursor.y + BLOCK_OUTLINE_SIZE * 2,
+                    cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? BLOCK_OUTLINE_SIZE : block_size.height * 0.5 - BLOCK_IMAGE_SIZE * 0.5),
                 }, 
                 (ScrImage) {
                     .image_ptr = &drop_tex,
@@ -2342,6 +2353,12 @@ int term_print_int(int value) {
     return term_print_str(converted);
 }
 
+int term_print_double(double value) {
+    char converted[20];
+    snprintf(converted, 20, "%f", value);
+    return term_print_str(converted);
+}
+
 void term_clear(void) {
     pthread_mutex_lock(&out_win.lock);
     for (int i = 0; i < out_win.char_w * out_win.char_h; i++) strncpy(out_win.buffer[i], " ", ARRLEN(*out_win.buffer));
@@ -2376,7 +2393,6 @@ void term_resize(void) {
         int buf_size = out_win.char_w * out_win.char_h * sizeof(*out_win.buffer);
         out_win.buffer = malloc(buf_size);
         term_clear();
-        printf("Term resize: %d, %d\n", out_win.char_w, out_win.char_h);
     }
     pthread_mutex_unlock(&out_win.lock);
 }
@@ -2567,7 +2583,6 @@ ScrFuncArg block_else_if(ScrExec* exec, int argc, ScrFuncArg* argv) {
     }
     RETURN_BOOL(1);
 }
-
 
 ScrFuncArg block_else(ScrExec* exec, int argc, ScrFuncArg* argv) {
     if (argc < 1) RETURN_BOOL(1);
@@ -2786,6 +2801,9 @@ ScrFuncArg block_print(ScrExec* exec, int argc, ScrFuncArg* argv) {
         case FUNC_ARG_STR:
             bytes_sent = term_print_str(argv[0].data.str_arg);
             break;
+        case FUNC_ARG_DOUBLE:
+            bytes_sent = term_print_double(argv[0].data.double_arg);
+            break;
         case FUNC_ARG_LIST:
             bytes_sent += term_print_str("[");
             if (argv[0].data.list_arg.items && argv[0].data.list_arg.len) {
@@ -2958,6 +2976,12 @@ ScrFuncArg block_convert_int(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_INT(func_arg_to_int(argv[0]));
 }
 
+ScrFuncArg block_convert_float(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 1) RETURN_DOUBLE(0.0);
+    RETURN_DOUBLE(func_arg_to_double(argv[0]));
+}
+
 ScrFuncArg block_convert_str(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     ScrString string = string_new(0);
@@ -2975,30 +2999,48 @@ ScrFuncArg block_convert_bool(ScrExec* exec, int argc, ScrFuncArg* argv) {
 ScrFuncArg block_plus(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    RETURN_INT(func_arg_to_int(argv[0]) + func_arg_to_int(argv[1]));
+    if (argv[0].type == FUNC_ARG_DOUBLE) {
+        RETURN_DOUBLE(argv[0].data.double_arg + func_arg_to_double(argv[1]));
+    } else {
+        RETURN_INT(func_arg_to_int(argv[0]) + func_arg_to_int(argv[1]));
+    }
 }
 
 ScrFuncArg block_minus(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    RETURN_INT(func_arg_to_int(argv[0]) - func_arg_to_int(argv[1]));
+    if (argv[0].type == FUNC_ARG_DOUBLE) {
+        RETURN_DOUBLE(argv[0].data.double_arg - func_arg_to_double(argv[1]));
+    } else {
+        RETURN_INT(func_arg_to_int(argv[0]) - func_arg_to_int(argv[1]));
+    }
 }
 
 ScrFuncArg block_mult(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    RETURN_INT(func_arg_to_int(argv[0]) * func_arg_to_int(argv[1]));
+    if (argv[0].type == FUNC_ARG_DOUBLE) {
+        RETURN_DOUBLE(argv[0].data.double_arg * func_arg_to_double(argv[1]));
+    } else {
+        RETURN_INT(func_arg_to_int(argv[0]) * func_arg_to_int(argv[1]));
+    }
 }
 
 ScrFuncArg block_div(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    RETURN_INT(func_arg_to_int(argv[0]) / func_arg_to_int(argv[1]));
+    if (argv[0].type == FUNC_ARG_DOUBLE) {
+        RETURN_DOUBLE(argv[0].data.double_arg / func_arg_to_double(argv[1]));
+    } else {
+        RETURN_INT(func_arg_to_int(argv[0]) / func_arg_to_int(argv[1]));
+    }
 }
 
 ScrFuncArg block_pow(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
+    if (argv[0].type == FUNC_ARG_DOUBLE) RETURN_DOUBLE(pow(argv[0].data.double_arg, func_arg_to_double(argv[1])));
+
     int base = func_arg_to_int(argv[0]);
     unsigned int exp = func_arg_to_int(argv[1]);
     if (!exp) RETURN_INT(1);
@@ -3010,6 +3052,27 @@ ScrFuncArg block_pow(ScrExec* exec, int argc, ScrFuncArg* argv) {
         base *= base;
     }
     RETURN_INT(result);
+}
+
+ScrFuncArg block_math(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    if (argc < 2) RETURN_DOUBLE(0.0);
+    if (argv[0].type != FUNC_ARG_STR) RETURN_DOUBLE(0.0);
+
+    if (!strcmp(argv[0].data.str_arg, "sin")) {
+        RETURN_DOUBLE(sin(func_arg_to_double(argv[1])));
+    } else if (!strcmp(argv[0].data.str_arg, "cos")) {
+        RETURN_DOUBLE(cos(func_arg_to_double(argv[1])));
+    } else {
+        RETURN_DOUBLE(0.0);
+    }
+}
+
+ScrFuncArg block_pi(ScrExec* exec, int argc, ScrFuncArg* argv) {
+    (void) exec;
+    (void) argc;
+    (void) argv;
+    RETURN_DOUBLE(M_PI);
 }
 
 ScrFuncArg block_bit_not(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -3041,35 +3104,55 @@ ScrFuncArg block_bit_or(ScrExec* exec, int argc, ScrFuncArg* argv) {
 ScrFuncArg block_rem(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    RETURN_INT(func_arg_to_int(argv[0]) % func_arg_to_int(argv[1]));
+    if (argv[0].type == FUNC_ARG_DOUBLE) {
+        RETURN_DOUBLE(fmod(argv[0].data.double_arg, func_arg_to_double(argv[1])));
+    } else {
+        RETURN_INT(func_arg_to_int(argv[0]) % func_arg_to_int(argv[1]));
+    }
 }
 
 ScrFuncArg block_less(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 1) RETURN_BOOL(0);
-    if (argc < 2) RETURN_BOOL(func_arg_to_bool(argv[0]) < 0);
-    RETURN_BOOL(func_arg_to_int(argv[0]) < func_arg_to_int(argv[1]));
+    if (argc < 2) RETURN_BOOL(func_arg_to_int(argv[0]) < 0);
+    if (argv[0].type == FUNC_ARG_DOUBLE) {
+        RETURN_BOOL(argv[0].data.double_arg < func_arg_to_double(argv[1]));
+    } else {
+        RETURN_BOOL(func_arg_to_int(argv[0]) < func_arg_to_int(argv[1]));
+    }
 }
 
 ScrFuncArg block_less_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 1) RETURN_BOOL(0);
-    if (argc < 2) RETURN_BOOL(func_arg_to_bool(argv[0]) <= 0);
-    RETURN_BOOL(func_arg_to_int(argv[0]) <= func_arg_to_int(argv[1]));
+    if (argc < 2) RETURN_BOOL(func_arg_to_int(argv[0]) <= 0);
+    if (argv[0].type == FUNC_ARG_DOUBLE) {
+        RETURN_BOOL(argv[0].data.double_arg <= func_arg_to_double(argv[1]));
+    } else {
+        RETURN_BOOL(func_arg_to_int(argv[0]) <= func_arg_to_int(argv[1]));
+    }
 }
 
 ScrFuncArg block_more(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 1) RETURN_BOOL(0);
-    if (argc < 2) RETURN_BOOL(func_arg_to_bool(argv[0]) > 0);
-    RETURN_BOOL(func_arg_to_int(argv[0]) > func_arg_to_int(argv[1]));
+    if (argc < 2) RETURN_BOOL(func_arg_to_int(argv[0]) > 0);
+    if (argv[0].type == FUNC_ARG_DOUBLE) {
+        RETURN_BOOL(argv[0].data.double_arg > func_arg_to_double(argv[1]));
+    } else {
+        RETURN_BOOL(func_arg_to_int(argv[0]) > func_arg_to_int(argv[1]));
+    }
 }
 
 ScrFuncArg block_more_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
     (void) exec;
     if (argc < 1) RETURN_BOOL(0);
-    if (argc < 2) RETURN_BOOL(func_arg_to_bool(argv[0]) >= 0);
-    RETURN_BOOL(func_arg_to_int(argv[0]) >= func_arg_to_int(argv[1]));
+    if (argc < 2) RETURN_BOOL(func_arg_to_int(argv[0]) >= 0);
+    if (argv[0].type == FUNC_ARG_DOUBLE) {
+        RETURN_BOOL(argv[0].data.double_arg >= func_arg_to_double(argv[1]));
+    } else {
+        RETURN_BOOL(func_arg_to_int(argv[0]) >= func_arg_to_int(argv[1]));
+    }
 }
 
 ScrFuncArg block_not(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -3113,6 +3196,8 @@ ScrFuncArg block_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
     case FUNC_ARG_BOOL:
     case FUNC_ARG_INT:
         RETURN_BOOL(argv[0].data.int_arg == argv[1].data.int_arg);
+    case FUNC_ARG_DOUBLE:
+        RETURN_BOOL(argv[0].data.double_arg == argv[1].data.double_arg);
     case FUNC_ARG_STR:
         RETURN_BOOL(!strcmp(argv[0].data.str_arg, argv[1].data.str_arg));
     case FUNC_ARG_NOTHING:
@@ -3332,6 +3417,15 @@ void setup(void) {
     blockdef_add_argument(&sc_pow, "5", BLOCKCONSTR_UNLIMITED);
     blockdef_register(&vm, sc_pow);
 
+    ScrBlockdef sc_math = blockdef_new("math", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xff }, block_math);
+    blockdef_add_dropdown(&sc_math, DROPDOWN_SOURCE_LISTREF, math_list_access);
+    blockdef_add_argument(&sc_math, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_math);
+
+    ScrBlockdef sc_pi = blockdef_new("pi", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xff }, block_pi);
+    blockdef_add_text(&sc_pi, "Pi");
+    blockdef_register(&vm, sc_pi);
+
     ScrBlockdef sc_bit_not = blockdef_new("bit_not", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0xcc, 0x77, 0xFF }, block_bit_not);
     blockdef_add_text(&sc_bit_not, "~");
     blockdef_add_argument(&sc_bit_not, "39", BLOCKCONSTR_UNLIMITED);
@@ -3448,6 +3542,11 @@ void setup(void) {
     blockdef_add_text(&sc_int, "Int");
     blockdef_add_argument(&sc_int, "", BLOCKCONSTR_UNLIMITED);
     blockdef_register(&vm, sc_int);
+
+    ScrBlockdef sc_float = blockdef_new("convert_float", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_convert_float);
+    blockdef_add_text(&sc_float, "Float");
+    blockdef_add_argument(&sc_float, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_float);
 
     ScrBlockdef sc_str = blockdef_new("convert_str", BLOCKTYPE_NORMAL, (ScrColor) { 0x00, 0x99, 0xff, 0xff }, block_convert_str);
     blockdef_add_text(&sc_str, "Str");

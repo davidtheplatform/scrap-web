@@ -163,6 +163,7 @@ enum ScrControlArgType {
 enum ScrFuncArgType {
     FUNC_ARG_NOTHING = 0,
     FUNC_ARG_INT,
+    FUNC_ARG_DOUBLE,
     FUNC_ARG_STR,
     FUNC_ARG_BOOL,
     FUNC_ARG_LIST,
@@ -189,6 +190,7 @@ struct ScrFuncArgList {
 
 union ScrFuncArgData {
     int int_arg;
+    double double_arg;
     const char* str_arg;
     ScrFuncArgList list_arg;
     ScrControlArgType control_arg;
@@ -296,6 +298,14 @@ struct ScrVm {
     .storage = FUNC_STORAGE_STATIC, \
     .data = (ScrFuncArgData) { \
         .int_arg = (val) \
+    }, \
+}
+
+#define RETURN_DOUBLE(val) return (ScrFuncArg) { \
+    .type = FUNC_ARG_DOUBLE, \
+    .storage = FUNC_STORAGE_STATIC, \
+    .data = (ScrFuncArgData) { \
+        .double_arg = (val) \
     }, \
 }
 
@@ -1093,10 +1103,26 @@ int func_arg_to_int(ScrFuncArg arg) {
     case FUNC_ARG_BOOL:
     case FUNC_ARG_INT:
         return arg.data.int_arg;
+    case FUNC_ARG_DOUBLE:
+        return (int)arg.data.double_arg;
     case FUNC_ARG_STR:
         return atoi(arg.data.str_arg);
     default:
         return 0;
+    }
+}
+
+double func_arg_to_double(ScrFuncArg arg) {
+    switch (arg.type) {
+    case FUNC_ARG_BOOL:
+    case FUNC_ARG_INT:
+        return (double)arg.data.int_arg;
+    case FUNC_ARG_DOUBLE:
+        return arg.data.double_arg;
+    case FUNC_ARG_STR:
+        return atof(arg.data.str_arg);
+    default:
+        return 0.0;
     }
 }
 
@@ -1105,6 +1131,8 @@ int func_arg_to_bool(ScrFuncArg arg) {
     case FUNC_ARG_BOOL:
     case FUNC_ARG_INT:
         return arg.data.int_arg != 0;
+    case FUNC_ARG_DOUBLE:
+        return arg.data.double_arg != 0.0;
     case FUNC_ARG_STR:
         return *arg.data.str_arg != 0;
     case FUNC_ARG_LIST:
@@ -1115,16 +1143,20 @@ int func_arg_to_bool(ScrFuncArg arg) {
 }
 
 const char* func_arg_to_str(ScrFuncArg arg) {
-    static char buf[16];
+    static char buf[32];
 
     switch (arg.type) {
     case FUNC_ARG_STR:
         return arg.data.str_arg;
     case FUNC_ARG_BOOL:
         return arg.data.int_arg ? "true" : "false";
+    case FUNC_ARG_DOUBLE:
+        buf[0] = 0;
+        snprintf(buf, 32, "%f", arg.data.double_arg);
+        return buf;
     case FUNC_ARG_INT:
         buf[0] = 0;
-        snprintf(buf, 16, "%d", arg.data.int_arg);
+        snprintf(buf, 32, "%d", arg.data.int_arg);
         return buf;
     case FUNC_ARG_LIST:
         return "# LIST #";
