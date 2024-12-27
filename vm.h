@@ -210,7 +210,7 @@ struct ScrFuncArg {
 };
 
 enum ScrBlockArgumentType {
-    ARGUMENT_TEXT,
+    ARGUMENT_TEXT = 0,
     ARGUMENT_BLOCK,
     ARGUMENT_CONST_STRING,
     ARGUMENT_BLOCKDEF,
@@ -364,7 +364,6 @@ void blockdef_add_image(ScrBlockdef* blockdef, ScrImage image);
 void blockdef_add_blockdef_editor(ScrBlockdef* blockdef);
 void blockdef_delete_input(ScrBlockdef* blockdef, size_t input);
 void blockdef_unregister(ScrVm* vm, size_t id);
-void block_update_parent_links(ScrBlock* block);
 
 ScrBlockChain blockchain_new(void);
 ScrBlockChain blockchain_copy(ScrBlockChain* chain, size_t ind);
@@ -378,6 +377,8 @@ void blockchain_free(ScrBlockChain* chain);
 
 ScrBlock block_new(ScrBlockdef* blockdef);
 ScrBlock block_copy(ScrBlock* block, ScrBlock* parent);
+void block_update_parent_links(ScrBlock* block);
+void block_update_all_links(ScrBlock* block);
 void block_free(ScrBlock* block);
 
 void argument_set_block(ScrBlockArgument* block_arg, ScrBlock block);
@@ -1210,7 +1211,6 @@ ScrBlock block_new(ScrBlockdef* blockdef) {
             block.blockdef->inputs[i].type != INPUT_DROPDOWN &&
             block.blockdef->inputs[i].type != INPUT_BLOCKDEF_EDITOR) continue;
         ScrBlockArgument* arg = vector_add_dst((ScrBlockArgument**)&block.arguments);
-        arg->data.text = vector_create();
         arg->input_id = i;
 
         switch (blockdef->inputs[i].type) {
@@ -1228,6 +1228,7 @@ ScrBlock block_new(ScrBlockdef* blockdef) {
                 break;
             }
 
+            arg->data.text = vector_create();
             for (char* pos = blockdef->inputs[i].data.arg.text; *pos; pos++) {
                 vector_add(&arg->data.text, *pos);
             }
@@ -1241,6 +1242,7 @@ ScrBlock block_new(ScrBlockdef* blockdef) {
             char** list = blockdef->inputs[i].data.drop.list(&block, &list_len);
             if (!list || list_len == 0) break;
 
+            arg->data.text = vector_create();
             for (char* pos = list[0]; *pos; pos++) {
                 vector_add(&arg->data.text, *pos);
             }
@@ -1301,6 +1303,7 @@ ScrBlock block_copy(ScrBlock* block, ScrBlock* parent) {
 }
 
 void block_free(ScrBlock* block) {
+    // FIXME: blockdef may not exist during code cleanup
     block->blockdef->ref_count--;
     if (block->arguments) {
         for (size_t i = 0; i < vector_size(block->arguments); i++) {
@@ -1321,6 +1324,14 @@ void block_free(ScrBlock* block) {
             }
         }
         vector_free((ScrBlockArgument*)block->arguments);
+    }
+}
+
+void block_update_all_links(ScrBlock* block) {
+    for (size_t i = 0; i < vector_size(block->arguments); i++) {
+        if (block->arguments[i].type != ARGUMENT_BLOCK) continue;
+        block->arguments[i].data.block.parent = block;
+        block_update_all_links(&block->arguments[i].data.block);
     }
 }
 

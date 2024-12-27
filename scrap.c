@@ -175,6 +175,13 @@ typedef struct {
     int buf_end;
 } OutputWindow;
 
+typedef struct {
+    void* ptr;
+    void* next;
+    size_t used_size;
+    size_t max_size;
+} SaveArena;
+
 char* top_bar_buttons_text[] = {
     "File",
     "Settings",
@@ -185,6 +192,8 @@ char* tab_bar_buttons_text[] = {
     "Code",
     "Output",
 };
+
+char scrap_ident[] = "SCRAP";
 
 Config conf;
 Config gui_conf;
@@ -264,9 +273,11 @@ const char* line_shader_fragment =
     "    finalColor = vec4(fragColor.xyz, pow(diff, 2.0));\n"
     "}";
 
-#define MATH_LIST_LEN 2
+#define MATH_LIST_LEN 10
 char* block_math_list[MATH_LIST_LEN] = {
-    "sin", "cos",
+    "sqrt", "round", "floor", "ceil",
+    "sin", "cos", "tan",
+    "asin", "acos", "atan",
 };
 
 void save_config(Config* config);
@@ -276,8 +287,12 @@ void update_measurements(ScrBlock* block, ScrPlacementStrategy placement);
 void term_input_put_char(char ch);
 int term_print_str(const char* str);
 void term_clear(void);
+void save_code(ScrBlockChain* code);
+ScrBlockChain* load_code(void);
 ScrFuncArg block_exec_custom(ScrExec* exec, int argc, ScrFuncArg* argv);
 ScrFuncArg block_custom_arg(ScrExec* exec, int argc, ScrFuncArg* argv);
+void save_block(SaveArena* save, ScrBlock* block);
+bool load_block(SaveArena* save, ScrBlock* block);
 
 char** math_list_access(ScrBlock* block, size_t* list_len) {
     (void) block;
@@ -2189,6 +2204,28 @@ void handle_key_press(void) {
             camera_pos.x = editor_code[blockchain_select_counter].pos.x - ((GetScreenWidth() - conf.side_bar_size) / 2 + conf.side_bar_size);
             camera_pos.y = editor_code[blockchain_select_counter].pos.y - ((GetScreenHeight() - conf.font_size * 2.2) / 2 + conf.font_size * 2.2);
             actionbar_show(TextFormat("Jump to chain (%d/%d)", blockchain_select_counter + 1, vector_size(editor_code)));
+            return;
+        }
+        if (IsKeyPressed(KEY_S)) {
+            save_code(editor_code);
+            return;
+        }
+        if (IsKeyPressed(KEY_L)) {
+            ScrBlockChain* chain = load_code();
+            if (!chain) {
+                actionbar_show("File load failed :(");
+            } else {
+                for (size_t i = 0; i < vector_size(editor_code); i++) blockchain_free(&editor_code[i]);
+                vector_free(editor_code);
+                editor_code = chain;
+
+                blockchain_select_counter = 0;
+                camera_pos.x = editor_code[blockchain_select_counter].pos.x - ((GetScreenWidth() - conf.side_bar_size) / 2 + conf.side_bar_size);
+                camera_pos.y = editor_code[blockchain_select_counter].pos.y - ((GetScreenHeight() - conf.font_size * 2.2) / 2 + conf.font_size * 2.2);
+
+                actionbar_show("File load succeeded!");
+            }
+            return;
         }
         return;
     };
@@ -2196,6 +2233,7 @@ void handle_key_press(void) {
 
     if (edit_text(hover_info.select_input)) {
         update_measurements(hover_info.select_block, PLACEMENT_HORIZONTAL);
+        return;
     }
 }
 
@@ -2521,6 +2559,259 @@ void load_config(Config* config) {
     }
 
     UnloadFileText(file);
+}
+
+SaveArena new_save(size_t size) {
+    void* ptr = malloc(size); 
+    return (SaveArena) {
+        .ptr = ptr,
+        .next = ptr,
+        .used_size = 0,
+        .max_size = size,
+    };
+}
+
+#define save_add(save, data) save_add_item(save, &data, sizeof(data))
+
+void* save_alloc(SaveArena* save, size_t size) {
+    assert(save->ptr != NULL);
+    assert(save->next != NULL);
+    assert((size_t)((save->next + size) - save->ptr) <= save->max_size);
+    void* ptr = save->next;
+    save->next += size;
+    save->used_size += size;
+    return ptr;
+}
+
+void* save_read_item(SaveArena* save, size_t data_size) {
+    if ((size_t)(save->next + data_size - save->ptr) > save->max_size) {
+        printf("[LOAD] Unexpected EOF reading data\n");
+        return NULL;
+    }
+    void* ptr = save->next;
+    save->next += data_size;
+    save->used_size += data_size;
+    return ptr;
+}
+
+void* save_read_array(SaveArena* save, size_t data_size, size_t* array_len) {
+    size_t* arr_len = save_read_item(save, sizeof(size_t));
+    if (!arr_len) return NULL;
+    *array_len = *arr_len;
+
+    return save_read_item(save, data_size * *arr_len);
+}
+
+void save_add_item(SaveArena* save, void* data, size_t data_size) {
+    void* ptr = save_alloc(save, data_size);
+    memcpy(ptr, data, data_size);
+}
+
+void save_add_array(SaveArena* save, void* array, size_t array_size, size_t data_size) {
+    save_add_item(save, &array_size, sizeof(array_size));
+    for (size_t i = 0; i < array_size; i++) save_add_item(save, array + data_size * i, data_size);
+}
+
+void free_save(SaveArena* save) {
+    free(save->ptr);
+    save->ptr = NULL;
+    save->next = NULL;
+    save->used_size = 0;
+    save->max_size = 0;
+}
+
+void save_block_arguments(SaveArena* save, ScrBlockArgument* arg) {
+    save_add(save, arg->input_id);
+    save_add(save, arg->type);
+
+    switch (arg->type) {
+    case ARGUMENT_TEXT:
+    case ARGUMENT_CONST_STRING:
+        save_add_array(save, arg->data.text, vector_size(arg->data.text), sizeof(arg->data.text[0]));
+        break;
+    case ARGUMENT_BLOCK:
+        save_block(save, &arg->data.block);
+        break;
+    default:
+        assert(false && "Unimplemented argument save");
+        break;
+    }
+}
+
+void save_block(SaveArena* save, ScrBlock* block) {
+    assert(block->blockdef->id != NULL);
+
+    size_t arg_count = vector_size(block->arguments);
+
+    save_add_array(save, (void*)block->blockdef->id, strlen(block->blockdef->id) + 1, sizeof(block->blockdef->id[0]));
+    save_add(save, arg_count);
+    for (size_t i = 0; i < arg_count; i++) save_block_arguments(save, &block->arguments[i]);
+}
+
+void save_blockchain(SaveArena* save, ScrBlockChain* chain) {
+    size_t blocks_count = vector_size(chain->blocks);
+
+    save_add(save, chain->pos);
+    save_add(save, blocks_count);
+    for (size_t i = 0; i < blocks_count; i++) save_block(save, &chain->blocks[i]);
+}
+
+void save_code(ScrBlockChain* code) {
+    SaveArena save = new_save(32768);
+    size_t save_ver = 1;
+
+    save_add(&save, save_ver);
+    save_add_array(&save, scrap_ident, ARRLEN(scrap_ident), sizeof(scrap_ident[0]));
+
+    size_t chains_count = vector_size(code);
+    save_add(&save, chains_count);
+    for (size_t i = 0; i < chains_count; i++) save_blockchain(&save, &code[i]);
+
+    SaveFileData("save.scr", save.ptr, save.used_size);
+
+    free_save(&save);
+}
+
+ScrBlockdef* find_blockdef(char* id) {
+    for (size_t i = 0; i < vector_size(vm.blockdefs); i++) {
+        if (!strcmp(id, vm.blockdefs[i].id)) return &vm.blockdefs[i];
+    }
+    return NULL;
+}
+
+bool load_block_argument(SaveArena* save, ScrBlockArgument* arg) {
+    size_t* input_id = save_read_item(save, sizeof(size_t));
+    if (!input_id) return false;
+
+    ScrBlockArgumentType* arg_type = save_read_item(save, sizeof(ScrBlockArgumentType));
+    if (!arg_type) return false;
+
+    arg->type = *arg_type;
+    arg->input_id = *input_id;
+
+    switch (*arg_type) {
+    case ARGUMENT_TEXT:
+    case ARGUMENT_CONST_STRING:
+        size_t text_len;
+        char* text = save_read_array(save, sizeof(char), &text_len);
+        if (!text) return false;
+        if (text[text_len - 1] != 0) return false;
+
+        arg->data.text = vector_create();
+        for (char* str = text; *str; str++) vector_add(&arg->data.text, *str);
+        vector_add(&arg->data.text, 0);
+        break;
+    case ARGUMENT_BLOCK:
+        ScrBlock block;
+        if (!load_block(save, &block)) return false;
+        
+        arg->data.block = block;
+        break;
+    default:
+        assert(false && "Unimplemented argument load");
+        break;
+    }
+    return true;
+}
+
+bool load_block(SaveArena* save, ScrBlock* block) {
+    size_t block_id_len;
+    char* block_id = save_read_array(save, sizeof(char), &block_id_len);
+    if (!block_id) return false;
+    if (block_id[block_id_len - 1] != 0) return false;
+
+    ScrBlockdef* blockdef = find_blockdef(block_id);
+    if (!blockdef) return false;
+
+    size_t* arg_count = save_read_item(save, sizeof(size_t));
+    if (!arg_count) return false;
+
+    block->blockdef = blockdef;
+    block->arguments = vector_create();
+    block->ms = (ScrMeasurement) {0};
+    block->parent = NULL;
+    blockdef->ref_count++;
+
+    for (size_t i = 0; i < *arg_count; i++) {
+        ScrBlockArgument arg;
+        if (!load_block_argument(save, &arg)) {
+            block_free(block);
+            return false;
+        }
+        vector_add(&block->arguments, arg);
+    }
+
+    update_measurements(block, PLACEMENT_HORIZONTAL);
+    return true;
+}
+
+bool load_blockchain(SaveArena* save, ScrBlockChain* chain) {
+    ScrVec* pos = save_read_item(save, sizeof(ScrVec));
+    if (!pos) return false;
+
+    size_t* blocks_count = save_read_item(save, sizeof(size_t));
+    if (!blocks_count) return false;
+
+    *chain = blockchain_new();
+    chain->pos = *pos;
+
+    for (size_t i = 0; i < *blocks_count; i++) {
+        ScrBlock block;
+        if (!load_block(save, &block)) {
+            blockchain_free(chain);
+            return false;
+        }
+        blockchain_add_block(chain, block);
+        block_update_all_links(&chain->blocks[vector_size(chain->blocks) - 1]);
+    }
+
+    return true;
+}
+
+ScrBlockChain* load_code(void) {
+    ScrBlockChain* code = vector_create();
+
+    int save_size;
+    void* file_data = LoadFileData("save.scr", &save_size);
+
+    SaveArena save;
+    save.ptr = file_data;
+    save.next = file_data;
+    save.max_size = save_size;
+    save.used_size = 0;
+
+    size_t* ver = save_read_item(&save, sizeof(size_t));
+    if (!ver) goto load_fail;
+    if (*ver != 1) {
+        printf("[LOAD] Unsupported version %zu. Current scrap build expects save version 1\n", *ver);
+        goto load_fail;
+    }
+
+    size_t ident_len;
+    char* ident = save_read_array(&save, sizeof(char), &ident_len);
+    if (!ident) goto load_fail;
+
+    if (ident[ident_len - 1] != 0 || ident_len != sizeof(scrap_ident) || strncmp(ident, scrap_ident, sizeof(scrap_ident))) {
+        printf("[LOAD] Not valid scrap save\n");
+        goto load_fail;
+    }
+
+    size_t* code_len = save_read_item(&save, sizeof(size_t));
+    if (!code_len) goto load_fail;
+
+    for (size_t i = 0; i < *code_len; i++) {
+        ScrBlockChain chain;
+        if (!load_blockchain(&save, &chain)) goto load_fail;
+        vector_add(&code, chain);
+    }
+    UnloadFileData(file_data);
+    return code;
+
+load_fail:
+    UnloadFileData(file_data);
+    for (size_t i = 0; i < vector_size(code); i++) blockchain_free(&code[i]);
+    vector_free(code);
+    return NULL;
 }
 
 ScrFuncArg block_noop(ScrExec* exec, int argc, ScrFuncArg* argv) {
@@ -3063,6 +3354,22 @@ ScrFuncArg block_math(ScrExec* exec, int argc, ScrFuncArg* argv) {
         RETURN_DOUBLE(sin(func_arg_to_double(argv[1])));
     } else if (!strcmp(argv[0].data.str_arg, "cos")) {
         RETURN_DOUBLE(cos(func_arg_to_double(argv[1])));
+    } else if (!strcmp(argv[0].data.str_arg, "tan")) {
+        RETURN_DOUBLE(tan(func_arg_to_double(argv[1])));
+    } else if (!strcmp(argv[0].data.str_arg, "asin")) {
+        RETURN_DOUBLE(asin(func_arg_to_double(argv[1])));
+    } else if (!strcmp(argv[0].data.str_arg, "acos")) {
+        RETURN_DOUBLE(acos(func_arg_to_double(argv[1])));
+    } else if (!strcmp(argv[0].data.str_arg, "atan")) {
+        RETURN_DOUBLE(atan(func_arg_to_double(argv[1])));
+    } else if (!strcmp(argv[0].data.str_arg, "sqrt")) {
+        RETURN_DOUBLE(sqrt(func_arg_to_double(argv[1])));
+    } else if (!strcmp(argv[0].data.str_arg, "round")) {
+        RETURN_DOUBLE(round(func_arg_to_double(argv[1])));
+    } else if (!strcmp(argv[0].data.str_arg, "floor")) {
+        RETURN_DOUBLE(floor(func_arg_to_double(argv[1])));
+    } else if (!strcmp(argv[0].data.str_arg, "ceil")) {
+        RETURN_DOUBLE(ceil(func_arg_to_double(argv[1])));
     } else {
         RETURN_DOUBLE(0.0);
     }
@@ -3982,6 +4289,7 @@ int main(void) {
     for (vec_size_t i = 0; i < vector_size(editor_code); i++) {
         blockchain_free(&editor_code[i]);
     }
+    vector_free(editor_code);
     
     for (vec_size_t i = 0; i < vector_size(sidebar.blocks); i++) {
         block_free(&sidebar.blocks[i]);
