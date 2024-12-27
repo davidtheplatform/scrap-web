@@ -80,7 +80,7 @@ enum ScrBlockType {
 
 struct ScrBlockdef {
     const char* id;
-    size_t ref_count;
+    int ref_count;
     ScrBlockChain* chain;
     size_t arg_id;
     ScrColor color;
@@ -108,7 +108,7 @@ struct ScrInputStaticText {
 };
 
 struct ScrInputArgument {
-    ScrBlockdef blockdef;
+    ScrBlockdef* blockdef;
     ScrBlockArgumentConstraint constr;
     ScrMeasurement ms;
     char* text;
@@ -219,7 +219,7 @@ enum ScrBlockArgumentType {
 union ScrBlockArgumentData {
     char* text;
     ScrBlock block;
-    ScrBlockdef blockdef;
+    ScrBlockdef* blockdef;
 };
 
 struct ScrBlockArgument {
@@ -274,7 +274,7 @@ struct ScrExec {
 };
 
 struct ScrVm {
-    ScrBlockdef* blockdefs;
+    ScrBlockdef** blockdefs;
     // TODO: Maybe remove end_blockdef from here
     size_t end_blockdef;
     bool is_running;
@@ -355,8 +355,8 @@ int func_arg_to_int(ScrFuncArg arg);
 int func_arg_to_bool(ScrFuncArg arg);
 const char* func_arg_to_str(ScrFuncArg arg);
 
-ScrBlockdef blockdef_new(const char* id, ScrBlockType type, ScrColor color, ScrBlockFunc func);
-size_t blockdef_register(ScrVm* vm, ScrBlockdef blockdef);
+ScrBlockdef* blockdef_new(const char* id, ScrBlockType type, ScrColor color, ScrBlockFunc func);
+size_t blockdef_register(ScrVm* vm, ScrBlockdef* blockdef);
 void blockdef_add_text(ScrBlockdef* blockdef, char* text);
 void blockdef_add_argument(ScrBlockdef* blockdef, char* defualt_data, ScrBlockArgumentConstraint constraint);
 void blockdef_add_dropdown(ScrBlockdef* blockdef, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor);
@@ -693,7 +693,7 @@ void variable_stack_pop_layer(ScrExec* exec);
 void variable_stack_cleanup(ScrExec* exec);
 void func_arg_free(ScrFuncArg arg);
 void blockdef_free(ScrBlockdef* blockdef);
-ScrBlockdef blockdef_copy(ScrBlockdef* blockdef);
+ScrBlockdef* blockdef_copy(ScrBlockdef* blockdef);
 void chain_stack_push(ScrExec* exec, ScrChainStackData data);
 void chain_stack_pop(ScrExec* exec);
 
@@ -911,7 +911,7 @@ void* exec_thread_entry(void* thread_exec) {
         if (block->blockdef->type != BLOCKTYPE_HAT) continue;
         for (size_t j = 0; j < vector_size(block->arguments); j++) {
             if (block->arguments[j].type != ARGUMENT_BLOCKDEF) continue;
-            block->arguments[j].data.blockdef.chain = &exec->code[i];
+            block->arguments[j].data.blockdef->chain = &exec->code[i];
         }
     }
 
@@ -1252,7 +1252,8 @@ ScrBlock block_new(ScrBlockdef* blockdef) {
             arg->type = ARGUMENT_BLOCKDEF;
             arg->ms = (ScrMeasurement) {0};
             arg->data.blockdef = blockdef_new(NULL, BLOCKTYPE_NORMAL, blockdef->color, NULL);
-            blockdef_add_text(&arg->data.blockdef, "My block");
+            arg->data.blockdef->ref_count++;
+            blockdef_add_text(arg->data.blockdef, "My block");
             break;
         default:
             assert(false && "Unreachable");
@@ -1286,7 +1287,7 @@ ScrBlock block_copy(ScrBlock* block, ScrBlock* parent) {
             arg->data.block = block_copy(&block->arguments[i].data.block, &new);
             break;
         case ARGUMENT_BLOCKDEF:
-            arg->data.blockdef = blockdef_copy(&block->arguments[i].data.blockdef);
+            arg->data.blockdef = blockdef_copy(block->arguments[i].data.blockdef);
             break;
         default:
             assert(false && "Unimplemented argument copy");
@@ -1303,8 +1304,7 @@ ScrBlock block_copy(ScrBlock* block, ScrBlock* parent) {
 }
 
 void block_free(ScrBlock* block) {
-    // FIXME: blockdef may not exist during code cleanup
-    block->blockdef->ref_count--;
+    blockdef_free(block->blockdef);
     if (block->arguments) {
         for (size_t i = 0; i < vector_size(block->arguments); i++) {
             switch (block->arguments[i].type) {
@@ -1316,7 +1316,7 @@ void block_free(ScrBlock* block) {
                 block_free(&block->arguments[i].data.block);
                 break;
             case ARGUMENT_BLOCKDEF:
-                blockdef_free(&block->arguments[i].data.blockdef);
+                blockdef_free(block->arguments[i].data.blockdef);
                 break;
             default:
                 assert(false && "Unimplemented argument free");
@@ -1553,35 +1553,35 @@ void argument_set_text(ScrBlockArgument* block_arg, char* text) {
     vector_add(&block_arg->data.text, 0);
 }
 
-ScrBlockdef blockdef_new(const char* id, ScrBlockType type, ScrColor color, ScrBlockFunc func) {
-    ScrBlockdef blockdef;
-    blockdef.id = id;
-    blockdef.color = color;
-    blockdef.type = type;
-    blockdef.ms = (ScrMeasurement) {0};
-    blockdef.hidden = false;
-    blockdef.ref_count = 0;
-    blockdef.inputs = vector_create();
-    blockdef.func = func;
-    blockdef.chain = NULL;
-    blockdef.arg_id = -1;
+ScrBlockdef* blockdef_new(const char* id, ScrBlockType type, ScrColor color, ScrBlockFunc func) {
+    ScrBlockdef* blockdef = malloc(sizeof(ScrBlockdef));
+    blockdef->id = id;
+    blockdef->color = color;
+    blockdef->type = type;
+    blockdef->ms = (ScrMeasurement) {0};
+    blockdef->hidden = false;
+    blockdef->ref_count = 0;
+    blockdef->inputs = vector_create();
+    blockdef->func = func;
+    blockdef->chain = NULL;
+    blockdef->arg_id = -1;
 
     return blockdef;
 }
 
-ScrBlockdef blockdef_copy(ScrBlockdef* blockdef) {
-    ScrBlockdef new;
-    new.id = blockdef->id;
-    new.color = blockdef->color;
-    new.type = blockdef->type;
-    new.ms = blockdef->ms;
-    new.hidden = blockdef->hidden;
-    new.ref_count = blockdef->ref_count;
-    new.inputs = vector_create();
-    new.func = blockdef->func;
+ScrBlockdef* blockdef_copy(ScrBlockdef* blockdef) {
+    ScrBlockdef* new = malloc(sizeof(ScrBlockdef));
+    new->id = blockdef->id;
+    new->color = blockdef->color;
+    new->type = blockdef->type;
+    new->ms = blockdef->ms;
+    new->hidden = blockdef->hidden;
+    new->ref_count = blockdef->ref_count;
+    new->inputs = vector_create();
+    new->func = blockdef->func;
 
     for (size_t i = 0; i < vector_size(blockdef->inputs); i++) {
-        ScrBlockInput* input = vector_add_dst(&new.inputs);
+        ScrBlockInput* input = vector_add_dst(&new->inputs);
         input->type = blockdef->inputs[i].type;
         switch (blockdef->inputs[i].type) {
         case INPUT_TEXT_DISPLAY:
@@ -1595,7 +1595,7 @@ ScrBlockdef blockdef_copy(ScrBlockdef* blockdef) {
         case INPUT_ARGUMENT:
             input->data = (ScrBlockInputData) {
                 .arg = {
-                    .blockdef = blockdef_copy(&blockdef->inputs[i].data.arg.blockdef),
+                    .blockdef = blockdef_copy(blockdef->inputs[i].data.arg.blockdef),
                     .text = blockdef->inputs[i].data.arg.text,
                     .constr = blockdef->inputs[i].data.arg.constr,
                     .ms = blockdef->inputs[i].data.arg.ms,
@@ -1630,14 +1630,14 @@ ScrBlockdef blockdef_copy(ScrBlockdef* blockdef) {
     return new;
 }
 
-size_t blockdef_register(ScrVm* vm, ScrBlockdef blockdef) {
-    if (!blockdef.func) printf("[VM] WARNING: Block \"%s\" has not defined its implementation!\n", blockdef.id);
+size_t blockdef_register(ScrVm* vm, ScrBlockdef* blockdef) {
+    if (!blockdef->func) printf("[VM] WARNING: Block \"%s\" has not defined its implementation!\n", blockdef->id);
 
     vector_add(&vm->blockdefs, blockdef);
-    ScrBlockdef* registered = &vm->blockdefs[vector_size(vm->blockdefs) - 1];
-    if (registered->type == BLOCKTYPE_END && vm->end_blockdef == (size_t)-1) {
+    blockdef->ref_count++;
+    if (blockdef->type == BLOCKTYPE_END && vm->end_blockdef == (size_t)-1) {
         vm->end_blockdef = vector_size(vm->blockdefs) - 1;
-        registered->hidden = true;
+        blockdef->hidden = true;
     }
 
     return vector_size(vm->blockdefs) - 1;
@@ -1709,7 +1709,7 @@ void blockdef_delete_input(ScrBlockdef* blockdef, size_t input) {
         vector_free(blockdef->inputs[input].data.stext.text);
         break;
     case INPUT_ARGUMENT:
-        blockdef_free(&blockdef->inputs[input].data.arg.blockdef);
+        blockdef_free(blockdef->inputs[input].data.arg.blockdef);
         break;
     default:
         assert(false && "Unimplemented input delete");
@@ -1719,23 +1719,27 @@ void blockdef_delete_input(ScrBlockdef* blockdef, size_t input) {
 }
 
 void blockdef_free(ScrBlockdef* blockdef) {
+    blockdef->ref_count--;
+    if (blockdef->ref_count > 0) return;
     for (vec_size_t i = 0; i < vector_size(blockdef->inputs); i++) {
         switch (blockdef->inputs[i].type) {
         case INPUT_TEXT_DISPLAY:
             vector_free(blockdef->inputs[i].data.stext.text);
             break;
         case INPUT_ARGUMENT:
-            blockdef_free(&blockdef->inputs[i].data.arg.blockdef);
+            blockdef_free(blockdef->inputs[i].data.arg.blockdef);
             break;
         default:
             break;
         }
     }
     vector_free(blockdef->inputs);
+    printf("Free blockdef: %s\n", blockdef->id ? blockdef->id : "NULL");
+    free(blockdef);
 }
 
 void blockdef_unregister(ScrVm* vm, size_t block_id) {
-    blockdef_free(&vm->blockdefs[block_id]);
+    blockdef_free(vm->blockdefs[block_id]);
     vector_remove(vm->blockdefs, block_id);
 }
 
