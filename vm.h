@@ -82,7 +82,7 @@ struct ScrBlockdef {
     const char* id;
     int ref_count;
     ScrBlockChain* chain;
-    size_t arg_id;
+    int arg_id;
     ScrColor color;
     ScrBlockType type;
     // TODO: Maybe remove hidden from here
@@ -224,7 +224,7 @@ union ScrBlockArgumentData {
 
 struct ScrBlockArgument {
     ScrMeasurement ms;
-    size_t input_id;
+    int input_id;
     ScrBlockArgumentType type;
     ScrBlockArgumentData data;
 };
@@ -363,6 +363,7 @@ void blockdef_add_dropdown(ScrBlockdef* blockdef, ScrBlockDropdownSource dropdow
 void blockdef_add_image(ScrBlockdef* blockdef, ScrImage image);
 void blockdef_add_blockdef_editor(ScrBlockdef* blockdef);
 void blockdef_delete_input(ScrBlockdef* blockdef, size_t input);
+void blockdef_set_id(ScrBlockdef* blockdef, const char* new_id);
 void blockdef_unregister(ScrVm* vm, size_t id);
 
 ScrBlockChain blockchain_new(void);
@@ -739,7 +740,7 @@ bool exec_block(ScrExec* exec, ScrBlock block, ScrFuncArg* block_return, bool fr
 
     int stack_begin = exec->arg_stack_len;
 
-    if (block.blockdef->arg_id != (size_t)-1) {
+    if (block.blockdef->arg_id != -1) {
         arg_stack_push_arg(exec, (ScrFuncArg) {
             .type = FUNC_ARG_INT,
             .storage = FUNC_STORAGE_STATIC,
@@ -1251,7 +1252,7 @@ ScrBlock block_new(ScrBlockdef* blockdef) {
         case INPUT_BLOCKDEF_EDITOR:
             arg->type = ARGUMENT_BLOCKDEF;
             arg->ms = (ScrMeasurement) {0};
-            arg->data.blockdef = blockdef_new(NULL, BLOCKTYPE_NORMAL, blockdef->color, NULL);
+            arg->data.blockdef = blockdef_new("custom", BLOCKTYPE_NORMAL, blockdef->color, NULL);
             arg->data.blockdef->ref_count++;
             blockdef_add_text(arg->data.blockdef, "My block");
             break;
@@ -1554,8 +1555,9 @@ void argument_set_text(ScrBlockArgument* block_arg, char* text) {
 }
 
 ScrBlockdef* blockdef_new(const char* id, ScrBlockType type, ScrColor color, ScrBlockFunc func) {
+    assert(id != NULL);
     ScrBlockdef* blockdef = malloc(sizeof(ScrBlockdef));
-    blockdef->id = id;
+    blockdef->id = strcpy(malloc((strlen(id) + 1) * sizeof(char)), id);
     blockdef->color = color;
     blockdef->type = type;
     blockdef->ms = (ScrMeasurement) {0};
@@ -1571,7 +1573,7 @@ ScrBlockdef* blockdef_new(const char* id, ScrBlockType type, ScrColor color, Scr
 
 ScrBlockdef* blockdef_copy(ScrBlockdef* blockdef) {
     ScrBlockdef* new = malloc(sizeof(ScrBlockdef));
-    new->id = blockdef->id;
+    new->id = strcpy(malloc((strlen(blockdef->id) + 1) * sizeof(char)), blockdef->id);
     new->color = blockdef->color;
     new->type = blockdef->type;
     new->ms = blockdef->ms;
@@ -1664,12 +1666,13 @@ void blockdef_add_argument(ScrBlockdef* blockdef, char* defualt_data, ScrBlockAr
     input->type = INPUT_ARGUMENT;
     input->data = (ScrBlockInputData) {
         .arg = {
-            .blockdef = blockdef_new(NULL, BLOCKTYPE_NORMAL, blockdef->color, NULL),
+            .blockdef = blockdef_new("custom_arg", BLOCKTYPE_NORMAL, blockdef->color, NULL),
             .text = defualt_data,
             .constr = constraint,
             .ms = ms,
         },
     };
+    input->data.arg.blockdef->ref_count++;
 }
 
 void blockdef_add_blockdef_editor(ScrBlockdef* blockdef) {
@@ -1699,6 +1702,11 @@ void blockdef_add_image(ScrBlockdef* blockdef, ScrImage image) {
             .ms = ms,
         }
     };
+}
+
+void blockdef_set_id(ScrBlockdef* blockdef, const char* new_id) {
+    free((void*)blockdef->id);
+    blockdef->id = strcpy(malloc((strlen(new_id) + 1) * sizeof(char)), new_id);
 }
 
 void blockdef_delete_input(ScrBlockdef* blockdef, size_t input) {
@@ -1734,7 +1742,8 @@ void blockdef_free(ScrBlockdef* blockdef) {
         }
     }
     vector_free(blockdef->inputs);
-    printf("Free blockdef: %s\n", blockdef->id ? blockdef->id : "NULL");
+    printf("Free blockdef: %s\n", blockdef->id);
+    free((void*)blockdef->id);
     free(blockdef);
 }
 
