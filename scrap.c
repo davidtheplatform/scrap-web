@@ -1,5 +1,4 @@
 // TODO:
-// - Add string manipulation
 // - Add license
 // - Add README
 
@@ -1795,12 +1794,12 @@ void handle_gui(void) {
             nk_layout_row_dynamic(gui.ctx, conf.font_size, 1);
             if (nk_button_label(gui.ctx, "Save")) {
                 char const* filters[] = {"*.scrp"};
-                char* save_path = tinyfd_saveFileDialog(NULL, NULL, ARRLEN(filters), filters, "Scrap project files (.scrp)"); 
+                char* save_path = tinyfd_saveFileDialog(NULL, "project.scrp", ARRLEN(filters), filters, "Scrap project files (.scrp)"); 
                 if (save_path) save_code(save_path, editor_code);
             }
             if (nk_button_label(gui.ctx, "Load")) {
                 char const* filters[] = {"*.scrp"};
-                char* files = tinyfd_openFileDialog(NULL, NULL, ARRLEN(filters), filters, "Scrap project files (.scrp)", 0);
+                char* files = tinyfd_openFileDialog(NULL, "project.scrp", ARRLEN(filters), filters, "Scrap project files (.scrp)", 0);
 
                 if (files) {
                     ScrBlockChain* chain = load_code(files);
@@ -1831,7 +1830,7 @@ bool handle_top_bar_click(void) {
     if (hover_info.top_bars.type == TOPBAR_TOP) {
         switch (hover_info.top_bars.ind) {
         case 0:
-            gui_show(GUI_TYPE_FILE);
+            if (!vm.is_running) gui_show(GUI_TYPE_FILE);
             break;
         case 1:
             gui_conf = conf;
@@ -2677,7 +2676,6 @@ void save_blockdef_input(SaveArena* save, ScrInput* input) {
         save_add_array(save, input->data.stext.text, vector_size(input->data.stext.text), sizeof(input->data.stext.text[0]));
         break;
     case INPUT_ARGUMENT:
-        save_add_array(save, input->data.arg.text, strlen(input->data.arg.text) + 1, sizeof(input->data.arg.text[0]));
         save_add(save, input->data.arg.constr);
         save_blockdef(save, input->data.arg.blockdef);
         break;
@@ -2805,20 +2803,13 @@ bool load_blockdef_input(SaveArena* save, ScrInput* input) {
         vector_add(&input->data.stext.text, 0);
         break;
     case INPUT_ARGUMENT:
-        int arg_text_len;
-        char* arg_text = save_read_array(save, sizeof(char), &arg_text_len);
-        if (!arg_text) return false;
-        if (arg_text[arg_text_len - 1] != 0) return false;
-
         ScrInputArgumentConstraint* constr = save_read_item(save, sizeof(ScrInputArgumentConstraint));
         if (!constr) return false;
 
         ScrBlockdef* blockdef = load_blockdef(save);
         if (!blockdef) return false;
 
-        input->data.arg.text = vector_create();
-        for (char* str = arg_text; *str; str++) vector_add(&input->data.arg.text, *str);
-        vector_add(&input->data.arg.text, 0);
+        input->data.arg.text = "";
         input->data.arg.constr = *constr;
         input->data.arg.ms = (ScrMeasurement) {0};
         input->data.arg.blockdef = blockdef;
@@ -2827,7 +2818,8 @@ bool load_blockdef_input(SaveArena* save, ScrInput* input) {
         vector_add(&save_blockdefs, input->data.arg.blockdef);
         break;
     default:
-        assert(false && "Unimplemented input load");
+        printf("[LOAD] Unimplemented input load\n");
+        return false;
         break;
     }
     return true;
@@ -2837,6 +2829,7 @@ ScrBlockdef* load_blockdef(SaveArena* save) {
     int id_len;
     char* id = save_read_array(save, sizeof(char), &id_len);
     if (!id) return NULL;
+    if (id_len == 0) return false;
     if (id[id_len - 1] != 0) return false;
 
     ScrColor* color = save_read_item(save, sizeof(ScrColor));
@@ -2891,6 +2884,7 @@ bool load_block_argument(SaveArena* save, ScrArgument* arg) {
         int text_len;
         char* text = save_read_array(save, sizeof(char), &text_len);
         if (!text) return false;
+        if (text_len == 0) return false;
         if (text[text_len - 1] != 0) return false;
 
         arg->data.text = vector_create();
@@ -2907,6 +2901,7 @@ bool load_block_argument(SaveArena* save, ScrArgument* arg) {
         int blockdef_id_len;
         char* blockdef_id = save_read_array(save, sizeof(char), &blockdef_id_len);
         if (!blockdef_id) return false;
+        if (blockdef_id_len == 0) return false;
         if (blockdef_id[blockdef_id_len - 1] != 0) return false;
 
         ScrBlockdef* blockdef = find_blockdef(save_blockdefs, blockdef_id);
@@ -2916,8 +2911,8 @@ bool load_block_argument(SaveArena* save, ScrArgument* arg) {
         arg->data.blockdef->ref_count++;
         break;
     default:
-        assert(false && "Unimplemented argument load");
-        break;
+        printf("[LOAD] Unimplemented argument load\n");
+        return false;
     }
     return true;
 }
@@ -2926,6 +2921,7 @@ bool load_block(SaveArena* save, ScrBlock* block) {
     int block_id_len;
     char* block_id = save_read_array(save, sizeof(char), &block_id_len);
     if (!block_id) return false;
+    if (block_id_len == 0) return false;
     if (block_id[block_id_len - 1] != 0) return false;
 
     ScrBlockdef* blockdef = NULL;
@@ -3007,6 +3003,7 @@ ScrBlockChain* load_code(const char* file_path) {
     int ident_len;
     char* ident = save_read_array(&save, sizeof(char), &ident_len);
     if (!ident) goto load_fail;
+    if (ident_len == 0) goto load_fail;
 
     if (ident[ident_len - 1] != 0 || ident_len != sizeof(scrap_ident) || strncmp(ident, scrap_ident, sizeof(scrap_ident))) {
         printf("[LOAD] Not valid scrap save\n");
@@ -4095,6 +4092,11 @@ void setup(void) {
     ScrBlockdef* sc_nothing = blockdef_new("nothing", BLOCKTYPE_NORMAL, (ScrColor) { 0x77, 0x77, 0x77, 0xff }, block_noop);
     blockdef_add_text(sc_nothing, "Nothing");
     blockdef_register(&vm, sc_nothing);
+
+    ScrBlockdef* sc_comment = blockdef_new("comment", BLOCKTYPE_NORMAL, (ScrColor) { 0x77, 0x77, 0x77, 0xff }, block_noop);
+    blockdef_add_text(sc_comment, "//");
+    blockdef_add_argument(sc_comment, "", BLOCKCONSTR_UNLIMITED);
+    blockdef_register(&vm, sc_comment);
 
     ScrBlockdef* sc_decl_var = blockdef_new("decl_var", BLOCKTYPE_NORMAL, (ScrColor) { 0xff, 0x77, 0x00, 0xff }, block_declare_var);
     blockdef_add_text(sc_decl_var, "Declare");
