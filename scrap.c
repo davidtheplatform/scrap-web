@@ -1,7 +1,7 @@
 // TODO:
-// - Add code saving
 // - Add string manipulation
 // - Add license
+// - Add README
 
 #define LICENSE_URL "https://www.gnu.org/licenses/gpl-3.0.html"
 
@@ -19,6 +19,7 @@
 #include "raylib.h"
 #define RAYLIB_NUKLEAR_IMPLEMENTATION
 #include "external/raylib-nuklear.h"
+#include "external/tinyfiledialogs.h"
 
 #define ARRLEN(x) (sizeof(x)/sizeof(x[0]))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -64,6 +65,7 @@ typedef enum {
 
 typedef struct {
     TopBarType type;
+    Vector2 pos;
     int ind;
 } TopBars;
 
@@ -130,12 +132,15 @@ typedef struct {
 typedef enum {
     GUI_TYPE_SETTINGS,
     GUI_TYPE_ABOUT,
+    GUI_TYPE_FILE,
 } NuklearGuiType;
 
 typedef struct {
     bool shown;
     float animation_time;
     bool is_fading;
+    bool is_hiding;
+    Vector2 pos;
     NuklearGuiType type;
     struct nk_context *ctx;
 } NuklearGui;
@@ -288,8 +293,8 @@ void update_measurements(ScrBlock* block, ScrPlacementStrategy placement);
 void term_input_put_char(char ch);
 int term_print_str(const char* str);
 void term_clear(void);
-void save_code(ScrBlockChain* code);
-ScrBlockChain* load_code(void);
+void save_code(const char* file_path, ScrBlockChain* code);
+ScrBlockChain* load_code(const char* file_path);
 ScrData block_exec_custom(ScrExec* exec, int argc, ScrData* argv);
 ScrData block_custom_arg(ScrExec* exec, int argc, ScrData* argv);
 void save_block(SaveArena* save, ScrBlock* block);
@@ -1322,8 +1327,10 @@ void draw_button(Vector2* position, char* text, float button_scale, float side_p
 void bars_check_collisions(void) {
     Vector2 pos = (Vector2){ 0.0, conf.font_size * 1.2 };
     for (vec_size_t i = 0; i < ARRLEN(tab_bar_buttons_text); i++) {
+        Vector2 last_pos = pos;
         if (button_check_collisions(&pos, tab_bar_buttons_text[i], 1.0, 0.3, 0)) {
             hover_info.top_bars.type = TOPBAR_TABS;
+            hover_info.top_bars.pos = last_pos;
             hover_info.top_bars.ind = i;
             return;
         }
@@ -1331,8 +1338,10 @@ void bars_check_collisions(void) {
 
     Vector2 run_pos = (Vector2){ GetScreenWidth() - conf.font_size * 2.0, conf.font_size * 1.2 };
     for (int i = 0; i < 2; i++) {
+        Vector2 last_pos = run_pos;
         if (button_check_collisions(&run_pos, NULL, 1.0, 0.5, 0)) {
             hover_info.top_bars.type = TOPBAR_RUN_BUTTON;
+            hover_info.top_bars.pos = last_pos;
             hover_info.top_bars.ind = i;
             return;
         }
@@ -1341,8 +1350,10 @@ void bars_check_collisions(void) {
     int width = MeasureTextEx(font_eb, "Scrap", conf.font_size * 0.8, 0.0).x;
     pos = (Vector2){ 20 + conf.font_size + width, 0 };
     for (vec_size_t i = 0; i < ARRLEN(top_bar_buttons_text); i++) {
+        Vector2 last_pos = pos;
         if (button_check_collisions(&pos, top_bar_buttons_text[i], 1.2, 0.3, 0)) {
             hover_info.top_bars.type = TOPBAR_TOP;
+            hover_info.top_bars.pos = last_pos;
             hover_info.top_bars.ind = i;
             return;
         }
@@ -1564,11 +1575,17 @@ void nk_draw_rectangle(struct nk_context *ctx, struct nk_color color)
 void gui_show(NuklearGuiType type) {
     gui.is_fading = false;
     gui.type = type;
+    gui.pos = hover_info.top_bars.pos;
     shader_time = -0.2;
 }
 
 void gui_hide(void) {
     gui.is_fading = true;
+}
+
+void gui_hide_immediate(void) {
+    gui.is_fading = true;
+    gui.is_hiding = true;
 }
 
 void gui_show_title(char* name) {
@@ -1599,6 +1616,10 @@ void gui_restart_warning(void) {
 }
 
 void handle_gui(void) {
+    if (gui.is_hiding) {
+        gui.shown = false;
+        gui.is_hiding = false;
+    }
     if (gui.is_fading) {
         gui.animation_time = MAX(gui.animation_time - GetFrameTime() * 2.0, 0.0);
         if (gui.animation_time == 0.0) gui.shown = false;
@@ -1761,6 +1782,46 @@ void handle_gui(void) {
         }
         nk_end(gui.ctx);
         break;
+    case GUI_TYPE_FILE:
+        gui_size.x = 100 * conf.font_size / 32.0;
+        gui_size.y = 100 * conf.font_size / 32.0;
+
+        if (nk_begin(
+                gui.ctx, 
+                "File", 
+                nk_rect(gui.pos.x, gui.pos.y + conf.font_size * 1.2, gui_size.x, gui_size.y), 
+                NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)
+        ) {
+            nk_layout_row_dynamic(gui.ctx, conf.font_size, 1);
+            if (nk_button_label(gui.ctx, "Save")) {
+                char const* filters[] = {"*.scrp"};
+                char* save_path = tinyfd_saveFileDialog(NULL, NULL, ARRLEN(filters), filters, "Scrap project files (.scrp)"); 
+                if (save_path) save_code(save_path, editor_code);
+            }
+            if (nk_button_label(gui.ctx, "Load")) {
+                char const* filters[] = {"*.scrp"};
+                char* files = tinyfd_openFileDialog(NULL, NULL, ARRLEN(filters), filters, "Scrap project files (.scrp)", 0);
+
+                if (files) {
+                    ScrBlockChain* chain = load_code(files);
+                    if (!chain) {
+                        actionbar_show("File load failed :(");
+                    } else {
+                        for (size_t i = 0; i < vector_size(editor_code); i++) blockchain_free(&editor_code[i]);
+                        vector_free(editor_code);
+                        editor_code = chain;
+
+                        blockchain_select_counter = 0;
+                        camera_pos.x = editor_code[blockchain_select_counter].pos.x - ((GetScreenWidth() - conf.side_bar_size) / 2 + conf.side_bar_size);
+                        camera_pos.y = editor_code[blockchain_select_counter].pos.y - ((GetScreenHeight() - conf.font_size * 2.2) / 2 + conf.font_size * 2.2);
+
+                        actionbar_show("File load succeeded!");
+                    }
+                }
+            }
+        }
+        nk_end(gui.ctx);
+        break;
     default:
         break;
     }
@@ -1769,6 +1830,9 @@ void handle_gui(void) {
 bool handle_top_bar_click(void) {
     if (hover_info.top_bars.type == TOPBAR_TOP) {
         switch (hover_info.top_bars.ind) {
+        case 0:
+            gui_show(GUI_TYPE_FILE);
+            break;
         case 1:
             gui_conf = conf;
             gui_show(GUI_TYPE_SETTINGS);
@@ -2104,7 +2168,10 @@ bool handle_mouse_click(void) {
     hover_info.mouse_click_pos = GetMousePosition();
     camera_click_pos = camera_pos;
 
-    if (gui.shown) return true;
+    if (gui.shown) {
+        if (gui.type == GUI_TYPE_FILE) gui_hide_immediate();
+        return true;
+    }
     if (hover_info.top_bars.ind != -1) return handle_top_bar_click();
     if (current_tab != TAB_CODE) return true;
     if (vm.is_running) return false;
@@ -2208,27 +2275,6 @@ void handle_key_press(void) {
             camera_pos.x = editor_code[blockchain_select_counter].pos.x - ((GetScreenWidth() - conf.side_bar_size) / 2 + conf.side_bar_size);
             camera_pos.y = editor_code[blockchain_select_counter].pos.y - ((GetScreenHeight() - conf.font_size * 2.2) / 2 + conf.font_size * 2.2);
             actionbar_show(TextFormat("Jump to chain (%d/%d)", blockchain_select_counter + 1, vector_size(editor_code)));
-            return;
-        }
-        if (IsKeyPressed(KEY_S)) {
-            save_code(editor_code);
-            return;
-        }
-        if (IsKeyPressed(KEY_L)) {
-            ScrBlockChain* chain = load_code();
-            if (!chain) {
-                actionbar_show("File load failed :(");
-            } else {
-                for (size_t i = 0; i < vector_size(editor_code); i++) blockchain_free(&editor_code[i]);
-                vector_free(editor_code);
-                editor_code = chain;
-
-                blockchain_select_counter = 0;
-                camera_pos.x = editor_code[blockchain_select_counter].pos.x - ((GetScreenWidth() - conf.side_bar_size) / 2 + conf.side_bar_size);
-                camera_pos.y = editor_code[blockchain_select_counter].pos.y - ((GetScreenHeight() - conf.font_size * 2.2) / 2 + conf.font_size * 2.2);
-
-                actionbar_show("File load succeeded!");
-            }
             return;
         }
         return;
@@ -2700,7 +2746,7 @@ void rename_blockdef(ScrBlockdef* blockdef, int id) {
     }
 }
 
-void save_code(ScrBlockChain* code) {
+void save_code(const char* file_path, ScrBlockChain* code) {
     SaveArena save = new_save(32768);
     int save_ver = 1;
     int chains_count = vector_size(code);
@@ -2726,7 +2772,7 @@ void save_code(ScrBlockChain* code) {
     save_add(&save, chains_count);
     for (int i = 0; i < chains_count; i++) save_blockchain(&save, &code[i]);
 
-    SaveFileData("save.scr", save.ptr, save.used_size);
+    SaveFileData(file_path, save.ptr, save.used_size);
 
     vector_free(blockdefs);
     free_save(&save);
@@ -2937,12 +2983,13 @@ bool load_blockchain(SaveArena* save, ScrBlockChain* chain) {
     return true;
 }
 
-ScrBlockChain* load_code(void) {
+ScrBlockChain* load_code(const char* file_path) {
     ScrBlockChain* code = vector_create();
     save_blockdefs = vector_create();
 
     int save_size;
-    void* file_data = LoadFileData("save.scr", &save_size);
+    void* file_data = LoadFileData(file_path, &save_size);
+    if (!file_data) goto load_fail;
 
     SaveArena save;
     save.ptr = file_data;
@@ -2987,7 +3034,7 @@ ScrBlockChain* load_code(void) {
     return code;
 
 load_fail:
-    UnloadFileData(file_data);
+    if (file_data) UnloadFileData(file_data);
     for (size_t i = 0; i < vector_size(code); i++) blockchain_free(&code[i]);
     vector_free(code);
     vector_free(save_blockdefs);
