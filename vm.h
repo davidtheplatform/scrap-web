@@ -1747,7 +1747,6 @@ void blockdef_free(ScrBlockdef* blockdef) {
         }
     }
     vector_free(blockdef->inputs);
-    printf("Free blockdef: %s\n", blockdef->id);
     free((void*)blockdef->id);
     free(blockdef);
 }

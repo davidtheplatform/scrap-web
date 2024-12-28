@@ -1756,7 +1756,7 @@ void handle_gui(void) {
             nk_spacer(gui.ctx);
             nk_image(gui.ctx, logo_tex_nuc);
             nk_style_set_font(gui.ctx, font_eb_nuc);
-            nk_label(gui.ctx, "Scrap v0.1", NK_TEXT_LEFT);
+            nk_label(gui.ctx, "Scrap v" SCRAP_VERSION, NK_TEXT_LEFT);
             nk_style_set_font(gui.ctx, font_cond_nuc);
             nk_spacer(gui.ctx);
 
@@ -2291,7 +2291,7 @@ void handle_mouse_wheel(void) {
 
     dropdown.scroll_amount = MAX(dropdown.scroll_amount - wheel, 0);
     if (hover_info.sidebar) {
-        sidebar.scroll_amount = MAX(sidebar.scroll_amount - wheel * (conf.font_size + SIDE_BAR_PADDING) * 2, 0);
+        sidebar.scroll_amount = MAX(sidebar.scroll_amount - wheel * (conf.font_size + SIDE_BAR_PADDING) * 4, 0);
     }
 }
 
@@ -4476,17 +4476,13 @@ int main(void) {
                 GRAY
             );
 #else
-            DrawTextEx(
-                font_cond, 
-                TextFormat("FPS: %d\nFrame time: %.3f", GetFPS(), GetFrameTime()), 
-                (Vector2){ 
-                    conf.side_bar_size + 5, 
-                    conf.font_size * 2.2 + 5
-                }, 
-                conf.font_size * 0.5,
-                0.0, 
-                GRAY
-            );
+            Vector2 debug_pos = (Vector2) {
+                conf.side_bar_size + 5 * conf.font_size / 32.0, 
+                conf.font_size * 2.2 + 5 * conf.font_size / 32.0,
+            };
+            DrawTextEx(font_cond, "Scrap v" SCRAP_VERSION, debug_pos, conf.font_size * 0.5, 0.0, (Color) { 0xff, 0xff, 0xff, 0x40 });
+            debug_pos.y += conf.font_size * 0.5;
+            DrawTextEx(font_cond, TextFormat("FPS: %d, Frame time: %.3f", GetFPS(), GetFrameTime()), debug_pos, conf.font_size * 0.5, 0.0, (Color) { 0xff, 0xff, 0xff, 0x40 });
 #endif
         } else if (current_tab == TAB_OUTPUT) {
             draw_term();

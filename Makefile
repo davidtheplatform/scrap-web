@@ -1,5 +1,7 @@
+SCRAP_VERSION := 0.1-beta
+
 CC := gcc
-CFLAGS := -Wall -Wextra -O0 -g -DDEBUG -fmax-errors=5
+CFLAGS := -Wall -Wextra -O3 -s -DSCRAP_VERSION=\"$(SCRAP_VERSION)\" -fmax-errors=5
 LDFLAGS := -lraylib -lGL -lm -lpthread -lX11
 OBJFILES := scrap.o filedialogs.o
 EXE_NAME := scrap
