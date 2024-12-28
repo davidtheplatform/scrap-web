@@ -1,5 +1,4 @@
 // TODO:
-// - Cleanup messy naming in vm.h
 // - Add code saving
 // - Add string manipulation
 // - Add license
@@ -94,12 +93,12 @@ typedef struct {
     int blockchain_layer;
 
     ScrBlock* block;
-    ScrBlockArgument* argument;
+    ScrArgument* argument;
     Vector2 argument_pos;
-    ScrBlockArgument* prev_argument;
+    ScrArgument* prev_argument;
 
     ScrBlock* select_block;
-    ScrBlockArgument* select_argument;
+    ScrArgument* select_argument;
     Vector2 select_argument_pos;
 
     char** input;
@@ -291,8 +290,8 @@ int term_print_str(const char* str);
 void term_clear(void);
 void save_code(ScrBlockChain* code);
 ScrBlockChain* load_code(void);
-ScrFuncArg block_exec_custom(ScrExec* exec, int argc, ScrFuncArg* argv);
-ScrFuncArg block_custom_arg(ScrExec* exec, int argc, ScrFuncArg* argv);
+ScrData block_exec_custom(ScrExec* exec, int argc, ScrData* argv);
+ScrData block_custom_arg(ScrExec* exec, int argc, ScrData* argv);
 void save_block(SaveArena* save, ScrBlock* block);
 bool load_block(SaveArena* save, ScrBlock* block);
 void save_blockdef(SaveArena* save, ScrBlockdef* blockdef);
@@ -549,7 +548,7 @@ void blockdef_update_collisions(Vector2 position, ScrBlockdef* blockdef, bool ed
     for (vec_size_t i = 0; i < vector_size(blockdef->inputs); i++) {
         if (hover_info.input || hover_info.editor.part != EDITOR_BLOCKDEF) return;
         int width = 0;
-        ScrBlockInput* cur = &blockdef->inputs[i];
+        ScrInput* cur = &blockdef->inputs[i];
         Rectangle arg_size;
 
         switch (cur->type) {
@@ -624,7 +623,7 @@ void draw_blockdef(Vector2 position, ScrBlockdef* blockdef, bool editing) {
 
     for (vec_size_t i = 0; i < vector_size(blockdef->inputs); i++) {
         int width = 0;
-        ScrBlockInput* cur = &blockdef->inputs[i];
+        ScrInput* cur = &blockdef->inputs[i];
         Vector2 arg_pos = cursor;
 
         switch (cur->type) {
@@ -776,7 +775,7 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
         if (hover_info.argument) return;
         int width = 0;
         int height = 0;
-        ScrBlockInput cur = block->blockdef->inputs[i];
+        ScrInput cur = block->blockdef->inputs[i];
         Rectangle arg_size;
 
         switch (cur.type) {
@@ -954,7 +953,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
     for (vec_size_t i = 0; i < vector_size(blockdef->inputs); i++) {
         int width = 0;
         int height = 0;
-        ScrBlockInput cur = blockdef->inputs[i];
+        ScrInput cur = blockdef->inputs[i];
         Vector2 arg_pos = cursor;
 
         switch (cur.type) {
@@ -1127,7 +1126,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
 //         5
 
 void draw_controlend_outline(DrawStack* block, Vector2 end_pos, Color color) {
-    ScrBlockType blocktype = block->block->blockdef->type;
+    ScrBlockdefType blocktype = block->block->blockdef->type;
     Vector2 block_size = as_rl_vec(block->block->ms.size);
     
     if (blocktype == BLOCKTYPE_CONTROL) {
@@ -1142,7 +1141,7 @@ void draw_controlend_outline(DrawStack* block, Vector2 end_pos, Color color) {
 }
 
 void draw_control_outline(DrawStack* block, Vector2 end_pos, Color color, bool draw_end) {
-    ScrBlockType blocktype = block->block->blockdef->type;
+    ScrBlockdefType blocktype = block->block->blockdef->type;
     Vector2 block_size = as_rl_vec(block->block->ms.size);
 
     if (blocktype == BLOCKTYPE_CONTROL) {
@@ -1397,7 +1396,7 @@ void draw_dropdown_list(void) {
     if (!hover_info.select_argument) return;
 
     ScrBlockdef* blockdef = hover_info.select_block->blockdef;
-    ScrBlockInput block_input = blockdef->inputs[hover_info.select_argument->input_id];
+    ScrInput block_input = blockdef->inputs[hover_info.select_argument->input_id];
 
     if (block_input.type != INPUT_DROPDOWN) return;
     
@@ -1875,11 +1874,11 @@ bool handle_sidebar_click(bool mouse_empty) {
         // Drop block
         for (size_t i = 0; i < vector_size(mouse_blockchain.blocks); i++) {
             for (size_t j = 0; j < vector_size(mouse_blockchain.blocks[i].arguments); j++) {
-                ScrBlockArgument* arg = &mouse_blockchain.blocks[i].arguments[j];
+                ScrArgument* arg = &mouse_blockchain.blocks[i].arguments[j];
                 if (arg->type != ARGUMENT_BLOCKDEF) continue;
                 if (arg->data.blockdef->ref_count > 1) editor_code_remove_blockdef(arg->data.blockdef);
                 for (size_t k = 0; k < vector_size(arg->data.blockdef->inputs); k++) {
-                    ScrBlockInput* input = &arg->data.blockdef->inputs[k];
+                    ScrInput* input = &arg->data.blockdef->inputs[k];
                     if (input->type != INPUT_ARGUMENT) continue;
                     if (input->data.arg.blockdef->ref_count > 1) editor_code_remove_blockdef(input->data.arg.blockdef);
                 }
@@ -2120,7 +2119,7 @@ bool handle_mouse_click(void) {
 
     if (mouse_empty) {
         if (hover_info.dropdown_hover_ind != -1) {
-            ScrBlockInput block_input = hover_info.select_block->blockdef->inputs[hover_info.select_argument->input_id];
+            ScrInput block_input = hover_info.select_block->blockdef->inputs[hover_info.select_argument->input_id];
             assert(block_input.type == INPUT_DROPDOWN);
             
             size_t list_len = 0;
@@ -2263,7 +2262,7 @@ void handle_mouse_drag(void) {
 void dropdown_check_collisions(void) {
     if (!hover_info.select_argument) return;
 
-    ScrBlockInput block_input = hover_info.select_block->blockdef->inputs[hover_info.select_argument->input_id];
+    ScrInput block_input = hover_info.select_block->blockdef->inputs[hover_info.select_argument->input_id];
 
     if (block_input.type != INPUT_DROPDOWN) return;
 
@@ -2625,7 +2624,7 @@ void free_save(SaveArena* save) {
     save->max_size = 0;
 }
 
-void save_blockdef_input(SaveArena* save, ScrBlockInput* input) {
+void save_blockdef_input(SaveArena* save, ScrInput* input) {
     save_add(save, input->type);
     switch (input->type) {
     case INPUT_TEXT_DISPLAY:
@@ -2653,7 +2652,7 @@ void save_blockdef(SaveArena* save, ScrBlockdef* blockdef) {
     for (int i = 0; i < input_count; i++) save_blockdef_input(save, &blockdef->inputs[i]);
 }
 
-void save_block_arguments(SaveArena* save, ScrBlockArgument* arg) {
+void save_block_arguments(SaveArena* save, ScrArgument* arg) {
     save_add(save, arg->input_id);
     save_add(save, arg->type);
 
@@ -2740,8 +2739,8 @@ ScrBlockdef* find_blockdef(ScrBlockdef** blockdefs, const char* id) {
     return NULL;
 }
 
-bool load_blockdef_input(SaveArena* save, ScrBlockInput* input) {
-    ScrBlockInputType* type = save_read_item(save, sizeof(ScrBlockInputType));
+bool load_blockdef_input(SaveArena* save, ScrInput* input) {
+    ScrInputType* type = save_read_item(save, sizeof(ScrInputType));
     if (!type) return false;
     input->type = *type;
 
@@ -2765,7 +2764,7 @@ bool load_blockdef_input(SaveArena* save, ScrBlockInput* input) {
         if (!arg_text) return false;
         if (arg_text[arg_text_len - 1] != 0) return false;
 
-        ScrBlockArgumentConstraint* constr = save_read_item(save, sizeof(ScrBlockArgumentConstraint));
+        ScrInputArgumentConstraint* constr = save_read_item(save, sizeof(ScrInputArgumentConstraint));
         if (!constr) return false;
 
         ScrBlockdef* blockdef = load_blockdef(save);
@@ -2797,7 +2796,7 @@ ScrBlockdef* load_blockdef(SaveArena* save) {
     ScrColor* color = save_read_item(save, sizeof(ScrColor));
     if (!color) return NULL;
 
-    ScrBlockType* type = save_read_item(save, sizeof(ScrBlockType));
+    ScrBlockdefType* type = save_read_item(save, sizeof(ScrBlockdefType));
     if (!type) return NULL;
 
     int* arg_id = save_read_item(save, sizeof(int));
@@ -2819,7 +2818,7 @@ ScrBlockdef* load_blockdef(SaveArena* save) {
     blockdef->arg_id = *arg_id;
 
     for (int i = 0; i < *input_count; i++) {
-        ScrBlockInput input;
+        ScrInput input;
         if (!load_blockdef_input(save, &input)) {
             blockdef_free(blockdef);
             return NULL;
@@ -2830,11 +2829,11 @@ ScrBlockdef* load_blockdef(SaveArena* save) {
     return blockdef;
 }
 
-bool load_block_argument(SaveArena* save, ScrBlockArgument* arg) {
+bool load_block_argument(SaveArena* save, ScrArgument* arg) {
     int* input_id = save_read_item(save, sizeof(int));
     if (!input_id) return false;
 
-    ScrBlockArgumentType* arg_type = save_read_item(save, sizeof(ScrBlockArgumentType));
+    ScrArgumentType* arg_type = save_read_item(save, sizeof(ScrArgumentType));
     if (!arg_type) return false;
 
     arg->type = *arg_type;
@@ -2903,7 +2902,7 @@ bool load_block(SaveArena* save, ScrBlock* block) {
     blockdef->ref_count++;
 
     for (int i = 0; i < *arg_count; i++) {
-        ScrBlockArgument arg;
+        ScrArgument arg;
         if (!load_block_argument(save, &arg)) {
             block_free(block);
             return false;
@@ -2995,16 +2994,16 @@ load_fail:
     return NULL;
 }
 
-ScrFuncArg block_noop(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_noop(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argc;
     (void) argv;
     RETURN_NOTHING;
 }
 
-ScrFuncArg block_loop(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_loop(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 1) RETURN_OMIT_ARGS;
-    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_OMIT_ARGS;
+    if (argv[0].type != DATA_CONTROL) RETURN_OMIT_ARGS;
 
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
         control_stack_push_data(exec->chain_stack[exec->chain_stack_len - 1].running_ind, size_t)
@@ -3016,11 +3015,11 @@ ScrFuncArg block_loop(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_OMIT_ARGS;
 }
 
-ScrFuncArg block_if(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_if(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 1) RETURN_BOOL(1);
-    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(1);
+    if (argv[0].type != DATA_CONTROL) RETURN_BOOL(1);
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
-        if (!func_arg_to_bool(argv[1])) {
+        if (!data_to_bool(argv[1])) {
             exec_set_skip_block(exec);
             control_stack_push_data((int)0, int)
         } else {
@@ -3035,15 +3034,15 @@ ScrFuncArg block_if(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_BOOL(1);
 }
 
-ScrFuncArg block_else_if(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_else_if(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 1) RETURN_BOOL(1);
-    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(1);
+    if (argv[0].type != DATA_CONTROL) RETURN_BOOL(1);
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
-        if (argc < 3 || func_arg_to_bool(argv[1])) {
+        if (argc < 3 || data_to_bool(argv[1])) {
             exec_set_skip_block(exec);
             control_stack_push_data((int)1, int)
         } else {
-            int condition = func_arg_to_bool(argv[2]);
+            int condition = data_to_bool(argv[2]);
             if (!condition) exec_set_skip_block(exec);
             control_stack_push_data(condition, int)
         }
@@ -3056,11 +3055,11 @@ ScrFuncArg block_else_if(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_BOOL(1);
 }
 
-ScrFuncArg block_else(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_else(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 1) RETURN_BOOL(1);
-    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(1);
+    if (argv[0].type != DATA_CONTROL) RETURN_BOOL(1);
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
-        if (argc < 2 || func_arg_to_bool(argv[1])) {
+        if (argc < 2 || data_to_bool(argv[1])) {
             exec_set_skip_block(exec);
         }
         RETURN_OMIT_ARGS;
@@ -3077,12 +3076,12 @@ ScrFuncArg block_else(ScrExec* exec, int argc, ScrFuncArg* argv) {
 //
 // If the loop should not loop then the stack will look like this:
 // - 0 <- indicator for end block that it should stop immediately
-ScrFuncArg block_repeat(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_repeat(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 1) RETURN_OMIT_ARGS;
-    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_OMIT_ARGS;
+    if (argv[0].type != DATA_CONTROL) RETURN_OMIT_ARGS;
 
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
-        int cycles = func_arg_to_int(argv[1]);
+        int cycles = data_to_int(argv[1]);
         if (cycles <= 0) {
             exec_set_skip_block(exec);
             control_stack_push_data((int)0, int) // This indicates the end block that it should NOT loop
@@ -3114,18 +3113,18 @@ ScrFuncArg block_repeat(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_OMIT_ARGS;
 }
 
-ScrFuncArg block_while(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_while(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 2) RETURN_BOOL(0);
-    if (argv[0].type != FUNC_ARG_CONTROL) RETURN_BOOL(0);
+    if (argv[0].type != DATA_CONTROL) RETURN_BOOL(0);
 
     if (argv[0].data.control_arg == CONTROL_ARG_BEGIN) {
-        if (!func_arg_to_bool(argv[1])) {
+        if (!data_to_bool(argv[1])) {
             exec_set_skip_block(exec);
             RETURN_OMIT_ARGS;
         }
         control_stack_push_data(exec->chain_stack[exec->chain_stack_len - 1].running_ind, size_t)
     } else if (argv[0].data.control_arg == CONTROL_ARG_END) {
-        if (!func_arg_to_bool(argv[1])) {
+        if (!data_to_bool(argv[1])) {
             size_t bin;
             control_stack_pop_data(bin, size_t)
             (void) bin; 
@@ -3139,144 +3138,144 @@ ScrFuncArg block_while(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_NOTHING;
 }
 
-ScrFuncArg block_sleep(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_sleep(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_INT(0);
-    int usecs = func_arg_to_int(argv[0]);
+    int usecs = data_to_int(argv[0]);
     if (usecs < 0) RETURN_INT(0);
     if (usleep(usecs)) RETURN_INT(0);
     RETURN_INT(usecs);
 }
 
-ScrFuncArg block_declare_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_declare_var(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 2) RETURN_NOTHING;
-    if (argv[0].type != FUNC_ARG_STR || argv[0].storage.type != FUNC_STORAGE_STATIC) RETURN_NOTHING;
+    if (argv[0].type != DATA_STR || argv[0].storage.type != DATA_STORAGE_STATIC) RETURN_NOTHING;
 
-    ScrFuncArg var_value = func_arg_copy(argv[1]);
-    if (var_value.storage.type == FUNC_STORAGE_MANAGED) var_value.storage.type = FUNC_STORAGE_UNMANAGED;
+    ScrData var_value = data_copy(argv[1]);
+    if (var_value.storage.type == DATA_STORAGE_MANAGED) var_value.storage.type = DATA_STORAGE_UNMANAGED;
 
     variable_stack_push_var(exec, argv[0].data.str_arg, var_value);
     return var_value;
 }
 
-ScrFuncArg block_get_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_get_var(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 1) RETURN_NOTHING;
-    ScrVariable* var = variable_stack_get_variable(exec, func_arg_to_str(argv[0]));
+    ScrVariable* var = variable_stack_get_variable(exec, data_to_str(argv[0]));
     if (!var) RETURN_NOTHING;
     return var->value;
 }
 
-ScrFuncArg block_set_var(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_set_var(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 2) RETURN_NOTHING;
 
-    ScrVariable* var = variable_stack_get_variable(exec, func_arg_to_str(argv[0]));
+    ScrVariable* var = variable_stack_get_variable(exec, data_to_str(argv[0]));
     if (!var) RETURN_NOTHING;
 
-    ScrFuncArg new_value = func_arg_copy(argv[1]);
-    if (new_value.storage.type == FUNC_STORAGE_MANAGED) new_value.storage.type = FUNC_STORAGE_UNMANAGED;
+    ScrData new_value = data_copy(argv[1]);
+    if (new_value.storage.type == DATA_STORAGE_MANAGED) new_value.storage.type = DATA_STORAGE_UNMANAGED;
 
-    if (var->value.storage.type == FUNC_STORAGE_UNMANAGED) {
-        func_arg_free(var->value);
+    if (var->value.storage.type == DATA_STORAGE_UNMANAGED) {
+        data_free(var->value);
     }
 
     var->value = new_value;
     return var->value;
 }
 
-ScrFuncArg block_create_list(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_create_list(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argc;
     (void) argv;
 
-    ScrFuncArg out;
-    out.type = FUNC_ARG_LIST;
-    out.storage.type = FUNC_STORAGE_MANAGED;
+    ScrData out;
+    out.type = DATA_LIST;
+    out.storage.type = DATA_STORAGE_MANAGED;
     out.storage.storage_len = 0;
     out.data.list_arg.items = NULL;
     out.data.list_arg.len = 0;
     return out;
 }
 
-ScrFuncArg block_list_add(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_list_add(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_NOTHING;
 
-    ScrVariable* var = variable_stack_get_variable(exec, func_arg_to_str(argv[0]));
+    ScrVariable* var = variable_stack_get_variable(exec, data_to_str(argv[0]));
     if (!var) RETURN_NOTHING;
-    if (var->value.type != FUNC_ARG_LIST) RETURN_NOTHING;
+    if (var->value.type != DATA_LIST) RETURN_NOTHING;
 
     if (!var->value.data.list_arg.items) {
-        var->value.data.list_arg.items = malloc(sizeof(ScrFuncArg));
+        var->value.data.list_arg.items = malloc(sizeof(ScrData));
         var->value.data.list_arg.len = 1;
     } else {
-        var->value.data.list_arg.items = realloc(var->value.data.list_arg.items, ++var->value.data.list_arg.len * sizeof(ScrFuncArg));
+        var->value.data.list_arg.items = realloc(var->value.data.list_arg.items, ++var->value.data.list_arg.len * sizeof(ScrData));
     }
-    var->value.storage.storage_len = var->value.data.list_arg.len * sizeof(ScrFuncArg);
-    ScrFuncArg* list_item = &var->value.data.list_arg.items[var->value.data.list_arg.len - 1];
-    if (argv[1].storage.type == FUNC_STORAGE_MANAGED) {
-        argv[1].storage.type = FUNC_STORAGE_UNMANAGED;
+    var->value.storage.storage_len = var->value.data.list_arg.len * sizeof(ScrData);
+    ScrData* list_item = &var->value.data.list_arg.items[var->value.data.list_arg.len - 1];
+    if (argv[1].storage.type == DATA_STORAGE_MANAGED) {
+        argv[1].storage.type = DATA_STORAGE_UNMANAGED;
         *list_item = argv[1];
     } else {
-        *list_item = func_arg_copy(argv[1]);
-        if (list_item->storage.type == FUNC_STORAGE_MANAGED) list_item->storage.type = FUNC_STORAGE_UNMANAGED;
+        *list_item = data_copy(argv[1]);
+        if (list_item->storage.type == DATA_STORAGE_MANAGED) list_item->storage.type = DATA_STORAGE_UNMANAGED;
     }
 
     return *list_item;
 }
 
-ScrFuncArg block_list_get(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_list_get(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_NOTHING;
 
-    ScrVariable* var = variable_stack_get_variable(exec, func_arg_to_str(argv[0]));
+    ScrVariable* var = variable_stack_get_variable(exec, data_to_str(argv[0]));
     if (!var) RETURN_NOTHING;
-    if (var->value.type != FUNC_ARG_LIST) RETURN_NOTHING;
+    if (var->value.type != DATA_LIST) RETURN_NOTHING;
     if (!var->value.data.list_arg.items || var->value.data.list_arg.len == 0) RETURN_NOTHING;
-    int index = func_arg_to_int(argv[1]);
+    int index = data_to_int(argv[1]);
     if (index < 0 || (size_t)index >= var->value.data.list_arg.len) RETURN_NOTHING;
 
     return var->value.data.list_arg.items[index];
 }
 
-ScrFuncArg block_list_set(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_list_set(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 3) RETURN_NOTHING;
 
-    ScrVariable* var = variable_stack_get_variable(exec, func_arg_to_str(argv[0]));
+    ScrVariable* var = variable_stack_get_variable(exec, data_to_str(argv[0]));
     if (!var) RETURN_NOTHING;
-    if (var->value.type != FUNC_ARG_LIST) RETURN_NOTHING;
+    if (var->value.type != DATA_LIST) RETURN_NOTHING;
     if (!var->value.data.list_arg.items || var->value.data.list_arg.len == 0) RETURN_NOTHING;
-    int index = func_arg_to_int(argv[1]);
+    int index = data_to_int(argv[1]);
     if (index < 0 || (size_t)index >= var->value.data.list_arg.len) RETURN_NOTHING;
 
-    ScrFuncArg new_value = func_arg_copy(argv[2]);
-    if (new_value.storage.type == FUNC_STORAGE_MANAGED) new_value.storage.type = FUNC_STORAGE_UNMANAGED;
+    ScrData new_value = data_copy(argv[2]);
+    if (new_value.storage.type == DATA_STORAGE_MANAGED) new_value.storage.type = DATA_STORAGE_UNMANAGED;
 
-    if (var->value.data.list_arg.items[index].storage.type == FUNC_STORAGE_UNMANAGED) {
-        func_arg_free(var->value.data.list_arg.items[index]);
+    if (var->value.data.list_arg.items[index].storage.type == DATA_STORAGE_UNMANAGED) {
+        data_free(var->value.data.list_arg.items[index]);
     }
     var->value.data.list_arg.items[index] = new_value;
     return var->value.data.list_arg.items[index];
 }
 
-ScrFuncArg block_print(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_print(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc >= 1) {
         int bytes_sent = 0;
         switch (argv[0].type) {
-        case FUNC_ARG_INT:
+        case DATA_INT:
             bytes_sent = term_print_int(argv[0].data.int_arg);
             break;
-        case FUNC_ARG_BOOL:
+        case DATA_BOOL:
             bytes_sent = term_print_str(argv[0].data.int_arg ? "true" : "false");
             break;
-        case FUNC_ARG_STR:
+        case DATA_STR:
             bytes_sent = term_print_str(argv[0].data.str_arg);
             break;
-        case FUNC_ARG_DOUBLE:
+        case DATA_DOUBLE:
             bytes_sent = term_print_double(argv[0].data.double_arg);
             break;
-        case FUNC_ARG_LIST:
+        case DATA_LIST:
             bytes_sent += term_print_str("[");
             if (argv[0].data.list_arg.items && argv[0].data.list_arg.len) {
                 for (size_t i = 0; i < argv[0].data.list_arg.len; i++) {
@@ -3294,13 +3293,13 @@ ScrFuncArg block_print(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_INT(0);
 }
 
-ScrFuncArg block_println(ScrExec* exec, int argc, ScrFuncArg* argv) {
-    ScrFuncArg out = block_print(exec, argc, argv);
+ScrData block_println(ScrExec* exec, int argc, ScrData* argv) {
+    ScrData out = block_print(exec, argc, argv);
     term_print_str("\r\n");
     return out;
 }
 
-ScrFuncArg block_cursor_x(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_cursor_x(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argv;
     (void) argc;
@@ -3310,7 +3309,7 @@ ScrFuncArg block_cursor_x(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_INT(cur_x);
 }
 
-ScrFuncArg block_cursor_y(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_cursor_y(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argv;
     (void) argc;
@@ -3320,7 +3319,7 @@ ScrFuncArg block_cursor_y(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_INT(cur_y);
 }
 
-ScrFuncArg block_cursor_max_x(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_cursor_max_x(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argv;
     (void) argc;
@@ -3330,7 +3329,7 @@ ScrFuncArg block_cursor_max_x(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_INT(cur_max_x);
 }
 
-ScrFuncArg block_cursor_max_y(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_cursor_max_y(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argv;
     (void) argc;
@@ -3340,18 +3339,18 @@ ScrFuncArg block_cursor_max_y(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_INT(cur_max_y);
 }
 
-ScrFuncArg block_set_cursor(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_set_cursor(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_NOTHING;
     pthread_mutex_lock(&out_win.lock);
-    int x = CLAMP(func_arg_to_int(argv[0]), 0, out_win.char_w - 1);
-    int y = CLAMP(func_arg_to_int(argv[1]), 0, out_win.char_h - 1);
+    int x = CLAMP(data_to_int(argv[0]), 0, out_win.char_w - 1);
+    int y = CLAMP(data_to_int(argv[1]), 0, out_win.char_h - 1);
     out_win.cursor_pos = x + y * out_win.char_w;
     pthread_mutex_unlock(&out_win.lock);
     RETURN_NOTHING;
 }
 
-ScrFuncArg block_term_clear(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_term_clear(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argv;
     (void) argc;
@@ -3359,7 +3358,7 @@ ScrFuncArg block_term_clear(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_NOTHING;
 }
 
-ScrFuncArg block_input(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_input(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argv;
     (void) argc;
@@ -3379,7 +3378,7 @@ ScrFuncArg block_input(ScrExec* exec, int argc, ScrFuncArg* argv) {
     return string_make_managed(&string);
 }
 
-ScrFuncArg block_get_char(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_get_char(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argv;
     (void) argc;
@@ -3396,11 +3395,11 @@ ScrFuncArg block_get_char(ScrExec* exec, int argc, ScrFuncArg* argv) {
     return string_make_managed(&string);
 }
 
-ScrFuncArg block_random(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_random(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    int min = func_arg_to_int(argv[0]);
-    int max = func_arg_to_int(argv[1]);
+    int min = data_to_int(argv[0]);
+    int max = data_to_int(argv[1]);
     if (min > max) {
         int temp = min;
         min = max;
@@ -3410,22 +3409,22 @@ ScrFuncArg block_random(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_INT(val);
 }
 
-ScrFuncArg block_join(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_join(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_NOTHING;
 
     ScrString string = string_new(0);
-    string_add(&string, func_arg_to_str(argv[0]));
-    string_add(&string, func_arg_to_str(argv[1]));
+    string_add(&string, data_to_str(argv[0]));
+    string_add(&string, data_to_str(argv[1]));
     return string_make_managed(&string);
 }
 
-ScrFuncArg block_length(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_length(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_INT(0);
-    if (argv[0].type == FUNC_ARG_LIST) RETURN_INT(argv[0].data.list_arg.len);
+    if (argv[0].type == DATA_LIST) RETURN_INT(argv[0].data.list_arg.len);
     int len = 0;
-    const char* str = func_arg_to_str(argv[0]);
+    const char* str = data_to_str(argv[0]);
     while (*str) {
         int mb_size = leading_ones(*str);
         if (mb_size == 0) mb_size = 1;
@@ -3435,86 +3434,86 @@ ScrFuncArg block_length(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_INT(len);
 }
 
-ScrFuncArg block_unix_time(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_unix_time(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argc;
     (void) argv;
     RETURN_INT(time(NULL));
 }
 
-ScrFuncArg block_convert_int(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_convert_int(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_INT(0);
-    RETURN_INT(func_arg_to_int(argv[0]));
+    RETURN_INT(data_to_int(argv[0]));
 }
 
-ScrFuncArg block_convert_float(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_convert_float(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_DOUBLE(0.0);
-    RETURN_DOUBLE(func_arg_to_double(argv[0]));
+    RETURN_DOUBLE(data_to_double(argv[0]));
 }
 
-ScrFuncArg block_convert_str(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_convert_str(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     ScrString string = string_new(0);
     if (argc < 1) return string_make_managed(&string);
-    string_add(&string, func_arg_to_str(argv[0]));
+    string_add(&string, data_to_str(argv[0]));
     return string_make_managed(&string);
 }
 
-ScrFuncArg block_convert_bool(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_convert_bool(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_BOOL(0);
-    RETURN_BOOL(func_arg_to_bool(argv[0]));
+    RETURN_BOOL(data_to_bool(argv[0]));
 }
 
-ScrFuncArg block_plus(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_plus(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    if (argv[0].type == FUNC_ARG_DOUBLE) {
-        RETURN_DOUBLE(argv[0].data.double_arg + func_arg_to_double(argv[1]));
+    if (argv[0].type == DATA_DOUBLE) {
+        RETURN_DOUBLE(argv[0].data.double_arg + data_to_double(argv[1]));
     } else {
-        RETURN_INT(func_arg_to_int(argv[0]) + func_arg_to_int(argv[1]));
+        RETURN_INT(data_to_int(argv[0]) + data_to_int(argv[1]));
     }
 }
 
-ScrFuncArg block_minus(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_minus(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    if (argv[0].type == FUNC_ARG_DOUBLE) {
-        RETURN_DOUBLE(argv[0].data.double_arg - func_arg_to_double(argv[1]));
+    if (argv[0].type == DATA_DOUBLE) {
+        RETURN_DOUBLE(argv[0].data.double_arg - data_to_double(argv[1]));
     } else {
-        RETURN_INT(func_arg_to_int(argv[0]) - func_arg_to_int(argv[1]));
+        RETURN_INT(data_to_int(argv[0]) - data_to_int(argv[1]));
     }
 }
 
-ScrFuncArg block_mult(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_mult(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    if (argv[0].type == FUNC_ARG_DOUBLE) {
-        RETURN_DOUBLE(argv[0].data.double_arg * func_arg_to_double(argv[1]));
+    if (argv[0].type == DATA_DOUBLE) {
+        RETURN_DOUBLE(argv[0].data.double_arg * data_to_double(argv[1]));
     } else {
-        RETURN_INT(func_arg_to_int(argv[0]) * func_arg_to_int(argv[1]));
+        RETURN_INT(data_to_int(argv[0]) * data_to_int(argv[1]));
     }
 }
 
-ScrFuncArg block_div(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_div(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    if (argv[0].type == FUNC_ARG_DOUBLE) {
-        RETURN_DOUBLE(argv[0].data.double_arg / func_arg_to_double(argv[1]));
+    if (argv[0].type == DATA_DOUBLE) {
+        RETURN_DOUBLE(argv[0].data.double_arg / data_to_double(argv[1]));
     } else {
-        RETURN_INT(func_arg_to_int(argv[0]) / func_arg_to_int(argv[1]));
+        RETURN_INT(data_to_int(argv[0]) / data_to_int(argv[1]));
     }
 }
 
-ScrFuncArg block_pow(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_pow(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    if (argv[0].type == FUNC_ARG_DOUBLE) RETURN_DOUBLE(pow(argv[0].data.double_arg, func_arg_to_double(argv[1])));
+    if (argv[0].type == DATA_DOUBLE) RETURN_DOUBLE(pow(argv[0].data.double_arg, data_to_double(argv[1])));
 
-    int base = func_arg_to_int(argv[0]);
-    unsigned int exp = func_arg_to_int(argv[1]);
+    int base = data_to_int(argv[0]);
+    unsigned int exp = data_to_int(argv[1]);
     if (!exp) RETURN_INT(1);
 
     int result = 1;
@@ -3526,199 +3525,199 @@ ScrFuncArg block_pow(ScrExec* exec, int argc, ScrFuncArg* argv) {
     RETURN_INT(result);
 }
 
-ScrFuncArg block_math(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_math(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_DOUBLE(0.0);
-    if (argv[0].type != FUNC_ARG_STR) RETURN_DOUBLE(0.0);
+    if (argv[0].type != DATA_STR) RETURN_DOUBLE(0.0);
 
     if (!strcmp(argv[0].data.str_arg, "sin")) {
-        RETURN_DOUBLE(sin(func_arg_to_double(argv[1])));
+        RETURN_DOUBLE(sin(data_to_double(argv[1])));
     } else if (!strcmp(argv[0].data.str_arg, "cos")) {
-        RETURN_DOUBLE(cos(func_arg_to_double(argv[1])));
+        RETURN_DOUBLE(cos(data_to_double(argv[1])));
     } else if (!strcmp(argv[0].data.str_arg, "tan")) {
-        RETURN_DOUBLE(tan(func_arg_to_double(argv[1])));
+        RETURN_DOUBLE(tan(data_to_double(argv[1])));
     } else if (!strcmp(argv[0].data.str_arg, "asin")) {
-        RETURN_DOUBLE(asin(func_arg_to_double(argv[1])));
+        RETURN_DOUBLE(asin(data_to_double(argv[1])));
     } else if (!strcmp(argv[0].data.str_arg, "acos")) {
-        RETURN_DOUBLE(acos(func_arg_to_double(argv[1])));
+        RETURN_DOUBLE(acos(data_to_double(argv[1])));
     } else if (!strcmp(argv[0].data.str_arg, "atan")) {
-        RETURN_DOUBLE(atan(func_arg_to_double(argv[1])));
+        RETURN_DOUBLE(atan(data_to_double(argv[1])));
     } else if (!strcmp(argv[0].data.str_arg, "sqrt")) {
-        RETURN_DOUBLE(sqrt(func_arg_to_double(argv[1])));
+        RETURN_DOUBLE(sqrt(data_to_double(argv[1])));
     } else if (!strcmp(argv[0].data.str_arg, "round")) {
-        RETURN_DOUBLE(round(func_arg_to_double(argv[1])));
+        RETURN_DOUBLE(round(data_to_double(argv[1])));
     } else if (!strcmp(argv[0].data.str_arg, "floor")) {
-        RETURN_DOUBLE(floor(func_arg_to_double(argv[1])));
+        RETURN_DOUBLE(floor(data_to_double(argv[1])));
     } else if (!strcmp(argv[0].data.str_arg, "ceil")) {
-        RETURN_DOUBLE(ceil(func_arg_to_double(argv[1])));
+        RETURN_DOUBLE(ceil(data_to_double(argv[1])));
     } else {
         RETURN_DOUBLE(0.0);
     }
 }
 
-ScrFuncArg block_pi(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_pi(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argc;
     (void) argv;
     RETURN_DOUBLE(M_PI);
 }
 
-ScrFuncArg block_bit_not(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_bit_not(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_INT(~0);
-    RETURN_INT(~func_arg_to_int(argv[0]));
+    RETURN_INT(~data_to_int(argv[0]));
 }
 
-ScrFuncArg block_bit_and(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_bit_and(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    RETURN_INT(func_arg_to_int(argv[0]) & func_arg_to_int(argv[1]));
+    RETURN_INT(data_to_int(argv[0]) & data_to_int(argv[1]));
 }
 
-ScrFuncArg block_bit_xor(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_bit_xor(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_INT(0);
-    if (argc < 2) RETURN_INT(func_arg_to_int(argv[0]));
-    RETURN_INT(func_arg_to_int(argv[0]) ^ func_arg_to_int(argv[1]));
+    if (argc < 2) RETURN_INT(data_to_int(argv[0]));
+    RETURN_INT(data_to_int(argv[0]) ^ data_to_int(argv[1]));
 }
 
-ScrFuncArg block_bit_or(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_bit_or(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_INT(0);
-    if (argc < 2) RETURN_INT(func_arg_to_int(argv[0]));
-    RETURN_INT(func_arg_to_int(argv[0]) | func_arg_to_int(argv[1]));
+    if (argc < 2) RETURN_INT(data_to_int(argv[0]));
+    RETURN_INT(data_to_int(argv[0]) | data_to_int(argv[1]));
 }
 
-ScrFuncArg block_rem(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_rem(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_INT(0);
-    if (argv[0].type == FUNC_ARG_DOUBLE) {
-        RETURN_DOUBLE(fmod(argv[0].data.double_arg, func_arg_to_double(argv[1])));
+    if (argv[0].type == DATA_DOUBLE) {
+        RETURN_DOUBLE(fmod(argv[0].data.double_arg, data_to_double(argv[1])));
     } else {
-        RETURN_INT(func_arg_to_int(argv[0]) % func_arg_to_int(argv[1]));
+        RETURN_INT(data_to_int(argv[0]) % data_to_int(argv[1]));
     }
 }
 
-ScrFuncArg block_less(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_less(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_BOOL(0);
-    if (argc < 2) RETURN_BOOL(func_arg_to_int(argv[0]) < 0);
-    if (argv[0].type == FUNC_ARG_DOUBLE) {
-        RETURN_BOOL(argv[0].data.double_arg < func_arg_to_double(argv[1]));
+    if (argc < 2) RETURN_BOOL(data_to_int(argv[0]) < 0);
+    if (argv[0].type == DATA_DOUBLE) {
+        RETURN_BOOL(argv[0].data.double_arg < data_to_double(argv[1]));
     } else {
-        RETURN_BOOL(func_arg_to_int(argv[0]) < func_arg_to_int(argv[1]));
+        RETURN_BOOL(data_to_int(argv[0]) < data_to_int(argv[1]));
     }
 }
 
-ScrFuncArg block_less_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_less_eq(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_BOOL(0);
-    if (argc < 2) RETURN_BOOL(func_arg_to_int(argv[0]) <= 0);
-    if (argv[0].type == FUNC_ARG_DOUBLE) {
-        RETURN_BOOL(argv[0].data.double_arg <= func_arg_to_double(argv[1]));
+    if (argc < 2) RETURN_BOOL(data_to_int(argv[0]) <= 0);
+    if (argv[0].type == DATA_DOUBLE) {
+        RETURN_BOOL(argv[0].data.double_arg <= data_to_double(argv[1]));
     } else {
-        RETURN_BOOL(func_arg_to_int(argv[0]) <= func_arg_to_int(argv[1]));
+        RETURN_BOOL(data_to_int(argv[0]) <= data_to_int(argv[1]));
     }
 }
 
-ScrFuncArg block_more(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_more(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_BOOL(0);
-    if (argc < 2) RETURN_BOOL(func_arg_to_int(argv[0]) > 0);
-    if (argv[0].type == FUNC_ARG_DOUBLE) {
-        RETURN_BOOL(argv[0].data.double_arg > func_arg_to_double(argv[1]));
+    if (argc < 2) RETURN_BOOL(data_to_int(argv[0]) > 0);
+    if (argv[0].type == DATA_DOUBLE) {
+        RETURN_BOOL(argv[0].data.double_arg > data_to_double(argv[1]));
     } else {
-        RETURN_BOOL(func_arg_to_int(argv[0]) > func_arg_to_int(argv[1]));
+        RETURN_BOOL(data_to_int(argv[0]) > data_to_int(argv[1]));
     }
 }
 
-ScrFuncArg block_more_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_more_eq(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_BOOL(0);
-    if (argc < 2) RETURN_BOOL(func_arg_to_int(argv[0]) >= 0);
-    if (argv[0].type == FUNC_ARG_DOUBLE) {
-        RETURN_BOOL(argv[0].data.double_arg >= func_arg_to_double(argv[1]));
+    if (argc < 2) RETURN_BOOL(data_to_int(argv[0]) >= 0);
+    if (argv[0].type == DATA_DOUBLE) {
+        RETURN_BOOL(argv[0].data.double_arg >= data_to_double(argv[1]));
     } else {
-        RETURN_BOOL(func_arg_to_int(argv[0]) >= func_arg_to_int(argv[1]));
+        RETURN_BOOL(data_to_int(argv[0]) >= data_to_int(argv[1]));
     }
 }
 
-ScrFuncArg block_not(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_not(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 1) RETURN_BOOL(1);
-    RETURN_BOOL(!func_arg_to_bool(argv[0]));
+    RETURN_BOOL(!data_to_bool(argv[0]));
 }
 
-ScrFuncArg block_and(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_and(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_BOOL(0);
-    RETURN_BOOL(func_arg_to_bool(argv[0]) && func_arg_to_bool(argv[1]));
+    RETURN_BOOL(data_to_bool(argv[0]) && data_to_bool(argv[1]));
 }
 
-ScrFuncArg block_or(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_or(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_BOOL(0);
-    RETURN_BOOL(func_arg_to_bool(argv[0]) || func_arg_to_bool(argv[1]));
+    RETURN_BOOL(data_to_bool(argv[0]) || data_to_bool(argv[1]));
 }
 
-ScrFuncArg block_true(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_true(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argc;
     (void) argv;
     RETURN_BOOL(1);
 }
 
-ScrFuncArg block_false(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_false(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     (void) argc;
     (void) argv;
     RETURN_BOOL(0);
 }
 
-ScrFuncArg block_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_eq(ScrExec* exec, int argc, ScrData* argv) {
     (void) exec;
     if (argc < 2) RETURN_BOOL(0);
     if (argv[0].type != argv[1].type) RETURN_BOOL(0);
 
     switch (argv[0].type) {
-    case FUNC_ARG_BOOL:
-    case FUNC_ARG_INT:
+    case DATA_BOOL:
+    case DATA_INT:
         RETURN_BOOL(argv[0].data.int_arg == argv[1].data.int_arg);
-    case FUNC_ARG_DOUBLE:
+    case DATA_DOUBLE:
         RETURN_BOOL(argv[0].data.double_arg == argv[1].data.double_arg);
-    case FUNC_ARG_STR:
+    case DATA_STR:
         RETURN_BOOL(!strcmp(argv[0].data.str_arg, argv[1].data.str_arg));
-    case FUNC_ARG_NOTHING:
+    case DATA_NOTHING:
         RETURN_BOOL(1);
     default:
         RETURN_BOOL(0);
     }
 }
 
-ScrFuncArg block_not_eq(ScrExec* exec, int argc, ScrFuncArg* argv) {
-    ScrFuncArg out = block_eq(exec, argc, argv);
+ScrData block_not_eq(ScrExec* exec, int argc, ScrData* argv) {
+    ScrData out = block_eq(exec, argc, argv);
     out.data.int_arg = !out.data.int_arg;
     return out;
 }
 
-ScrFuncArg block_exec_custom(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_exec_custom(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 1) RETURN_NOTHING;
-    if (argv[0].type != FUNC_ARG_CHAIN) RETURN_NOTHING;
-    ScrFuncArg return_val;
+    if (argv[0].type != DATA_CHAIN) RETURN_NOTHING;
+    ScrData return_val;
     exec_run_custom(exec, argv[0].data.chain_arg, argc - 1, argv + 1, &return_val);
     return return_val;
 }
 
-ScrFuncArg block_custom_arg(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_custom_arg(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 1) RETURN_NOTHING;
-    if (argv[0].type != FUNC_ARG_INT) RETURN_NOTHING;
+    if (argv[0].type != DATA_INT) RETURN_NOTHING;
     if (argv[0].data.int_arg >= exec->chain_stack[exec->chain_stack_len - 1].custom_argc) RETURN_NOTHING;
-    return func_arg_copy(exec->chain_stack[exec->chain_stack_len - 1].custom_argv[argv[0].data.int_arg]);
+    return data_copy(exec->chain_stack[exec->chain_stack_len - 1].custom_argv[argv[0].data.int_arg]);
 }
 
-ScrFuncArg block_return(ScrExec* exec, int argc, ScrFuncArg* argv) {
+ScrData block_return(ScrExec* exec, int argc, ScrData* argv) {
     if (argc < 1) RETURN_NOTHING;
-    exec->chain_stack[exec->chain_stack_len - 1].return_arg = func_arg_copy(argv[0]);
+    exec->chain_stack[exec->chain_stack_len - 1].return_arg = data_copy(argv[0]);
     exec->chain_stack[exec->chain_stack_len - 1].is_returning = true;
     RETURN_NOTHING;
 }

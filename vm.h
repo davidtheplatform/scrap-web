@@ -12,39 +12,44 @@
 typedef struct ScrString ScrString;
 typedef struct ScrVec ScrVec;
 typedef struct ScrColor ScrColor;
+typedef struct ScrImage ScrImage;
 typedef enum ScrPlacementStrategy ScrPlacementStrategy;
 typedef struct ScrMeasurement ScrMeasurement;
-typedef enum ScrBlockArgumentConstraint ScrBlockArgumentConstraint;
-typedef enum ScrBlockDropdownSource ScrBlockDropdownSource;
+
+typedef enum ScrArgumentType ScrArgumentType;
+typedef union ScrArgumentData ScrArgumentData;
+typedef struct ScrArgument ScrArgument;
+typedef struct ScrBlock ScrBlock;
+
+typedef enum ScrInputArgumentConstraint ScrInputArgumentConstraint;
+typedef enum ScrInputDropdownSource ScrInputDropdownSource;
 typedef struct ScrInputStaticText ScrInputStaticText;
 typedef struct ScrInputStaticImage ScrInputStaticImage;
 typedef struct ScrInputArgument ScrInputArgument;
-typedef struct ScrImage ScrImage;
-typedef enum ScrBlockType ScrBlockType;
-typedef struct ScrBlock ScrBlock;
 typedef struct ScrInputDropdown ScrInputDropdown;
-typedef enum ScrBlockInputType ScrBlockInputType;
-typedef union ScrBlockInputData ScrBlockInputData;
-typedef struct ScrBlockInput ScrBlockInput;
-typedef enum ScrControlArgType ScrControlArgType;
-typedef enum ScrFuncArgType ScrFuncArgType;
-typedef enum ScrFuncArgStorageType ScrFuncArgStorageType;
-typedef struct ScrFuncArgList ScrFuncArgList;
-typedef union ScrFuncArgData ScrFuncArgData;
-typedef struct ScrFuncArgStorage ScrFuncArgStorage;
-typedef enum ScrBlockArgumentType ScrBlockArgumentType;
-typedef union ScrBlockArgumentData ScrBlockArgumentData;
+typedef enum ScrInputType ScrInputType;
+typedef union ScrInputData ScrInputData;
+typedef struct ScrInput ScrInput;
+
+typedef enum ScrBlockdefType ScrBlockdefType;
+typedef struct ScrBlockdef ScrBlockdef;
+
+typedef enum ScrDataControlArgType ScrDataControlArgType;
+typedef enum ScrDataType ScrDataType;
+typedef enum ScrDataStorageType ScrDataStorageType;
+typedef struct ScrDataList ScrDataList;
+typedef union ScrDataContents ScrDataContents;
+typedef struct ScrDataStorage ScrDataStorage;
+typedef struct ScrData ScrData;
+
 typedef struct ScrBlockChain ScrBlockChain;
 typedef struct ScrVariable ScrVariable;
-typedef struct ScrBlockdef ScrBlockdef;
-typedef struct ScrBlockArgument ScrBlockArgument;
-typedef struct ScrFuncArg ScrFuncArg;
 typedef struct ScrExec ScrExec;
 typedef struct ScrVm ScrVm;
 typedef struct ScrChainStackData ScrChainStackData;
 
 typedef char** (*ScrListAccessor)(ScrBlock* block, size_t* list_len);
-typedef ScrFuncArg (*ScrBlockFunc)(ScrExec* exec, int argc, ScrFuncArg* argv);
+typedef ScrData (*ScrBlockFunc)(ScrExec* exec, int argc, ScrData* argv);
 
 struct ScrString {
     char* str;
@@ -60,6 +65,10 @@ struct ScrColor {
     unsigned char r, g, b, a;
 };
 
+struct ScrImage {
+    void* image_ptr;
+};
+
 enum ScrPlacementStrategy {
     PLACEMENT_HORIZONTAL = 0,
     PLACEMENT_VERTICAL,
@@ -70,7 +79,59 @@ struct ScrMeasurement {
     ScrPlacementStrategy placement;
 };
 
-enum ScrBlockType {
+struct ScrInputStaticText {
+    ScrMeasurement ms;
+    ScrMeasurement editor_ms;
+    char* text;
+};
+
+struct ScrInputStaticImage {
+    ScrMeasurement ms;
+    ScrImage image;
+};
+
+enum ScrInputArgumentConstraint {
+    BLOCKCONSTR_UNLIMITED, // Can put anything as argument
+    BLOCKCONSTR_STRING, // Can only put strings as argument
+};
+
+struct ScrInputArgument {
+    ScrBlockdef* blockdef;
+    ScrInputArgumentConstraint constr;
+    ScrMeasurement ms;
+    char* text;
+};
+
+enum ScrInputDropdownSource {
+    DROPDOWN_SOURCE_LISTREF,
+};
+
+struct ScrInputDropdown {
+    ScrInputDropdownSource source;
+    ScrListAccessor list;
+};
+
+union ScrInputData {
+    ScrInputStaticText stext;
+    ScrInputStaticImage simage;
+    ScrInputArgument arg;
+    ScrInputDropdown drop;
+};
+
+enum ScrInputType {
+    INPUT_TEXT_DISPLAY,
+    INPUT_ARGUMENT,
+    INPUT_DROPDOWN,
+    INPUT_BLOCKDEF_EDITOR,
+    INPUT_IMAGE_DISPLAY,
+};
+
+struct ScrInput {
+    ScrInputType type;
+    ScrInputData data;
+};
+
+enum ScrBlockdefType {
     BLOCKTYPE_NORMAL,
     BLOCKTYPE_CONTROL,
     BLOCKTYPE_CONTROLEND,
@@ -84,161 +145,105 @@ struct ScrBlockdef {
     ScrBlockChain* chain;
     int arg_id;
     ScrColor color;
-    ScrBlockType type;
+    ScrBlockdefType type;
     // TODO: Maybe remove hidden from here
     bool hidden;
     ScrMeasurement ms;
-    ScrBlockInput* inputs;
+    ScrInput* inputs;
     ScrBlockFunc func;
-};
-
-enum ScrBlockArgumentConstraint {
-    BLOCKCONSTR_UNLIMITED, // Can put anything as argument
-    BLOCKCONSTR_STRING, // Can only put strings as argument
-};
-
-enum ScrBlockDropdownSource {
-    DROPDOWN_SOURCE_LISTREF,
-};
-
-struct ScrInputStaticText {
-    ScrMeasurement ms;
-    ScrMeasurement editor_ms;
-    char* text;
-};
-
-struct ScrInputArgument {
-    ScrBlockdef* blockdef;
-    ScrBlockArgumentConstraint constr;
-    ScrMeasurement ms;
-    char* text;
-};
-
-struct ScrImage {
-    void* image_ptr;
-};
-
-struct ScrInputStaticImage {
-    ScrMeasurement ms;
-    ScrImage image;
 };
 
 struct ScrBlock {
     ScrBlockdef* blockdef;
-    struct ScrBlockArgument* arguments;
+    struct ScrArgument* arguments;
     ScrMeasurement ms;
     struct ScrBlock* parent;
 };
 
-struct ScrInputDropdown {
-    ScrBlockDropdownSource source;
-    ScrListAccessor list;
+union ScrArgumentData {
+    char* text;
+    ScrBlock block;
+    ScrBlockdef* blockdef;
 };
 
-enum ScrBlockInputType {
-    INPUT_TEXT_DISPLAY,
-    INPUT_ARGUMENT,
-    INPUT_DROPDOWN,
-    INPUT_BLOCKDEF_EDITOR,
-    INPUT_IMAGE_DISPLAY,
-};
-
-union ScrBlockInputData {
-    ScrInputStaticText stext;
-    ScrInputStaticImage simage;
-    ScrInputArgument arg;
-    ScrInputDropdown drop;
-};
-
-struct ScrBlockInput {
-    ScrBlockInputType type;
-    ScrBlockInputData data;
-};
-
-enum ScrControlArgType {
-    CONTROL_ARG_BEGIN,
-    CONTROL_ARG_END,
-};
-
-enum ScrFuncArgType {
-    FUNC_ARG_NOTHING = 0,
-    FUNC_ARG_INT,
-    FUNC_ARG_DOUBLE,
-    FUNC_ARG_STR,
-    FUNC_ARG_BOOL,
-    FUNC_ARG_LIST,
-    FUNC_ARG_CONTROL,
-    FUNC_ARG_OMIT_ARGS, // Marker for vm used in C-blocks that do not require argument recomputation
-    FUNC_ARG_CHAIN,
-};
-
-enum ScrFuncArgStorageType {
-    // Data that is contained within arg or lives for the entire lifetime of exec
-    FUNC_STORAGE_STATIC,
-    // Data that is allocated on heap and should be cleaned up by exec.
-    // Exec usually cleans up allocated data right after the block execution
-    FUNC_STORAGE_MANAGED,
-    // Data that is allocated on heap and should be cleaned up manually.
-    // Exec may free this memory for you if it's necessary
-    FUNC_STORAGE_UNMANAGED,
-};
-
-struct ScrFuncArgList {
-    ScrFuncArg* items;
-    size_t len; // Length is NOT in bytes, if you want length in bytes, use func_arg.storage.storage_len
-};
-
-union ScrFuncArgData {
-    int int_arg;
-    double double_arg;
-    const char* str_arg;
-    ScrFuncArgList list_arg;
-    ScrControlArgType control_arg;
-    const void* custom_arg;
-    ScrBlockChain* chain_arg;
-};
-
-struct ScrFuncArgStorage {
-    ScrFuncArgStorageType type;
-    size_t storage_len; // Length is in bytes, so to make copy function work correctly. Only applicable if you don't use FUNC_STORAGE_STATIC
-};
-
-struct ScrFuncArg {
-    ScrFuncArgType type;
-    ScrFuncArgStorage storage;
-    ScrFuncArgData data;
-};
-
-enum ScrBlockArgumentType {
+enum ScrArgumentType {
     ARGUMENT_TEXT = 0,
     ARGUMENT_BLOCK,
     ARGUMENT_CONST_STRING,
     ARGUMENT_BLOCKDEF,
 };
 
-union ScrBlockArgumentData {
-    char* text;
-    ScrBlock block;
-    ScrBlockdef* blockdef;
-};
-
-struct ScrBlockArgument {
+struct ScrArgument {
     ScrMeasurement ms;
     int input_id;
-    ScrBlockArgumentType type;
-    ScrBlockArgumentData data;
+    ScrArgumentType type;
+    ScrArgumentData data;
+};
+
+enum ScrDataControlArgType {
+    CONTROL_ARG_BEGIN,
+    CONTROL_ARG_END,
+};
+
+struct ScrDataList {
+    ScrData* items;
+    size_t len; // Length is NOT in bytes, if you want length in bytes, use data.storage.storage_len
+};
+
+union ScrDataContents {
+    int int_arg;
+    double double_arg;
+    const char* str_arg;
+    ScrDataList list_arg;
+    ScrDataControlArgType control_arg;
+    const void* custom_arg;
+    ScrBlockChain* chain_arg;
+};
+
+enum ScrDataStorageType {
+    // Data that is contained within arg or lives for the entire lifetime of exec
+    DATA_STORAGE_STATIC,
+    // Data that is allocated on heap and should be cleaned up by exec.
+    // Exec usually cleans up allocated data right after the block execution
+    DATA_STORAGE_MANAGED,
+    // Data that is allocated on heap and should be cleaned up manually.
+    // Exec may free this memory for you if it's necessary
+    DATA_STORAGE_UNMANAGED,
+};
+
+struct ScrDataStorage {
+    ScrDataStorageType type;
+    size_t storage_len; // Length is in bytes, so to make copy function work correctly. Only applicable if you don't use DATA_STORAGE_STATIC
+};
+
+enum ScrDataType {
+    DATA_NOTHING = 0,
+    DATA_INT,
+    DATA_DOUBLE,
+    DATA_STR,
+    DATA_BOOL,
+    DATA_LIST,
+    DATA_CONTROL,
+    DATA_OMIT_ARGS, // Marker for vm used in C-blocks that do not require argument recomputation
+    DATA_CHAIN,
+};
+
+struct ScrData {
+    ScrDataType type;
+    ScrDataStorage storage;
+    ScrDataContents data;
 };
 
 struct ScrBlockChain {
     ScrVec pos;
     ScrBlock* blocks;
     int custom_argc;
-    ScrFuncArg* custom_argv;
+    ScrData* custom_argv;
 };
 
 struct ScrVariable {
     const char* name;
-    ScrFuncArg value;
+    ScrData value;
     size_t chain_layer;
     int layer;
 };
@@ -248,15 +253,15 @@ struct ScrChainStackData {
     int layer;
     size_t running_ind;
     int custom_argc;
-    ScrFuncArg* custom_argv;
+    ScrData* custom_argv;
     bool is_returning;
-    ScrFuncArg return_arg;
+    ScrData return_arg;
 };
 
 struct ScrExec {
     ScrBlockChain* code;
 
-    ScrFuncArg arg_stack[VM_ARG_STACK_SIZE];
+    ScrData arg_stack[VM_ARG_STACK_SIZE];
     size_t arg_stack_len;
 
     unsigned char control_stack[VM_CONTROL_STACK_SIZE];
@@ -281,38 +286,38 @@ struct ScrVm {
 };
 
 // Public macros
-#define RETURN_NOTHING return (ScrFuncArg) { \
-    .type = FUNC_ARG_NOTHING, \
-    .storage = FUNC_STORAGE_STATIC, \
-    .data = (ScrFuncArgData) {0}, \
+#define RETURN_NOTHING return (ScrData) { \
+    .type = DATA_NOTHING, \
+    .storage = DATA_STORAGE_STATIC, \
+    .data = (ScrDataContents) {0}, \
 }
 
-#define RETURN_OMIT_ARGS return (ScrFuncArg) { \
-    .type = FUNC_ARG_OMIT_ARGS, \
-    .storage = FUNC_STORAGE_STATIC, \
-    .data = (ScrFuncArgData) {0}, \
+#define RETURN_OMIT_ARGS return (ScrData) { \
+    .type = DATA_OMIT_ARGS, \
+    .storage = DATA_STORAGE_STATIC, \
+    .data = (ScrDataContents) {0}, \
 }
 
-#define RETURN_INT(val) return (ScrFuncArg) { \
-    .type = FUNC_ARG_INT, \
-    .storage = FUNC_STORAGE_STATIC, \
-    .data = (ScrFuncArgData) { \
+#define RETURN_INT(val) return (ScrData) { \
+    .type = DATA_INT, \
+    .storage = DATA_STORAGE_STATIC, \
+    .data = (ScrDataContents) { \
         .int_arg = (val) \
     }, \
 }
 
-#define RETURN_DOUBLE(val) return (ScrFuncArg) { \
-    .type = FUNC_ARG_DOUBLE, \
-    .storage = FUNC_STORAGE_STATIC, \
-    .data = (ScrFuncArgData) { \
+#define RETURN_DOUBLE(val) return (ScrData) { \
+    .type = DATA_DOUBLE, \
+    .storage = DATA_STORAGE_STATIC, \
+    .data = (ScrDataContents) { \
         .double_arg = (val) \
     }, \
 }
 
-#define RETURN_BOOL(val) return (ScrFuncArg) { \
-    .type = FUNC_ARG_BOOL, \
-    .storage = FUNC_STORAGE_STATIC, \
-    .data = (ScrFuncArgData) { \
+#define RETURN_BOOL(val) return (ScrData) { \
+    .type = DATA_BOOL, \
+    .storage = DATA_STORAGE_STATIC, \
+    .data = (ScrDataContents) { \
         .int_arg = (val) \
     }, \
 }
@@ -341,25 +346,25 @@ ScrExec exec_new(void);
 void exec_free(ScrExec* exec);
 void exec_add_chain(ScrVm* vm, ScrExec* exec, ScrBlockChain chain);
 void exec_remove_chain(ScrVm* vm, ScrExec* exec, size_t ind);
-bool exec_run_chain(ScrExec* exec, ScrBlockChain* chain, ScrFuncArg* return_val);
+bool exec_run_chain(ScrExec* exec, ScrBlockChain* chain, ScrData* return_val);
 bool exec_start(ScrVm* vm, ScrExec* exec);
 bool exec_stop(ScrVm* vm, ScrExec* exec);
 bool exec_join(ScrVm* vm, ScrExec* exec, size_t* return_code);
 bool exec_try_join(ScrVm* vm, ScrExec* exec, size_t* return_code);
 void exec_set_skip_block(ScrExec* exec);
 
-bool variable_stack_push_var(ScrExec* exec, const char* name, ScrFuncArg arg);
+bool variable_stack_push_var(ScrExec* exec, const char* name, ScrData data);
 ScrVariable* variable_stack_get_variable(ScrExec* exec, const char* name);
 
-int func_arg_to_int(ScrFuncArg arg);
-int func_arg_to_bool(ScrFuncArg arg);
-const char* func_arg_to_str(ScrFuncArg arg);
+int data_to_int(ScrData arg);
+int data_to_bool(ScrData arg);
+const char* data_to_str(ScrData arg);
 
-ScrBlockdef* blockdef_new(const char* id, ScrBlockType type, ScrColor color, ScrBlockFunc func);
+ScrBlockdef* blockdef_new(const char* id, ScrBlockdefType type, ScrColor color, ScrBlockFunc func);
 size_t blockdef_register(ScrVm* vm, ScrBlockdef* blockdef);
 void blockdef_add_text(ScrBlockdef* blockdef, char* text);
-void blockdef_add_argument(ScrBlockdef* blockdef, char* defualt_data, ScrBlockArgumentConstraint constraint);
-void blockdef_add_dropdown(ScrBlockdef* blockdef, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor);
+void blockdef_add_argument(ScrBlockdef* blockdef, char* defualt_data, ScrInputArgumentConstraint constraint);
+void blockdef_add_dropdown(ScrBlockdef* blockdef, ScrInputDropdownSource dropdown_source, ScrListAccessor accessor);
 void blockdef_add_image(ScrBlockdef* blockdef, ScrImage image);
 void blockdef_add_blockdef_editor(ScrBlockdef* blockdef);
 void blockdef_delete_input(ScrBlockdef* blockdef, size_t input);
@@ -382,9 +387,9 @@ void block_update_parent_links(ScrBlock* block);
 void block_update_all_links(ScrBlock* block);
 void block_free(ScrBlock* block);
 
-void argument_set_block(ScrBlockArgument* block_arg, ScrBlock block);
-void argument_set_const_string(ScrBlockArgument* block_arg, char* text);
-void argument_set_text(ScrBlockArgument* block_arg, char* text);
+void argument_set_block(ScrArgument* block_arg, ScrBlock block);
+void argument_set_const_string(ScrArgument* block_arg, char* text);
+void argument_set_text(ScrArgument* block_arg, char* text);
 
 #ifdef SCRVM_IMPLEMENTATION
 
@@ -688,11 +693,11 @@ vector _vector_copy(vector vec, vec_type_t type_size)
 
 // Private functions
 void blockchain_update_parent_links(ScrBlockChain* chain);
-void arg_stack_push_arg(ScrExec* exec, ScrFuncArg arg);
+void arg_stack_push_arg(ScrExec* exec, ScrData data);
 void arg_stack_undo_args(ScrExec* exec, size_t count);
 void variable_stack_pop_layer(ScrExec* exec);
 void variable_stack_cleanup(ScrExec* exec);
-void func_arg_free(ScrFuncArg arg);
+void data_free(ScrData data);
 void blockdef_free(ScrBlockdef* blockdef);
 ScrBlockdef* blockdef_copy(ScrBlockdef* blockdef);
 void chain_stack_push(ScrExec* exec, ScrChainStackData data);
@@ -734,37 +739,37 @@ void exec_copy_code(ScrVm* vm, ScrExec* exec, ScrBlockChain* code) {
     exec->code = code;
 }
 
-bool exec_block(ScrExec* exec, ScrBlock block, ScrFuncArg* block_return, bool from_end, bool omit_args, ScrFuncArg control_arg) {
+bool exec_block(ScrExec* exec, ScrBlock block, ScrData* block_return, bool from_end, bool omit_args, ScrData control_arg) {
     ScrBlockFunc execute_block = block.blockdef->func;
     if (!execute_block) return false;
 
     int stack_begin = exec->arg_stack_len;
 
     if (block.blockdef->arg_id != -1) {
-        arg_stack_push_arg(exec, (ScrFuncArg) {
-            .type = FUNC_ARG_INT,
-            .storage = FUNC_STORAGE_STATIC,
-            .data = (ScrFuncArgData) {
+        arg_stack_push_arg(exec, (ScrData) {
+            .type = DATA_INT,
+            .storage = DATA_STORAGE_STATIC,
+            .data = (ScrDataContents) {
                 .int_arg = block.blockdef->arg_id,
             },
         });
     }
     
     if (block.blockdef->chain) {
-        arg_stack_push_arg(exec, (ScrFuncArg) {
-            .type = FUNC_ARG_CHAIN,
-            .storage = FUNC_STORAGE_STATIC,
-            .data = (ScrFuncArgData) {
+        arg_stack_push_arg(exec, (ScrData) {
+            .type = DATA_CHAIN,
+            .storage = DATA_STORAGE_STATIC,
+            .data = (ScrDataContents) {
                 .chain_arg = block.blockdef->chain,
             },
         });
     }
 
     if (block.blockdef->type == BLOCKTYPE_CONTROL || block.blockdef->type == BLOCKTYPE_CONTROLEND) {
-        arg_stack_push_arg(exec, (ScrFuncArg) {
-            .type = FUNC_ARG_CONTROL,
-            .storage = FUNC_STORAGE_STATIC,
-            .data = (ScrFuncArgData) {
+        arg_stack_push_arg(exec, (ScrData) {
+            .type = DATA_CONTROL,
+            .storage = DATA_STORAGE_STATIC,
+            .data = (ScrDataContents) {
                 .control_arg = from_end ? CONTROL_ARG_END : CONTROL_ARG_BEGIN,
             },
         });
@@ -774,21 +779,21 @@ bool exec_block(ScrExec* exec, ScrBlock block, ScrFuncArg* block_return, bool fr
     }
     if (!omit_args) {
         for (vec_size_t i = 0; i < vector_size(block.arguments); i++) {
-            ScrBlockArgument block_arg = block.arguments[i];
+            ScrArgument block_arg = block.arguments[i];
             switch (block_arg.type) {
             case ARGUMENT_TEXT:
             case ARGUMENT_CONST_STRING:
-                arg_stack_push_arg(exec, (ScrFuncArg) {
-                    .type = FUNC_ARG_STR,
-                    .storage = FUNC_STORAGE_STATIC,
-                    .data = (ScrFuncArgData) {
+                arg_stack_push_arg(exec, (ScrData) {
+                    .type = DATA_STR,
+                    .storage = DATA_STORAGE_STATIC,
+                    .data = (ScrDataContents) {
                         .str_arg = block_arg.data.text,
                     },
                 });
                 break;
             case ARGUMENT_BLOCK:
-                ScrFuncArg arg_return;
-                if (!exec_block(exec, block_arg.data.block, &arg_return, false, false, (ScrFuncArg) {0})) return false;
+                ScrData arg_return;
+                if (!exec_block(exec, block_arg.data.block, &arg_return, false, false, (ScrData) {0})) return false;
                 arg_stack_push_arg(exec, arg_return);
                 break;
             case ARGUMENT_BLOCKDEF:
@@ -806,13 +811,13 @@ bool exec_block(ScrExec* exec, ScrBlock block, ScrFuncArg* block_return, bool fr
 }
 
 #define BLOCKDEF chain->blocks[i].blockdef
-bool exec_run_custom(ScrExec* exec, ScrBlockChain* chain, int argc, ScrFuncArg* argv, ScrFuncArg* return_val) {
+bool exec_run_custom(ScrExec* exec, ScrBlockChain* chain, int argc, ScrData* argv, ScrData* return_val) {
     chain->custom_argc = argc;
     chain->custom_argv = argv;
     return exec_run_chain(exec, chain, return_val);
 }
 
-bool exec_run_chain(ScrExec* exec, ScrBlockChain* chain, ScrFuncArg* return_val) {
+bool exec_run_chain(ScrExec* exec, ScrBlockChain* chain, ScrData* return_val) {
     int skip_layer = -1;
     size_t base_len = exec->control_stack_len;
     chain_stack_push(exec, (ScrChainStackData) {
@@ -822,10 +827,10 @@ bool exec_run_chain(ScrExec* exec, ScrBlockChain* chain, ScrFuncArg* return_val)
         .custom_argc = chain->custom_argc,
         .custom_argv = chain->custom_argv,
         .is_returning = false,
-        .return_arg = (ScrFuncArg) {0},
+        .return_arg = (ScrData) {0},
     });
     exec->running_chain = chain;
-    ScrFuncArg block_return;
+    ScrData block_return;
     for (size_t i = 0; i < vector_size(chain->blocks); i++) {
         pthread_testcancel();
         size_t block_ind = i;
@@ -843,9 +848,9 @@ bool exec_run_chain(ScrExec* exec, ScrBlockChain* chain, ScrFuncArg* return_val)
             variable_stack_pop_layer(exec);
             chain_data->layer--;
             control_stack_pop_data(block_ind, size_t)
-            control_stack_pop_data(block_return, ScrFuncArg)
-            if (block_return.type == FUNC_ARG_OMIT_ARGS) omit_args = true;
-            if (block_return.storage.type == FUNC_STORAGE_MANAGED) func_arg_free(block_return);
+            control_stack_pop_data(block_return, ScrData)
+            if (block_return.type == DATA_OMIT_ARGS) omit_args = true;
+            if (block_return.storage.type == DATA_STORAGE_MANAGED) data_free(block_return);
             from_end = true;
             if (chain_data->skip_block && skip_layer == chain_data->layer) {
                 chain_data->skip_block = false;
@@ -853,7 +858,7 @@ bool exec_run_chain(ScrExec* exec, ScrBlockChain* chain, ScrFuncArg* return_val)
             }
         }
         if (!chain_data->skip_block) {
-            if (!exec_block(exec, chain->blocks[block_ind], &block_return, from_end, omit_args, (ScrFuncArg){0})) {
+            if (!exec_block(exec, chain->blocks[block_ind], &block_return, from_end, omit_args, (ScrData){0})) {
                 chain_stack_pop(exec);
                 return false;
             }
@@ -869,14 +874,14 @@ bool exec_run_chain(ScrExec* exec, ScrBlockChain* chain, ScrFuncArg* return_val)
             return_used = true;
         }
         if (BLOCKDEF->type == BLOCKTYPE_CONTROL || BLOCKDEF->type == BLOCKTYPE_CONTROLEND) {
-            control_stack_push_data(block_return, ScrFuncArg)
+            control_stack_push_data(block_return, ScrData)
             control_stack_push_data(i, size_t)
             if (chain_data->skip_block && skip_layer == -1) skip_layer = chain_data->layer;
             return_used = true;
             chain_data->layer++;
         } 
-        if (!return_used && block_return.storage.type == FUNC_STORAGE_MANAGED) {
-            func_arg_free(block_return);
+        if (!return_used && block_return.storage.type == DATA_STORAGE_MANAGED) {
+            data_free(block_return);
         }
     }
     *return_val = exec->chain_stack[exec->chain_stack_len - 1].return_arg;
@@ -929,7 +934,7 @@ void* exec_thread_entry(void* thread_exec) {
         if (cont) continue;
         exec->code[i].custom_argc = -1;
         exec->code[i].custom_argv = NULL;
-        ScrFuncArg bin;
+        ScrData bin;
         if (!exec_run_chain(exec, &exec->code[i], &bin)) {
             exec->running_chain = NULL;
             pthread_exit((void*)0);
@@ -984,7 +989,7 @@ bool exec_try_join(ScrVm* vm, ScrExec* exec, size_t* return_code) {
     return true;
 }
 
-bool variable_stack_push_var(ScrExec* exec, const char* name, ScrFuncArg arg) {
+bool variable_stack_push_var(ScrExec* exec, const char* name, ScrData arg) {
     if (exec->variable_stack_len >= VM_VARIABLE_STACK_SIZE) return false;
     if (*name == 0) return false;
     ScrVariable var;
@@ -1001,9 +1006,9 @@ void variable_stack_pop_layer(ScrExec* exec) {
     for (int i = exec->variable_stack_len - 1; i >= 0 && 
                                                exec->variable_stack[i].layer == exec->chain_stack[exec->chain_stack_len - 1].layer && 
                                                exec->variable_stack[i].chain_layer == exec->chain_stack_len - 1; i--) {
-        ScrFuncArg arg = exec->variable_stack[i].value;
-        if (arg.storage.type == FUNC_STORAGE_UNMANAGED || arg.storage.type == FUNC_STORAGE_MANAGED) {
-            func_arg_free(arg);
+        ScrData arg = exec->variable_stack[i].value;
+        if (arg.storage.type == DATA_STORAGE_UNMANAGED || arg.storage.type == DATA_STORAGE_MANAGED) {
+            data_free(arg);
         }
         count++;
     }
@@ -1012,9 +1017,9 @@ void variable_stack_pop_layer(ScrExec* exec) {
 
 void variable_stack_cleanup(ScrExec* exec) {
     for (size_t i = 0; i < exec->variable_stack_len; i++) {
-        ScrFuncArg arg = exec->variable_stack[i].value;
-        if (arg.storage.type == FUNC_STORAGE_UNMANAGED || arg.storage.type == FUNC_STORAGE_MANAGED) {
-            func_arg_free(arg);
+        ScrData arg = exec->variable_stack[i].value;
+        if (arg.storage.type == DATA_STORAGE_UNMANAGED || arg.storage.type == DATA_STORAGE_MANAGED) {
+            data_free(arg);
         }
     }
     exec->variable_stack_len = 0;
@@ -1043,7 +1048,7 @@ void chain_stack_pop(ScrExec* exec) {
     exec->chain_stack_len--;
 }
 
-void arg_stack_push_arg(ScrExec* exec, ScrFuncArg arg) {
+void arg_stack_push_arg(ScrExec* exec, ScrData arg) {
     if (exec->arg_stack_len >= VM_ARG_STACK_SIZE) {
         printf("[VM] CRITICAL: Arg stack overflow\n");
         pthread_exit((void*)0);
@@ -1057,25 +1062,25 @@ void arg_stack_undo_args(ScrExec* exec, size_t count) {
         pthread_exit((void*)0);
     }
     for (size_t i = 0; i < count; i++) {
-        ScrFuncArg arg = exec->arg_stack[exec->arg_stack_len - 1 - i];
-        if (arg.storage.type != FUNC_STORAGE_MANAGED) continue;
-        func_arg_free(arg);
+        ScrData arg = exec->arg_stack[exec->arg_stack_len - 1 - i];
+        if (arg.storage.type != DATA_STORAGE_MANAGED) continue;
+        data_free(arg);
     }
     exec->arg_stack_len -= count;
 }
 
-ScrFuncArg func_arg_copy(ScrFuncArg arg) {
-    if (arg.storage.type == FUNC_STORAGE_STATIC) return arg;
+ScrData data_copy(ScrData arg) {
+    if (arg.storage.type == DATA_STORAGE_STATIC) return arg;
 
-    ScrFuncArg out;
+    ScrData out;
     out.type = arg.type;
-    out.storage.type = FUNC_STORAGE_MANAGED;
+    out.storage.type = DATA_STORAGE_MANAGED;
     out.storage.storage_len = arg.storage.storage_len;
     out.data.custom_arg = malloc(arg.storage.storage_len);
-    if (arg.type == FUNC_ARG_LIST) {
+    if (arg.type == DATA_LIST) {
         out.data.list_arg.len = arg.data.list_arg.len;
         for (size_t i = 0; i < arg.data.list_arg.len; i++) {
-            out.data.list_arg.items[i] = func_arg_copy(arg.data.list_arg.items[i]);
+            out.data.list_arg.items[i] = data_copy(arg.data.list_arg.items[i]);
         }
     } else {
         memcpy((void*)out.data.custom_arg, arg.data.custom_arg, arg.storage.storage_len);
@@ -1083,15 +1088,15 @@ ScrFuncArg func_arg_copy(ScrFuncArg arg) {
     return out;
 }
 
-void func_arg_free(ScrFuncArg arg) {
-    if (arg.storage.type == FUNC_STORAGE_STATIC) return;
+void data_free(ScrData arg) {
+    if (arg.storage.type == DATA_STORAGE_STATIC) return;
     switch (arg.type) {
-    case FUNC_ARG_LIST:
+    case DATA_LIST:
         if (!arg.data.list_arg.items) break;
         for (size_t i = 0; i < arg.data.list_arg.len; i++) {
-            func_arg_free(arg.data.list_arg.items[i]);
+            data_free(arg.data.list_arg.items[i]);
         }
-        free((ScrFuncArg*)arg.data.list_arg.items);
+        free((ScrData*)arg.data.list_arg.items);
         break;
     default:
         if (!arg.data.custom_arg) break;
@@ -1100,67 +1105,67 @@ void func_arg_free(ScrFuncArg arg) {
     }
 }
 
-int func_arg_to_int(ScrFuncArg arg) {
+int data_to_int(ScrData arg) {
     switch (arg.type) {
-    case FUNC_ARG_BOOL:
-    case FUNC_ARG_INT:
+    case DATA_BOOL:
+    case DATA_INT:
         return arg.data.int_arg;
-    case FUNC_ARG_DOUBLE:
+    case DATA_DOUBLE:
         return (int)arg.data.double_arg;
-    case FUNC_ARG_STR:
+    case DATA_STR:
         return atoi(arg.data.str_arg);
     default:
         return 0;
     }
 }
 
-double func_arg_to_double(ScrFuncArg arg) {
+double data_to_double(ScrData arg) {
     switch (arg.type) {
-    case FUNC_ARG_BOOL:
-    case FUNC_ARG_INT:
+    case DATA_BOOL:
+    case DATA_INT:
         return (double)arg.data.int_arg;
-    case FUNC_ARG_DOUBLE:
+    case DATA_DOUBLE:
         return arg.data.double_arg;
-    case FUNC_ARG_STR:
+    case DATA_STR:
         return atof(arg.data.str_arg);
     default:
         return 0.0;
     }
 }
 
-int func_arg_to_bool(ScrFuncArg arg) {
+int data_to_bool(ScrData arg) {
     switch (arg.type) {
-    case FUNC_ARG_BOOL:
-    case FUNC_ARG_INT:
+    case DATA_BOOL:
+    case DATA_INT:
         return arg.data.int_arg != 0;
-    case FUNC_ARG_DOUBLE:
+    case DATA_DOUBLE:
         return arg.data.double_arg != 0.0;
-    case FUNC_ARG_STR:
+    case DATA_STR:
         return *arg.data.str_arg != 0;
-    case FUNC_ARG_LIST:
+    case DATA_LIST:
         return arg.data.list_arg.len != 0;
     default:
         return 0;
     }
 }
 
-const char* func_arg_to_str(ScrFuncArg arg) {
+const char* data_to_str(ScrData arg) {
     static char buf[32];
 
     switch (arg.type) {
-    case FUNC_ARG_STR:
+    case DATA_STR:
         return arg.data.str_arg;
-    case FUNC_ARG_BOOL:
+    case DATA_BOOL:
         return arg.data.int_arg ? "true" : "false";
-    case FUNC_ARG_DOUBLE:
+    case DATA_DOUBLE:
         buf[0] = 0;
         snprintf(buf, 32, "%f", arg.data.double_arg);
         return buf;
-    case FUNC_ARG_INT:
+    case DATA_INT:
         buf[0] = 0;
         snprintf(buf, 32, "%d", arg.data.int_arg);
         return buf;
-    case FUNC_ARG_LIST:
+    case DATA_LIST:
         return "# LIST #";
     default:
         return "";
@@ -1186,10 +1191,10 @@ void string_add(ScrString* string, const char* other) {
     string->len = new_len;
 }
 
-ScrFuncArg string_make_managed(ScrString* string) {
-    ScrFuncArg out;
-    out.type = FUNC_ARG_STR;
-    out.storage.type = FUNC_STORAGE_MANAGED;
+ScrData string_make_managed(ScrString* string) {
+    ScrData out;
+    out.type = DATA_STR;
+    out.storage.type = DATA_STORAGE_MANAGED;
     out.storage.storage_len = string->len + 1;
     out.data.str_arg = string->str;
     return out;
@@ -1211,7 +1216,7 @@ ScrBlock block_new(ScrBlockdef* blockdef) {
         if (block.blockdef->inputs[i].type != INPUT_ARGUMENT && 
             block.blockdef->inputs[i].type != INPUT_DROPDOWN &&
             block.blockdef->inputs[i].type != INPUT_BLOCKDEF_EDITOR) continue;
-        ScrBlockArgument* arg = vector_add_dst((ScrBlockArgument**)&block.arguments);
+        ScrArgument* arg = vector_add_dst((ScrArgument**)&block.arguments);
         arg->input_id = i;
 
         switch (blockdef->inputs[i].type) {
@@ -1275,7 +1280,7 @@ ScrBlock block_copy(ScrBlock* block, ScrBlock* parent) {
     new.blockdef->ref_count++;
 
     for (size_t i = 0; i < vector_size(block->arguments); i++) {
-        ScrBlockArgument* arg = vector_add_dst((ScrBlockArgument**)&new.arguments);
+        ScrArgument* arg = vector_add_dst((ScrArgument**)&new.arguments);
         arg->ms = block->arguments[i].ms;
         arg->type = block->arguments[i].type;
         arg->input_id = block->arguments[i].input_id;
@@ -1324,7 +1329,7 @@ void block_free(ScrBlock* block) {
                 break;
             }
         }
-        vector_free((ScrBlockArgument*)block->arguments);
+        vector_free((ScrArgument*)block->arguments);
     }
 }
 
@@ -1358,7 +1363,7 @@ ScrBlockChain blockchain_copy_single(ScrBlockChain* chain, size_t pos) {
     new.pos = chain->pos;
     new.blocks = vector_create();
 
-    ScrBlockType block_type = chain->blocks[pos].blockdef->type;
+    ScrBlockdefType block_type = chain->blocks[pos].blockdef->type;
     if (block_type == BLOCKTYPE_END) return new;
     if (block_type != BLOCKTYPE_CONTROL) {
         vector_add(&new.blocks, block_copy(&chain->blocks[pos], NULL));
@@ -1392,7 +1397,7 @@ ScrBlockChain blockchain_copy(ScrBlockChain* chain, size_t pos) {
 
     int pos_layer = 0;
     for (size_t i = 0; i < pos; i++) {
-        ScrBlockType block_type = chain->blocks[i].blockdef->type;
+        ScrBlockdefType block_type = chain->blocks[i].blockdef->type;
         if (block_type == BLOCKTYPE_CONTROL) {
             pos_layer++;
         } else if (block_type == BLOCKTYPE_END) {
@@ -1404,7 +1409,7 @@ ScrBlockChain blockchain_copy(ScrBlockChain* chain, size_t pos) {
 
     vector_reserve(&new.blocks, vector_size(chain->blocks) - pos);
     for (vec_size_t i = pos; i < vector_size(chain->blocks); i++) {
-        ScrBlockType block_type = chain->blocks[i].blockdef->type;
+        ScrBlockdefType block_type = chain->blocks[i].blockdef->type;
         if ((block_type == BLOCKTYPE_END || (block_type == BLOCKTYPE_CONTROLEND && i != pos)) &&
             pos_layer == current_layer &&
             current_layer != 0) break;
@@ -1454,7 +1459,7 @@ void blockchain_insert(ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {
 void blockchain_detach_single(ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {
     assert(pos < vector_size(src->blocks));
 
-    ScrBlockType block_type = src->blocks[pos].blockdef->type;
+    ScrBlockdefType block_type = src->blocks[pos].blockdef->type;
     if (block_type == BLOCKTYPE_END) return;
     if (block_type != BLOCKTYPE_CONTROL) {
         vector_add(&dst->blocks, src->blocks[pos]);
@@ -1467,7 +1472,7 @@ void blockchain_detach_single(ScrBlockChain* dst, ScrBlockChain* src, size_t pos
     int size = 0;
     int layer = 0;
     for (size_t i = pos; i < vector_size(src->blocks) && layer >= 0; i++) {
-        ScrBlockType block_type = src->blocks[i].blockdef->type;
+        ScrBlockdefType block_type = src->blocks[i].blockdef->type;
         vector_add(&dst->blocks, src->blocks[i]);
         if (block_type == BLOCKTYPE_CONTROL && i != pos) {
             layer++;
@@ -1487,7 +1492,7 @@ void blockchain_detach(ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {
 
     int pos_layer = 0;
     for (size_t i = 0; i < pos; i++) {
-        ScrBlockType block_type = src->blocks[i].blockdef->type;
+        ScrBlockdefType block_type = src->blocks[i].blockdef->type;
         if (block_type == BLOCKTYPE_CONTROL) {
             pos_layer++;
         } else if (block_type == BLOCKTYPE_END) {
@@ -1501,7 +1506,7 @@ void blockchain_detach(ScrBlockChain* dst, ScrBlockChain* src, size_t pos) {
 
     vector_reserve(&dst->blocks, vector_size(dst->blocks) + vector_size(src->blocks) - pos);
     for (size_t i = pos; i < vector_size(src->blocks); i++) {
-        ScrBlockType block_type = src->blocks[i].blockdef->type;
+        ScrBlockdefType block_type = src->blocks[i].blockdef->type;
         if ((block_type == BLOCKTYPE_END || (block_type == BLOCKTYPE_CONTROLEND && i != pos)) && pos_layer == current_layer && current_layer != 0) break;
         vector_add(&dst->blocks, src->blocks[i]);
         if (block_type == BLOCKTYPE_CONTROL) {
@@ -1521,7 +1526,7 @@ void blockchain_free(ScrBlockChain* chain) {
     vector_free(chain->blocks);
 }
 
-void argument_set_block(ScrBlockArgument* block_arg, ScrBlock block) {
+void argument_set_block(ScrArgument* block_arg, ScrBlock block) {
     if (block_arg->type == ARGUMENT_TEXT || block_arg->type == ARGUMENT_CONST_STRING) vector_free(block_arg->data.text);
     block_arg->type = ARGUMENT_BLOCK;
     block_arg->data.block = block;
@@ -1529,7 +1534,7 @@ void argument_set_block(ScrBlockArgument* block_arg, ScrBlock block) {
     block_update_parent_links(&block_arg->data.block);
 }
 
-void argument_set_const_string(ScrBlockArgument* block_arg, char* text) {
+void argument_set_const_string(ScrArgument* block_arg, char* text) {
     assert(block_arg->type == ARGUMENT_CONST_STRING);
 
     block_arg->type = ARGUMENT_CONST_STRING;
@@ -1541,7 +1546,7 @@ void argument_set_const_string(ScrBlockArgument* block_arg, char* text) {
     vector_add(&block_arg->data.text, 0);
 }
 
-void argument_set_text(ScrBlockArgument* block_arg, char* text) {
+void argument_set_text(ScrArgument* block_arg, char* text) {
     assert(block_arg->type == ARGUMENT_BLOCK);
     assert(block_arg->data.block.parent != NULL);
 
@@ -1554,7 +1559,7 @@ void argument_set_text(ScrBlockArgument* block_arg, char* text) {
     vector_add(&block_arg->data.text, 0);
 }
 
-ScrBlockdef* blockdef_new(const char* id, ScrBlockType type, ScrColor color, ScrBlockFunc func) {
+ScrBlockdef* blockdef_new(const char* id, ScrBlockdefType type, ScrColor color, ScrBlockFunc func) {
     assert(id != NULL);
     ScrBlockdef* blockdef = malloc(sizeof(ScrBlockdef));
     blockdef->id = strcpy(malloc((strlen(id) + 1) * sizeof(char)), id);
@@ -1583,11 +1588,11 @@ ScrBlockdef* blockdef_copy(ScrBlockdef* blockdef) {
     new->func = blockdef->func;
 
     for (size_t i = 0; i < vector_size(blockdef->inputs); i++) {
-        ScrBlockInput* input = vector_add_dst(&new->inputs);
+        ScrInput* input = vector_add_dst(&new->inputs);
         input->type = blockdef->inputs[i].type;
         switch (blockdef->inputs[i].type) {
         case INPUT_TEXT_DISPLAY:
-            input->data = (ScrBlockInputData) {
+            input->data = (ScrInputData) {
                 .stext = {
                     .text = vector_copy(blockdef->inputs[i].data.stext.text),
                     .ms = blockdef->inputs[i].data.stext.ms,
@@ -1595,7 +1600,7 @@ ScrBlockdef* blockdef_copy(ScrBlockdef* blockdef) {
             };
             break;
         case INPUT_ARGUMENT:
-            input->data = (ScrBlockInputData) {
+            input->data = (ScrInputData) {
                 .arg = {
                     .blockdef = blockdef_copy(blockdef->inputs[i].data.arg.blockdef),
                     .text = blockdef->inputs[i].data.arg.text,
@@ -1605,7 +1610,7 @@ ScrBlockdef* blockdef_copy(ScrBlockdef* blockdef) {
             };
             break;
         case INPUT_IMAGE_DISPLAY:
-            input->data = (ScrBlockInputData) {
+            input->data = (ScrInputData) {
                 .simage = {
                     .image = blockdef->inputs[i].data.simage.image,
                     .ms = blockdef->inputs[i].data.simage.ms,
@@ -1613,7 +1618,7 @@ ScrBlockdef* blockdef_copy(ScrBlockdef* blockdef) {
             };
             break;
         case INPUT_DROPDOWN:
-            input->data = (ScrBlockInputData) {
+            input->data = (ScrInputData) {
                 .drop = {
                     .source = blockdef->inputs[i].data.drop.source,
                     .list = blockdef->inputs[i].data.drop.list,
@@ -1621,7 +1626,7 @@ ScrBlockdef* blockdef_copy(ScrBlockdef* blockdef) {
             };
             break;
         case INPUT_BLOCKDEF_EDITOR:
-            input->data = (ScrBlockInputData) {0};
+            input->data = (ScrInputData) {0};
             break;
         default:
             assert(false && "Unimplemented input copy");
@@ -1646,10 +1651,10 @@ size_t blockdef_register(ScrVm* vm, ScrBlockdef* blockdef) {
 }
 
 void blockdef_add_text(ScrBlockdef* blockdef, char* text) {
-    ScrBlockInput* input = vector_add_dst(&blockdef->inputs);
+    ScrInput* input = vector_add_dst(&blockdef->inputs);
     ScrMeasurement ms = (ScrMeasurement) {0};
     input->type = INPUT_TEXT_DISPLAY;
-    input->data = (ScrBlockInputData) {
+    input->data = (ScrInputData) {
         .stext = {
             .text = vector_create(),
             .ms = ms,
@@ -1660,11 +1665,11 @@ void blockdef_add_text(ScrBlockdef* blockdef, char* text) {
     vector_add(&input->data.stext.text, 0);
 }
 
-void blockdef_add_argument(ScrBlockdef* blockdef, char* defualt_data, ScrBlockArgumentConstraint constraint) {
-    ScrBlockInput* input = vector_add_dst(&blockdef->inputs);
+void blockdef_add_argument(ScrBlockdef* blockdef, char* defualt_data, ScrInputArgumentConstraint constraint) {
+    ScrInput* input = vector_add_dst(&blockdef->inputs);
     ScrMeasurement ms = (ScrMeasurement) {0};
     input->type = INPUT_ARGUMENT;
-    input->data = (ScrBlockInputData) {
+    input->data = (ScrInputData) {
         .arg = {
             .blockdef = blockdef_new("custom_arg", BLOCKTYPE_NORMAL, blockdef->color, NULL),
             .text = defualt_data,
@@ -1676,15 +1681,15 @@ void blockdef_add_argument(ScrBlockdef* blockdef, char* defualt_data, ScrBlockAr
 }
 
 void blockdef_add_blockdef_editor(ScrBlockdef* blockdef) {
-    ScrBlockInput* input = vector_add_dst(&blockdef->inputs);
+    ScrInput* input = vector_add_dst(&blockdef->inputs);
     input->type = INPUT_BLOCKDEF_EDITOR;
-    input->data = (ScrBlockInputData) {0};
+    input->data = (ScrInputData) {0};
 }
 
-void blockdef_add_dropdown(ScrBlockdef* blockdef, ScrBlockDropdownSource dropdown_source, ScrListAccessor accessor) {
-    ScrBlockInput* input = vector_add_dst(&blockdef->inputs);
+void blockdef_add_dropdown(ScrBlockdef* blockdef, ScrInputDropdownSource dropdown_source, ScrListAccessor accessor) {
+    ScrInput* input = vector_add_dst(&blockdef->inputs);
     input->type = INPUT_DROPDOWN;
-    input->data = (ScrBlockInputData) {
+    input->data = (ScrInputData) {
         .drop = {
             .source = dropdown_source,
             .list = accessor,
@@ -1693,10 +1698,10 @@ void blockdef_add_dropdown(ScrBlockdef* blockdef, ScrBlockDropdownSource dropdow
 }
 
 void blockdef_add_image(ScrBlockdef* blockdef, ScrImage image) {
-    ScrBlockInput* input = vector_add_dst(&blockdef->inputs);
+    ScrInput* input = vector_add_dst(&blockdef->inputs);
     ScrMeasurement ms = (ScrMeasurement) {0};
     input->type = INPUT_IMAGE_DISPLAY;
-    input->data = (ScrBlockInputData) {
+    input->data = (ScrInputData) {
         .simage = {
             .image = image,
             .ms = ms,
