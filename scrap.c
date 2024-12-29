@@ -15,9 +15,6 @@
 //  You should have received a copy of the GNU General Public License
 //  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-// TODO:
-// - Add README
-
 #define LICENSE_URL "https://www.gnu.org/licenses/gpl-3.0.html"
 
 #define SCRVM_IMPLEMENTATION

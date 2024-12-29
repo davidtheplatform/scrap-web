@@ -28,6 +28,8 @@ make
 
 ## Wait, there is more?
 
+In `examples/` folder you can find some example code writen in Scrap that uses most features from Scrap
+
 In `extras/` folder you can find some various artwork made for Scrap. 
 The splash art was made by [@FlaffyTheBest](https://scratch.mit.edu/users/FlaffyTheBest/), 
 the logo was made by [@Grisshink](https://github.com/Grisshink) with some inspiration for logo from [@encoded3](https://github.com/encoded3)
