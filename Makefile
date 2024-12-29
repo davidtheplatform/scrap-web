@@ -11,9 +11,6 @@ all: $(EXE_NAME)
 clean:
 	rm $(OBJFILES) $(EXE_NAME)
 
-run: $(EXE_NAME)
-	./$(EXE_NAME)
-
 $(EXE_NAME): $(OBJFILES)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
