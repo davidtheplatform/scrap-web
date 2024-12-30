@@ -1,6 +1,8 @@
 tags
 *.o
 scrap
+scrap.exe
 profile.json
 coredump
 config.txt
+raylib/
