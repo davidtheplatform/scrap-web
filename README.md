@@ -18,6 +18,12 @@ Scrap is currently in **Beta** stage. Some features may be missing or break, so 
 - Holding middle mouse button will do the same, except it works all the time
 - Press `Space` to jump to chain in code base (Useful if you got lost in code base)
 
+## Screenshots
+
+![Screenshot1](/extras/scrap_screenshot1.png)
+![Screenshot2](/extras/scrap_screenshot2.png)
+![Screenshot3](/extras/scrap_screenshot3.png)
+
 ## Building
 
 ### Dependencies
