@@ -315,6 +315,7 @@ bool load_block(SaveArena* save, ScrBlock* block);
 void save_blockdef(SaveArena* save, ScrBlockdef* blockdef);
 ScrBlockdef* load_blockdef(SaveArena* save);
 int save_find_id(const char* id);
+const char* into_data_path(const char* path);
 
 char** math_list_access(ScrBlock* block, size_t* list_len) {
     (void) block;
@@ -2534,9 +2535,12 @@ void set_default_config(Config* config) {
     config->fps_limit = 60;
     config->block_size_threshold = 1000;
     strncpy(config->font_symbols, "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNMйцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ ,./;'\\[]=-0987654321`~!@#$%^&*()_+{}:\"|<>?", sizeof(config->font_symbols) - 1);
-    strncpy(config->font_path, DATA_PATH "nk57-cond.otf", sizeof(config->font_path) - 1);
-    strncpy(config->font_bold_path, DATA_PATH "nk57-eb.otf", sizeof(config->font_bold_path) - 1);
-    strncpy(config->font_mono_path, DATA_PATH "nk57.otf", sizeof(config->font_mono_path) - 1);
+    const char* path = into_data_path("nk57-cond.otf");
+    strncpy(config->font_path, path, sizeof(config->font_path) - 1);
+    path = into_data_path("nk57-eb.otf");
+    strncpy(config->font_bold_path, path, sizeof(config->font_bold_path) - 1);
+    path = into_data_path("nk57.otf");
+    strncpy(config->font_mono_path, path, sizeof(config->font_mono_path) - 1);
 }
 
 void apply_config(Config* dst, Config* src) {
@@ -3866,25 +3870,29 @@ Texture2D load_svg(const char* path) {
     return texture;
 }
 
+const char* into_data_path(const char* path) {
+    return TextFormat("%s%s%s", GetApplicationDirectory(), DATA_PATH, path);
+}
+
 void setup(void) {
-    run_tex = LoadTexture(DATA_PATH "run.png");
+    run_tex = LoadTexture(into_data_path("run.png"));
     SetTextureFilter(run_tex, TEXTURE_FILTER_BILINEAR);
-    drop_tex = LoadTexture(DATA_PATH "drop.png");
+    drop_tex = LoadTexture(into_data_path("drop.png"));
     SetTextureFilter(drop_tex, TEXTURE_FILTER_BILINEAR);
-    close_tex = LoadTexture(DATA_PATH "close.png");
+    close_tex = LoadTexture(into_data_path("close.png"));
     SetTextureFilter(close_tex, TEXTURE_FILTER_BILINEAR);
 
-    logo_tex = load_svg(DATA_PATH "logo.svg");
-    warn_tex = load_svg(DATA_PATH "warning.svg");
-    stop_tex = load_svg(DATA_PATH "stop.svg");
-    edit_tex = load_svg(DATA_PATH "edit.svg");
-    close_tex = load_svg(DATA_PATH "close.svg");
-    term_tex = load_svg(DATA_PATH "term.svg");
-    add_arg_tex = load_svg(DATA_PATH "add_arg.svg");
-    del_arg_tex = load_svg(DATA_PATH "del_arg.svg");
-    add_text_tex = load_svg(DATA_PATH "add_text.svg");
-    special_tex = load_svg(DATA_PATH "special.svg");
-    list_tex = load_svg(DATA_PATH "list.svg");
+    logo_tex = load_svg(into_data_path("logo.svg"));
+    warn_tex = load_svg(into_data_path("warning.svg"));
+    stop_tex = load_svg(into_data_path("stop.svg"));
+    edit_tex = load_svg(into_data_path("edit.svg"));
+    close_tex = load_svg(into_data_path("close.svg"));
+    term_tex = load_svg(into_data_path("term.svg"));
+    add_arg_tex = load_svg(into_data_path("add_arg.svg"));
+    del_arg_tex = load_svg(into_data_path("del_arg.svg"));
+    add_text_tex = load_svg(into_data_path("add_text.svg"));
+    special_tex = load_svg(into_data_path("special.svg"));
+    list_tex = load_svg(into_data_path("list.svg"));
     logo_tex_nuc = TextureToNuklear(logo_tex);
     warn_tex_nuc = TextureToNuklear(warn_tex);
 
