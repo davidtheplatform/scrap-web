@@ -217,6 +217,8 @@ const char** save_block_ids = NULL;
 Config conf;
 Config gui_conf;
 
+Image logo_img;
+
 Texture2D run_tex;
 Texture2D stop_tex;
 Texture2D drop_tex;
@@ -3882,7 +3884,10 @@ void setup(void) {
     close_tex = LoadTexture(into_data_path("close.png"));
     SetTextureFilter(close_tex, TEXTURE_FILTER_BILINEAR);
 
-    logo_tex = load_svg(into_data_path("logo.svg"));
+    logo_img = LoadImageSvg(into_data_path("logo.svg"), conf.font_size, conf.font_size);
+    logo_tex = LoadTextureFromImage(logo_img);
+    SetTextureFilter(logo_tex, TEXTURE_FILTER_BILINEAR);
+
     warn_tex = load_svg(into_data_path("warning.svg"));
     stop_tex = load_svg(into_data_path("stop.svg"));
     edit_tex = load_svg(into_data_path("edit.svg"));
@@ -4388,12 +4393,13 @@ int main(void) {
     set_default_config(&conf);
     load_config(&conf);
 
-    SetConfigFlags(FLAG_MSAA_4X_HINT);
+    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(800, 600, "Scrap");
+    SetWindowState(FLAG_VSYNC_HINT);
     SetTargetFPS(conf.fps_limit);
-    SetWindowState(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
 
     setup();
+    SetWindowIcon(logo_img);
 
     while (!WindowShouldClose()) {
         hover_info.sidebar = GetMouseX() < conf.side_bar_size && GetMouseY() > conf.font_size * 2.2;
