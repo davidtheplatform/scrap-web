@@ -19,12 +19,29 @@ Before building you need to have [Raylib](https://github.com/raysan5/raylib) bui
 
 ### Build
 
-Currently only *linux* is supported for building. To build and run Scrap, just run following commands:
+Currently Scrap can be built for *Windows* and *linux*. 
+
+#### Linux build
+
+To build and run Scrap on linux you need to install `gcc` and `make`. After install, just run following commands:
 
 ```bash
 make
 ./scrap
 ```
+
+#### Windows build
+
+To build and run Scrap on Windows you need to have [mingw-w64](https://www.mingw-w64.org/) installed. 
+The most recommended way to use it is through [MSYS2](https://www.msys2.org/). 
+Scrap expects `libraylib.a` file to be located in `raylib/lib/` folder and its headers in `raylib/include` folder. 
+After that, just run following commands:
+
+```bash
+make -B TARGET=WINDOWS
+```
+
+This will build `scrap.exe` binary which can be run normally.
 
 ## Wait, there is more?
 
