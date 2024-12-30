@@ -10,6 +10,14 @@ its forks such as [Turbowarp](https://turbowarp.org).
 
 Scrap is currently in **Beta** stage. Some features may be missing or break, so use with caution!
 
+## Controls
+
+- Click on blocks to pick up them, click again to drop them
+- You can use `Ctrl` to take only one block and `Alt` to pick up its duplicate
+- Hold left mouse button to move around code space
+- Holding middle mouse button will do the same, except it works all the time
+- Press `Space` to jump to chain in code base (Useful if you got lost in code base)
+
 ## Building
 
 ### Dependencies
