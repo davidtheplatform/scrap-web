@@ -9,7 +9,7 @@ ifeq ($(TARGET), LINUX)
 else
 	CC := x86_64-w64-mingw32-gcc
 	CFLAGS := -Wall -Wextra -O3 -s -DSCRAP_VERSION=\"$(SCRAP_VERSION)\" -fmax-errors=5 -I./raylib/include -L./raylib/lib
-	LDFLAGS := -static -lraylib -lole32 -lcomdlg32 -lwinmm -lgdi32
+	LDFLAGS := -static -lraylib -lole32 -lcomdlg32 -lwinmm -lgdi32 -Wl,--subsystem,windows
 endif
 
 OBJFILES := scrap.o filedialogs.o
@@ -18,7 +18,7 @@ EXE_NAME := scrap
 all: $(EXE_NAME)
 
 clean:
-	rm $(OBJFILES) $(EXE_NAME) $(EXE_NAME).exe
+	rm -f $(OBJFILES) $(EXE_NAME) $(EXE_NAME).exe
 
 $(EXE_NAME): $(OBJFILES)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
