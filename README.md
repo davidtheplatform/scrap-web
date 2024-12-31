@@ -6,6 +6,10 @@ Scrap is a new block based programming language with the aim towards advanced us
 It is written in pure C and mostly inspired by other block based languages such as [Scratch](https://scratch.mit.edu/) and
 its forks such as [Turbowarp](https://turbowarp.org).
 
+This repository is a version of Scrap that runs in a web browser using Emscripten. Try it here: https://davidtheplatform.github.io/scrap-web/build/scrap.html
+
+There are still some issues, namely saving/loading does not work.
+
 ## ⚠️ WARNING ⚠️
 
 Scrap is currently in **Beta** stage. Some features may be missing or break, so use with caution!
@@ -31,50 +35,13 @@ Scrap is currently in **Beta** stage. Some features may be missing or break, so 
 Before building you need to have [Raylib](https://github.com/raysan5/raylib) built and installed on your system 
 **(Make sure you use Raylib 5.0 and enabled SUPPORT_FILEFORMAT_SVG in `config.h` or else it will not build properly!)**.
 
+Make sure to build raylib using its HTML5/emscripten instructions.
+
 ### Build
 
-Currently Scrap can be built for *Windows*, *Linux* and *MacOS*. 
+This repository only supports web builds with emscripten.
 
-#### Linux build
-
-To build and run Scrap on linux you need to install `gcc` and `make`. After install, just run following commands:
-
-```bash
-make
-./scrap
-```
-
-#### Windows build
-
-To build and run Scrap on Windows you need to have [mingw-w64](https://www.mingw-w64.org/) installed. 
-The most recommended way to use it is through [MSYS2](https://www.msys2.org/). 
-Scrap expects `libraylib.a` file to be located in `raylib/lib/` folder and its headers in `raylib/include` folder. 
-After that, just run following commands:
-
-```bash
-make -B TARGET=WINDOWS
-```
-
-This will build `scrap.exe` binary which can be run normally.
-
-#### MacOS build
-
-To build and run Scrap on macOS, you need to install `gcc` and `make`.
-First, install Homebrew:
-
-```
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-
-After that, you need to run the following commands:
-
-```
-brew install gcc
-make TARGET=MACOS
-./scrap
-```
-
-Thanks to [@arducat](https://github.com/arducat) for MacOS support.
+Run `make RAYLIB_DIR=<path to raylib>`. The built files will be placed in `build/`. Run `python3 server.py` and navigate to `localhost:8000/build/scrap.html` to view them. 
 
 ## Wait, there is more?
 
