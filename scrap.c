@@ -33,6 +33,8 @@
 #include "external/raylib-nuklear.h"
 #include "external/tinyfiledialogs.h"
 
+#include <emscripten/emscripten.h>
+
 #define ARRLEN(x) (sizeof(x)/sizeof(x[0]))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
@@ -575,6 +577,7 @@ void blockdef_update_collisions(Vector2 position, ScrBlockdef* blockdef, bool ed
 
         switch (cur->type) {
         case INPUT_TEXT_DISPLAY:
+            0;
             ScrMeasurement ms = cur->data.stext.editor_ms;
             if (editing) {
                 arg_size.x = cursor.x;
@@ -612,6 +615,7 @@ void blockdef_update_collisions(Vector2 position, ScrBlockdef* blockdef, bool ed
             }
             break;
         default:
+            0;
             Vector2 size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
             width = size.x;
             break;
@@ -680,6 +684,7 @@ void draw_blockdef(Vector2 position, ScrBlockdef* blockdef, bool editing) {
             assert(false && "Unimplemented");
             break;
         default:
+            0;
             Vector2 size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
             width = size.x;
             arg_pos.y += block_size.height * 0.5 - BLOCK_TEXT_SIZE * 0.5;
@@ -714,6 +719,7 @@ void update_measurements(ScrBlock* block, ScrPlacementStrategy placement) {
             switch (block->arguments[arg_id].type) {
             case ARGUMENT_CONST_STRING:
             case ARGUMENT_TEXT:
+                0;
                 ScrMeasurement string_ms = measure_input_box(block->arguments[arg_id].data.text);
                 block->arguments[arg_id].ms = string_ms;
                 ms = string_ms;
@@ -738,6 +744,7 @@ void update_measurements(ScrBlock* block, ScrPlacementStrategy placement) {
             arg_id++;
             break;
         case INPUT_BLOCKDEF_EDITOR:
+            0;
             ScrBlockdef* blockdef = block->arguments[arg_id].data.blockdef;
             blockdef_update_measurements(blockdef, hover_info.editor.edit_blockdef == blockdef);
             ScrMeasurement editor_ms = block->arguments[arg_id].data.blockdef->ms;
@@ -829,6 +836,7 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
                 }
                 break;
             case ARGUMENT_BLOCK:
+                0;
                 Vector2 block_pos;
                 block_pos.x = cursor.x;
                 block_pos.y = cursor.y + (block->ms.placement == PLACEMENT_VERTICAL ? 0 : block_size.height / 2 - block->arguments[arg_id].ms.size.y / 2); 
@@ -934,6 +942,7 @@ void block_update_collisions(Vector2 position, ScrBlock* block) {
             arg_id++;
             break;
         default:
+            0;
             Vector2 size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
             width = size.x;
             height = size.y;
@@ -1108,6 +1117,7 @@ void draw_block(Vector2 position, ScrBlock* block, bool force_outline, bool forc
             arg_id++;
             break;
         default:
+            0;
             Vector2 size = MeasureTextEx(font_cond, "NODEF", BLOCK_TEXT_SIZE, 0.0);
             width = size.x;
             height = size.y;
@@ -1787,7 +1797,7 @@ void handle_gui(void) {
             nk_layout_row_template_end(gui.ctx);
 
             nk_spacer(gui.ctx);
-            nk_label_wrap(gui.ctx, "Scrap is a project that allows anyone to build software using simple, block based interface.");
+            nk_label_wrap(gui.ctx, "Scrap is a project that allows anyone to build software using simple, block based interface.\n\nWeb port by davidtheplatform.");
             nk_spacer(gui.ctx);
 
             nk_layout_row_template_begin(gui.ctx, conf.font_size);
@@ -2882,6 +2892,7 @@ bool load_blockdef_input(SaveArena* save, ScrInput* input) {
 
     switch (input->type) {
     case INPUT_TEXT_DISPLAY:
+        0;
         unsigned int text_len;
         char* text = save_read_array(save, sizeof(char), &text_len);
         if (!text) return false;
@@ -2895,6 +2906,7 @@ bool load_blockdef_input(SaveArena* save, ScrInput* input) {
         vector_add(&input->data.stext.text, 0);
         break;
     case INPUT_ARGUMENT:
+        0;
         ScrInputArgumentConstraint constr; 
         if (!save_read_varint(save, (unsigned int*)&constr)) return false;
 
@@ -2973,6 +2985,7 @@ bool load_block_argument(SaveArena* save, ScrArgument* arg) {
     switch (arg_type) {
     case ARGUMENT_TEXT:
     case ARGUMENT_CONST_STRING:
+        0;
         unsigned int text_id;
         if (!save_read_varint(save, &text_id)) return false;
 
@@ -2981,12 +2994,14 @@ bool load_block_argument(SaveArena* save, ScrArgument* arg) {
         vector_add(&arg->data.text, 0);
         break;
     case ARGUMENT_BLOCK:
+        0;
         ScrBlock block;
         if (!load_block(save, &block)) return false;
         
         arg->data.block = block;
         break;
     case ARGUMENT_BLOCKDEF:
+        0;
         unsigned int blockdef_id;
         if (!save_read_varint(save, &blockdef_id)) return false;
 
@@ -4389,6 +4404,210 @@ void setup(void) {
     gui.ctx->style.property.edit.cursor_text_hover = nk_rgb(0x20, 0x20, 0x20);
 }
 
+void Update() {
+    hover_info.sidebar = GetMouseX() < conf.side_bar_size && GetMouseY() > conf.font_size * 2.2;
+    hover_info.block = NULL;
+    hover_info.argument = NULL;
+    hover_info.input = NULL;
+    hover_info.argument_pos.x = 0;
+    hover_info.argument_pos.y = 0;
+    hover_info.prev_argument = NULL;
+    hover_info.blockchain = NULL;
+    hover_info.blockchain_index = -1;
+    hover_info.blockchain_layer = 0;
+    hover_info.dropdown_hover_ind = -1;
+    hover_info.top_bars.ind = -1;
+    hover_info.exec_ind = -1;
+    hover_info.exec_chain = NULL;
+    hover_info.editor.part = EDITOR_NONE;
+    hover_info.editor.blockdef = NULL;
+    hover_info.editor.blockdef_input = -1;
+
+    Vector2 mouse_pos = GetMousePosition();
+    if ((int)hover_info.last_mouse_pos.x == (int)mouse_pos.x && (int)hover_info.last_mouse_pos.y == (int)mouse_pos.y) {
+        hover_info.time_at_last_pos += GetFrameTime();
+    } else {
+        hover_info.last_mouse_pos = mouse_pos;
+        hover_info.time_at_last_pos = 0;
+    }
+
+    dropdown_check_collisions();
+    if (!gui.shown) {
+        check_block_collisions();
+        bars_check_collisions();
+    }
+
+    if (gui.shown) UpdateNuklear(gui.ctx);
+    handle_gui();
+
+    if (GetMouseWheelMove() != 0.0) {
+        handle_mouse_wheel();
+    }
+
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        hover_info.drag_cancelled = handle_mouse_click();
+#ifdef DEBUG
+        // This will traverse through all blocks in codebase, which is expensive in large codebase.
+        // Ideally all functions should not be broken in the first place. This helps with debugging invalid states
+        sanitize_links();
+#endif
+    } else if (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)) {
+        hover_info.mouse_click_pos = GetMousePosition();
+        camera_click_pos = camera_pos;
+    } else if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) || IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        handle_mouse_drag();
+    } else {
+        hover_info.drag_cancelled = false;
+        handle_key_press();
+    }
+
+    if (IsWindowResized()) {
+        shader_time = 0.0;
+        term_resize();
+    }
+
+    if (sidebar.max_y > GetScreenHeight()) {
+        sidebar.scroll_amount = MIN(sidebar.scroll_amount, sidebar.max_y - GetScreenHeight());
+    } else {
+        sidebar.scroll_amount = 0;
+    }
+
+    mouse_blockchain.pos = as_scr_vec(GetMousePosition());
+
+    actionbar.show_time -= GetFrameTime();
+    if (actionbar.show_time < 0) actionbar.show_time = 0;
+
+    if (shader_time_loc != -1) SetShaderValue(line_shader, shader_time_loc, &shader_time, SHADER_UNIFORM_FLOAT);
+    shader_time += GetFrameTime() / 2.0;
+    if (shader_time >= 1.0) shader_time = 1.0;
+
+    // I have no idea why, but this code may occasionally crash X server, so it is turned off for now
+    /*if (hover_info.argument || hover_info.select_argument) {
+        SetMouseCursor(MOUSE_CURSOR_IBEAM);
+    } else if (hover_info.block) {
+        SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
+    } else {
+        SetMouseCursor(MOUSE_CURSOR_DEFAULT);
+    }*/
+
+    size_t vm_return = -1;
+    if (exec_try_join(&vm, &exec, &vm_return)) {
+        if (vm_return == 1) {
+            actionbar_show("Vm executed successfully");
+        } else if (vm_return == (size_t)PTHREAD_CANCELED) {
+            actionbar_show("Vm stopped >:(");
+        } else {
+            actionbar_show("Vm shitted and died :(");
+        }
+        exec_free(&exec);
+    } else if (vm.is_running) {
+        hover_info.exec_chain = exec.running_chain;
+        hover_info.exec_ind = exec.chain_stack[exec.chain_stack_len - 1].running_ind;
+    }
+
+    BeginDrawing();
+    ClearBackground(GetColor(0x202020ff));
+
+    int sw = GetScreenWidth();
+    int sh = GetScreenHeight();
+
+    DrawRectangle(0, 0, sw, conf.font_size * 1.2, (Color){ 0x30, 0x30, 0x30, 0xFF });
+    DrawRectangle(0, conf.font_size * 1.2, sw, conf.font_size, (Color){ 0x2B, 0x2B, 0x2B, 0xFF });
+    draw_tab_buttons(sw);
+    draw_top_bar();
+
+    if (current_tab == TAB_CODE) {
+        BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
+            draw_dots();
+            for (vec_size_t i = 0; i < vector_size(editor_code); i++) {
+                draw_block_chain(&editor_code[i], camera_pos, hover_info.exec_chain == &editor_code[i]);
+            }
+        EndScissorMode();
+
+        draw_scrollbars();
+
+        draw_sidebar();
+
+        BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
+            draw_block_chain(&mouse_blockchain, (Vector2) {0}, false);
+        EndScissorMode();
+
+        draw_action_bar();
+
+#ifdef DEBUG
+        DrawTextEx(
+            font_cond, 
+            TextFormat(
+                "BlockChain: %p, Ind: %d, Layer: %d\n"
+                "Block: %p, Parent: %p\n"
+                "Argument: %p, Pos: (%.3f, %.3f)\n"
+                "Prev argument: %p\n"
+                "Select block: %p\n"
+                "Select arg: %p, Pos: (%.3f, %.3f)\n"
+                "Sidebar: %d\n"
+                "Mouse: %p, Time: %.3f, Pos: (%d, %d), Click: (%d, %d)\n"
+                "Camera: (%.3f, %.3f), Click: (%.3f, %.3f)\n"
+                "Dropdown ind: %d, Scroll: %d\n"
+                "Drag cancelled: %d\n"
+                "Bar: %d, Ind: %d\n"
+                "Min: (%.3f, %.3f), Max: (%.3f, %.3f)\n"
+                "Sidebar scroll: %d, Max: %d\n"
+                "Editor: %d, Editing: %p, Blockdef: %p, input: %zu\n",
+                hover_info.blockchain,
+                hover_info.blockchain_index,
+                hover_info.blockchain_layer,
+                hover_info.block,
+                hover_info.block ? hover_info.block->parent : NULL,
+                hover_info.argument, hover_info.argument_pos.x, hover_info.argument_pos.y, 
+                hover_info.prev_argument,
+                hover_info.select_block,
+                hover_info.select_argument, hover_info.select_argument_pos.x, hover_info.select_argument_pos.y, 
+                hover_info.sidebar,
+                mouse_blockchain.blocks,
+                hover_info.time_at_last_pos,
+                (int)mouse_pos.x, (int)mouse_pos.y,
+                (int)hover_info.mouse_click_pos.x, (int)hover_info.mouse_click_pos.y,
+                camera_pos.x, camera_pos.y, camera_click_pos.x, camera_click_pos.y,
+                hover_info.dropdown_hover_ind, dropdown.scroll_amount,
+                hover_info.drag_cancelled,
+                hover_info.top_bars.type, hover_info.top_bars.ind,
+                block_code.min_pos.x, block_code.min_pos.y, block_code.max_pos.x, block_code.max_pos.y,
+                sidebar.scroll_amount, sidebar.max_y,
+                hover_info.editor.part, hover_info.editor.edit_blockdef, hover_info.editor.blockdef, hover_info.editor.blockdef_input
+            ), 
+            (Vector2){ 
+                conf.side_bar_size + 5, 
+                conf.font_size * 2.2 + 5
+            }, 
+            conf.font_size * 0.5,
+            0.0, 
+            GRAY
+        );
+#else
+        Vector2 debug_pos = (Vector2) {
+            conf.side_bar_size + 5 * conf.font_size / 32.0, 
+            conf.font_size * 2.2 + 5 * conf.font_size / 32.0,
+        };
+        DrawTextEx(font_cond, "Scrap v" SCRAP_VERSION, debug_pos, conf.font_size * 0.5, 0.0, (Color) { 0xff, 0xff, 0xff, 0x40 });
+        debug_pos.y += conf.font_size * 0.5;
+        DrawTextEx(font_cond, TextFormat("FPS: %d, Frame time: %.3f", GetFPS(), GetFrameTime()), debug_pos, conf.font_size * 0.5, 0.0, (Color) { 0xff, 0xff, 0xff, 0x40 });
+#endif
+    } else if (current_tab == TAB_OUTPUT) {
+        draw_term();
+    }
+
+    if (gui.shown) {
+        float animation_ease = ease_out_expo(gui.animation_time);
+        DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color) { 0x00, 0x00, 0x00, 0x44 * animation_ease });
+        DrawNuklear(gui.ctx);
+    }
+
+    draw_dropdown_list();
+    draw_tooltip();
+
+    EndDrawing();
+}
+
 int main(void) {
     set_default_config(&conf);
     load_config(&conf);
@@ -4401,209 +4620,7 @@ int main(void) {
     setup();
     SetWindowIcon(logo_img);
 
-    while (!WindowShouldClose()) {
-        hover_info.sidebar = GetMouseX() < conf.side_bar_size && GetMouseY() > conf.font_size * 2.2;
-        hover_info.block = NULL;
-        hover_info.argument = NULL;
-        hover_info.input = NULL;
-        hover_info.argument_pos.x = 0;
-        hover_info.argument_pos.y = 0;
-        hover_info.prev_argument = NULL;
-        hover_info.blockchain = NULL;
-        hover_info.blockchain_index = -1;
-        hover_info.blockchain_layer = 0;
-        hover_info.dropdown_hover_ind = -1;
-        hover_info.top_bars.ind = -1;
-        hover_info.exec_ind = -1;
-        hover_info.exec_chain = NULL;
-        hover_info.editor.part = EDITOR_NONE;
-        hover_info.editor.blockdef = NULL;
-        hover_info.editor.blockdef_input = -1;
-
-        Vector2 mouse_pos = GetMousePosition();
-        if ((int)hover_info.last_mouse_pos.x == (int)mouse_pos.x && (int)hover_info.last_mouse_pos.y == (int)mouse_pos.y) {
-            hover_info.time_at_last_pos += GetFrameTime();
-        } else {
-            hover_info.last_mouse_pos = mouse_pos;
-            hover_info.time_at_last_pos = 0;
-        }
-
-        dropdown_check_collisions();
-        if (!gui.shown) {
-            check_block_collisions();
-            bars_check_collisions();
-        }
-
-        if (gui.shown) UpdateNuklear(gui.ctx);
-        handle_gui();
-
-        if (GetMouseWheelMove() != 0.0) {
-            handle_mouse_wheel();
-        }
-
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            hover_info.drag_cancelled = handle_mouse_click();
-#ifdef DEBUG
-            // This will traverse through all blocks in codebase, which is expensive in large codebase.
-            // Ideally all functions should not be broken in the first place. This helps with debugging invalid states
-            sanitize_links();
-#endif
-        } else if (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)) {
-            hover_info.mouse_click_pos = GetMousePosition();
-            camera_click_pos = camera_pos;
-        } else if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) || IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-            handle_mouse_drag();
-        } else {
-            hover_info.drag_cancelled = false;
-            handle_key_press();
-        }
-
-        if (IsWindowResized()) {
-            shader_time = 0.0;
-            term_resize();
-        }
-
-        if (sidebar.max_y > GetScreenHeight()) {
-            sidebar.scroll_amount = MIN(sidebar.scroll_amount, sidebar.max_y - GetScreenHeight());
-        } else {
-            sidebar.scroll_amount = 0;
-        }
-
-        mouse_blockchain.pos = as_scr_vec(GetMousePosition());
-
-        actionbar.show_time -= GetFrameTime();
-        if (actionbar.show_time < 0) actionbar.show_time = 0;
-
-        if (shader_time_loc != -1) SetShaderValue(line_shader, shader_time_loc, &shader_time, SHADER_UNIFORM_FLOAT);
-        shader_time += GetFrameTime() / 2.0;
-        if (shader_time >= 1.0) shader_time = 1.0;
-
-        // I have no idea why, but this code may occasionally crash X server, so it is turned off for now
-        /*if (hover_info.argument || hover_info.select_argument) {
-            SetMouseCursor(MOUSE_CURSOR_IBEAM);
-        } else if (hover_info.block) {
-            SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
-        } else {
-            SetMouseCursor(MOUSE_CURSOR_DEFAULT);
-        }*/
-
-        size_t vm_return = -1;
-        if (exec_try_join(&vm, &exec, &vm_return)) {
-            if (vm_return == 1) {
-                actionbar_show("Vm executed successfully");
-            } else if (vm_return == (size_t)PTHREAD_CANCELED) {
-                actionbar_show("Vm stopped >:(");
-            } else {
-                actionbar_show("Vm shitted and died :(");
-            }
-            exec_free(&exec);
-        } else if (vm.is_running) {
-            hover_info.exec_chain = exec.running_chain;
-            hover_info.exec_ind = exec.chain_stack[exec.chain_stack_len - 1].running_ind;
-        }
-
-        BeginDrawing();
-        ClearBackground(GetColor(0x202020ff));
-
-        int sw = GetScreenWidth();
-        int sh = GetScreenHeight();
-
-        DrawRectangle(0, 0, sw, conf.font_size * 1.2, (Color){ 0x30, 0x30, 0x30, 0xFF });
-        DrawRectangle(0, conf.font_size * 1.2, sw, conf.font_size, (Color){ 0x2B, 0x2B, 0x2B, 0xFF });
-        draw_tab_buttons(sw);
-        draw_top_bar();
-
-        if (current_tab == TAB_CODE) {
-            BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
-                draw_dots();
-                for (vec_size_t i = 0; i < vector_size(editor_code); i++) {
-                    draw_block_chain(&editor_code[i], camera_pos, hover_info.exec_chain == &editor_code[i]);
-                }
-            EndScissorMode();
-
-            draw_scrollbars();
-
-            draw_sidebar();
-
-            BeginScissorMode(0, conf.font_size * 2.2, sw, sh - conf.font_size * 2.2);
-                draw_block_chain(&mouse_blockchain, (Vector2) {0}, false);
-            EndScissorMode();
-
-            draw_action_bar();
-
-#ifdef DEBUG
-            DrawTextEx(
-                font_cond, 
-                TextFormat(
-                    "BlockChain: %p, Ind: %d, Layer: %d\n"
-                    "Block: %p, Parent: %p\n"
-                    "Argument: %p, Pos: (%.3f, %.3f)\n"
-                    "Prev argument: %p\n"
-                    "Select block: %p\n"
-                    "Select arg: %p, Pos: (%.3f, %.3f)\n"
-                    "Sidebar: %d\n"
-                    "Mouse: %p, Time: %.3f, Pos: (%d, %d), Click: (%d, %d)\n"
-                    "Camera: (%.3f, %.3f), Click: (%.3f, %.3f)\n"
-                    "Dropdown ind: %d, Scroll: %d\n"
-                    "Drag cancelled: %d\n"
-                    "Bar: %d, Ind: %d\n"
-                    "Min: (%.3f, %.3f), Max: (%.3f, %.3f)\n"
-                    "Sidebar scroll: %d, Max: %d\n"
-                    "Editor: %d, Editing: %p, Blockdef: %p, input: %zu\n",
-                    hover_info.blockchain,
-                    hover_info.blockchain_index,
-                    hover_info.blockchain_layer,
-                    hover_info.block,
-                    hover_info.block ? hover_info.block->parent : NULL,
-                    hover_info.argument, hover_info.argument_pos.x, hover_info.argument_pos.y, 
-                    hover_info.prev_argument,
-                    hover_info.select_block,
-                    hover_info.select_argument, hover_info.select_argument_pos.x, hover_info.select_argument_pos.y, 
-                    hover_info.sidebar,
-                    mouse_blockchain.blocks,
-                    hover_info.time_at_last_pos,
-                    (int)mouse_pos.x, (int)mouse_pos.y,
-                    (int)hover_info.mouse_click_pos.x, (int)hover_info.mouse_click_pos.y,
-                    camera_pos.x, camera_pos.y, camera_click_pos.x, camera_click_pos.y,
-                    hover_info.dropdown_hover_ind, dropdown.scroll_amount,
-                    hover_info.drag_cancelled,
-                    hover_info.top_bars.type, hover_info.top_bars.ind,
-                    block_code.min_pos.x, block_code.min_pos.y, block_code.max_pos.x, block_code.max_pos.y,
-                    sidebar.scroll_amount, sidebar.max_y,
-                    hover_info.editor.part, hover_info.editor.edit_blockdef, hover_info.editor.blockdef, hover_info.editor.blockdef_input
-                ), 
-                (Vector2){ 
-                    conf.side_bar_size + 5, 
-                    conf.font_size * 2.2 + 5
-                }, 
-                conf.font_size * 0.5,
-                0.0, 
-                GRAY
-            );
-#else
-            Vector2 debug_pos = (Vector2) {
-                conf.side_bar_size + 5 * conf.font_size / 32.0, 
-                conf.font_size * 2.2 + 5 * conf.font_size / 32.0,
-            };
-            DrawTextEx(font_cond, "Scrap v" SCRAP_VERSION, debug_pos, conf.font_size * 0.5, 0.0, (Color) { 0xff, 0xff, 0xff, 0x40 });
-            debug_pos.y += conf.font_size * 0.5;
-            DrawTextEx(font_cond, TextFormat("FPS: %d, Frame time: %.3f", GetFPS(), GetFrameTime()), debug_pos, conf.font_size * 0.5, 0.0, (Color) { 0xff, 0xff, 0xff, 0x40 });
-#endif
-        } else if (current_tab == TAB_OUTPUT) {
-            draw_term();
-        }
-
-        if (gui.shown) {
-            float animation_ease = ease_out_expo(gui.animation_time);
-            DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color) { 0x00, 0x00, 0x00, 0x44 * animation_ease });
-            DrawNuklear(gui.ctx);
-        }
-
-        draw_dropdown_list();
-        draw_tooltip();
-
-        EndDrawing();
-    }
+    emscripten_set_main_loop(Update, 0, 1);
 
     if (vm.is_running) {
         exec_stop(&vm, &exec);
